@@ -14,9 +14,13 @@ name = "capsule"
 path = "src/main.rs"
 
 [dependencies]
+anyhow.workspace = true
 capsule-core = { path = "../core" }
-capsule-protocol = { path = "../protocol" }
 clap.workspace = true
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true
