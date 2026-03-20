@@ -23,7 +23,14 @@ pub fn run() -> anyhow::Result<()> {
         .enable_all()
         .build()?;
 
-    rt.block_on(relay(&socket_path))
+    let result = rt.block_on(relay(&socket_path));
+
+    // Forcefully shut down the runtime to avoid hanging on
+    // tokio::io::stdin()'s internal blocking thread, which may be stuck
+    // in a read() syscall after the parent shell closes the pipe.
+    rt.shutdown_timeout(Duration::from_millis(100));
+
+    result
 }
 
 /// Ensure the daemon is running. Auto-start if needed.
