@@ -16,7 +16,8 @@ use std::{
 
 use cache::BoundedCache;
 use capsule_protocol::{
-    Message, MessageReader, MessageWriter, PROTOCOL_VERSION, RenderResult, Request, Update,
+    HelloAck, Message, MessageReader, MessageWriter, PROTOCOL_VERSION, RenderResult, Request,
+    Update,
 };
 use session::SessionMap;
 use tokio::{
@@ -103,6 +104,7 @@ pub struct Server<G> {
     socket_path: PathBuf,
     home_dir: PathBuf,
     git_provider: G,
+    build_id: String,
 }
 
 impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
@@ -113,11 +115,18 @@ impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
     /// * `socket_path` — path where the Unix socket will be created
     /// * `home_dir` — user's home directory (for `~` substitution)
     /// * `git_provider` — [`GitProvider`] implementation for slow module
-    pub const fn new(socket_path: PathBuf, home_dir: PathBuf, git_provider: G) -> Self {
+    /// * `build_id` — binary fingerprint for Hello/HelloAck negotiation
+    pub const fn new(
+        socket_path: PathBuf,
+        home_dir: PathBuf,
+        git_provider: G,
+        build_id: String,
+    ) -> Self {
         Self {
             socket_path,
             home_dir,
             git_provider,
+            build_id,
         }
     }
 
@@ -157,6 +166,7 @@ impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
         let socket_path = self.socket_path;
         let home_dir = Arc::new(self.home_dir);
         let git_provider = self.git_provider;
+        let build_id = Arc::new(self.build_id);
         let state = Arc::new(Mutex::new(SharedState::new()));
 
         tokio::pin!(shutdown);
@@ -175,8 +185,9 @@ impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
                     let conn_state = Arc::clone(&state);
                     let conn_home = Arc::clone(&home_dir);
                     let conn_git = git_provider.clone();
+                    let conn_build_id = Arc::clone(&build_id);
                     tokio::spawn(async move {
-                        if let Err(e) = handle_connection(stream, conn_state, conn_home, conn_git).await {
+                        if let Err(e) = handle_connection(stream, conn_state, conn_home, conn_git, conn_build_id).await {
                             tracing::warn!(error = %e, "client connection error");
                         }
                     });
@@ -216,6 +227,7 @@ async fn handle_connection<G: GitProvider + Clone + Send + 'static>(
     state: Arc<Mutex<SharedState>>,
     home_dir: Arc<PathBuf>,
     git_provider: G,
+    build_id: Arc<String>,
 ) -> Result<(), DaemonError> {
     let (reader, writer) = stream.into_split();
     let mut msg_reader = MessageReader::new(reader);
@@ -233,7 +245,16 @@ async fn handle_connection<G: GitProvider + Clone + Send + 'static>(
                 )
                 .await?;
             }
-            Ok(Some(_)) => {}  // ignore non-request messages
+            Ok(Some(Message::Hello(_))) => {
+                let ack = HelloAck {
+                    version: PROTOCOL_VERSION,
+                    build_id: (*build_id).clone(),
+                };
+                let mut w = msg_writer.lock().await;
+                w.write_message(&Message::HelloAck(ack)).await?;
+                drop(w);
+            }
+            Ok(Some(_)) => {}  // ignore other messages
             Ok(None) => break, // EOF
             Err(e) => {
                 tracing::debug!(error = %e, "protocol error, closing connection");
@@ -491,12 +512,19 @@ mod tests {
 
     impl TestHarness {
         async fn start(provider: MockGitProvider) -> Result<Self, Box<dyn std::error::Error>> {
+            Self::start_with_build_id(provider, "test-build-id").await
+        }
+
+        async fn start_with_build_id(
+            provider: MockGitProvider,
+            build_id: &str,
+        ) -> Result<Self, Box<dyn std::error::Error>> {
             let dir = tempfile::tempdir()?;
             let socket_path = dir.path().join("test.sock");
             let home = dir.path().join("home");
             std::fs::create_dir_all(&home)?;
 
-            let server = Server::new(socket_path.clone(), home, provider);
+            let server = Server::new(socket_path.clone(), home, provider, build_id.to_owned());
             let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
             let server_handle = tokio::spawn(async move {
@@ -704,7 +732,12 @@ mod tests {
 
         let home = dir.path().join("home");
         std::fs::create_dir_all(&home)?;
-        let server = Server::new(socket_path.clone(), home, MockGitProvider { status: None });
+        let server = Server::new(
+            socket_path.clone(),
+            home,
+            MockGitProvider { status: None },
+            "test-build-id".to_owned(),
+        );
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let server_handle = tokio::spawn(async move {
@@ -828,7 +861,12 @@ mod tests {
         let home = dir.path().join("home");
         std::fs::create_dir_all(&home)?;
 
-        let server = Server::new(socket_path.clone(), home, MockGitProvider { status: None });
+        let server = Server::new(
+            socket_path.clone(),
+            home,
+            MockGitProvider { status: None },
+            "test-build-id".to_owned(),
+        );
 
         // No explicit shutdown — daemon should exit via inode check.
         let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -854,5 +892,31 @@ mod tests {
             "server should shut down cleanly: {result:?}"
         );
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_daemon_responds_to_hello_with_hello_ack() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let build_id = "12345:1700000000000000000";
+        let harness =
+            TestHarness::start_with_build_id(MockGitProvider { status: None }, build_id).await?;
+        let (mut reader, mut writer) = harness.connect().await?;
+
+        let hello = capsule_protocol::Hello {
+            version: PROTOCOL_VERSION,
+            build_id: "other-build-id".to_owned(),
+        };
+        writer.write_message(&Message::Hello(hello)).await?;
+
+        let resp = reader.read_message().await?;
+        match resp {
+            Some(Message::HelloAck(ack)) => {
+                assert_eq!(ack.version, PROTOCOL_VERSION);
+                assert_eq!(ack.build_id, build_id);
+            }
+            other => return Err(format!("expected HelloAck, got {other:?}").into()),
+        }
+
+        harness.shutdown().await
     }
 }
