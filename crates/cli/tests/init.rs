@@ -68,6 +68,7 @@ fn test_init_zsh_sets_prompt_in_isolated_session() -> Result<(), Box<dyn std::er
         ])
         .env("ZDOTDIR", tmp.path())
         .env("HOME", tmp.path())
+        .env("TMPDIR", tmp.path())
         .env("PATH", &path_env)
         .output()?;
 
