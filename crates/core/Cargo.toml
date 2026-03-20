@@ -12,6 +12,11 @@ publish = false
 
 [dependencies]
 capsule-protocol = { path = "../protocol" }
+thiserror = { workspace = true }
+time = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true
