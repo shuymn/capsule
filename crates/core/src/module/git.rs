@@ -44,7 +44,7 @@ pub trait GitProvider {
 }
 
 /// [`GitProvider`] that shells out to the `git` command.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[allow(clippy::module_name_repetitions)]
 pub struct CommandGitProvider;
 

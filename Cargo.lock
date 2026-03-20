@@ -87,6 +87,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "time",
+ "tokio",
  "unicode-width",
 ]
 

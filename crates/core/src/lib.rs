@@ -2,5 +2,6 @@
 
 #![warn(clippy::pedantic, clippy::nursery, clippy::cargo)]
 
+pub mod daemon;
 pub mod module;
 pub mod render;

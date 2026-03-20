@@ -14,6 +14,7 @@ publish = false
 capsule-protocol = { path = "../protocol" }
 thiserror = { workspace = true }
 time = { workspace = true }
+tokio = { workspace = true }
 unicode-width = { workspace = true }
 
 [dev-dependencies]
