@@ -49,6 +49,14 @@ _capsule_init() {
     # Register hooks (prepend, deduplicate)
     precmd_functions=(_capsule_precmd "${(@)precmd_functions:#_capsule_precmd}")
     preexec_functions=(_capsule_preexec "${(@)preexec_functions:#_capsule_preexec}")
+    zshexit_functions=(_capsule_zshexit "${(@)zshexit_functions:#_capsule_zshexit}")
+}
+
+_capsule_zshexit() {
+    if [[ -n "$_CAPSULE_COPROC_PID" ]]; then
+        command kill "$_CAPSULE_COPROC_PID" 2>/dev/null
+        _capsule_cleanup_fds
+    fi
 }
 
 _capsule_start_coproc() {
@@ -259,6 +267,10 @@ mod tests {
         assert!(
             script.contains("preexec_functions"),
             "should register preexec hook"
+        );
+        assert!(
+            script.contains("zshexit_functions"),
+            "should register zshexit hook"
         );
     }
 

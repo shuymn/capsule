@@ -4,15 +4,6 @@
 
 use crate::ProtocolError;
 
-/// Encode `data` as a netstring: `<len>:<data>,`.
-///
-/// # Examples
-///
-/// ```
-/// # use capsule_protocol::netstring;
-/// assert_eq!(netstring::encode(b"hello"), b"5:hello,");
-/// assert_eq!(netstring::encode(b""), b"0:,");
-/// ```
 /// Append `data` as a netstring directly into `buf`, avoiding intermediate allocation.
 pub fn encode_into(buf: &mut Vec<u8>, data: &[u8]) {
     use std::io::Write as _;
