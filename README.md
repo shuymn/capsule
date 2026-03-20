@@ -1,15 +1,109 @@
 # capsule
 
+`capsule` is a macOS-only prompt engine for `zsh`, implemented in Rust.
 
-This repository was initialized from a Rust project template.
+The project ships a single `capsule` binary with three subcommands:
 
-Replace this README with project-specific documentation once the repository has a clear purpose, setup flow, and release process.
+- `capsule daemon` starts the prompt daemon over a Unix domain socket
+- `capsule connect` relays shell I/O to the daemon through a coprocess
+- `capsule init zsh` prints the shell integration script
 
-## Local Setup
+`zsh` stays thin, while the daemon handles prompt rendering, layout, caching, and slow module refreshes.
 
-Install [Rust](https://www.rust-lang.org/tools/install) (rustup). This repo pins **nightly** in `rust-toolchain.toml` (run `rustup show` in the repo root after clone — rustup should install it automatically). Optional: [Task](https://taskfile.dev/installation/) and [Lefthook](https://github.com/evilmartians/lefthook).
+## Status
 
-Primary entrypoint:
+This repository is no longer a template. It currently implements:
+
+- macOS + `zsh` support
+- a two-line prompt
+- daemon-backed rendering over `$TMPDIR/capsule.sock`
+- fast and slow prompt modules
+- async refresh for slow prompt data after the initial render
+
+Current limitations:
+
+- `zsh` is the only supported shell
+- macOS is the primary target platform
+- prompt composition is fixed in code; there is no user config format yet
+
+## Prompt Contents
+
+The rendered prompt is split into two lines.
+
+Line 1 currently combines available segments such as:
+
+- current directory
+- detected toolchain (`rust`, `node`, `python`, `go`, `bun`, `ruby`, `elixir`)
+- Git branch and working tree indicators
+- command duration when the previous command took at least 2 seconds
+
+Line 2 currently shows:
+
+- local time prefixed with `at`
+- the prompt character `❯` (green on success, red on failure)
+
+When the first line would overflow the terminal width, the directory segment is truncated first and trailing segments are dropped after that.
+
+## Installation
+
+Requirements:
+
+- macOS
+- `zsh`
+- Rust toolchain from [rustup](https://www.rust-lang.org/tools/install)
+- the repository pins `nightly` in `rust-toolchain.toml`
+- optional: [Task](https://taskfile.dev/installation/) and [Lefthook](https://github.com/evilmartians/lefthook)
+
+Build locally:
+
+```bash
+task build
+```
+
+Or run directly during development:
+
+```bash
+cargo run -p capsule-cli -- --help
+```
+
+To install the binary into Cargo's bin directory:
+
+```bash
+cargo install --path crates/cli --locked
+```
+
+## zsh Setup
+
+Add this to `.zshrc`:
+
+```zsh
+eval "$(capsule init zsh)"
+```
+
+What the generated script does:
+
+- creates a random session ID per shell session
+- starts `capsule connect` as a coprocess relay
+- sends prompt render requests from `precmd`
+- tracks command duration from `preexec`
+- falls back to `%~ %# ` if the coprocess is unavailable
+
+The daemon is expected to use `$TMPDIR/capsule.sock`. When `CAPSULE_LOG` is set, daemon logs are written to `$TMPDIR/capsule.log`.
+
+## CLI
+
+```bash
+capsule --help
+capsule daemon
+capsule connect
+capsule init zsh
+```
+
+`capsule init zsh` is the only shell integration exposed today.
+
+## Development
+
+Use Task as the default developer interface:
 
 ```bash
 task
@@ -20,45 +114,25 @@ task fmt
 task check
 ```
 
-After installing Lefthook, enable hooks:
+Cargo equivalents:
+
+```bash
+cargo build --workspace --locked
+cargo test --workspace --all-targets --all-features --locked
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+```
+
+To enable git hooks after installing Lefthook:
 
 ```bash
 lefthook install
 ```
 
-Rust-native equivalents (same nightly toolchain as `rust-toolchain.toml`):
+## Repository Layout
 
-```bash
-cargo build
-cargo test
-cargo fmt --all -- --check   # uses nightly rustfmt + rustfmt.toml
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-```
-
-## Initial Customization
-
-Before treating this as a real project, update the repository-specific parts:
-
-1. Run template initialization from the repository root. This rewrites template placeholders, removes the template-only README section, deletes `.taskfiles/`, and creates a local commit.
-
-```bash
-task -t .taskfiles/template.yml init
-```
-
-2. Replace [`src/main.rs`](src/main.rs) and any starter code with your actual application.
-3. Rewrite this README with your project's purpose, setup, development workflow, and release information.
-4. Review [`AGENTS.md`](AGENTS.md) and [`docs/`](docs/) and keep only the rules and guidance you want in this repository.
-5. Run `task check` before your first project-specific commit (requires Lefthook on PATH for the `install:lefthook` dependency, or run `task fmt:check`, `task lint`, `task test`, `task doc`, and `task build` individually).
-
-## Suggested README Sections
-
-When you rewrite this file, include only the sections your project actually needs, for example:
-
-- Project overview
-- Requirements
-- Setup
-- Local development commands
-- Testing
-- Deployment or release process
-- Repository layout
-- Links to deeper docs if needed
+- `crates/cli`: CLI entrypoint and integration tests
+- `crates/core`: daemon, init script generation, prompt modules, rendering
+- `crates/protocol`: wire protocol, message codec, netstring framing
+- `docs/architecture.md`: architecture baseline and constraints
+- `docs/tooling.md`: build, lint, hook, and CI policy

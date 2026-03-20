@@ -28,10 +28,11 @@ use tokio::{
 use crate::{
     module::{
         CharacterModule, CmdDurationModule, DirectoryModule, GitModule, GitProvider, Module,
-        RenderContext, StatusModule, TimeModule, ToolchainModule,
+        RenderContext, TimeModule, ToolchainModule,
     },
     render::{
-        PromptLines, compose,
+        PromptLines, compose_segments,
+        segment::{Connector, Icon, Segment},
         style::{Color, Style},
     },
 };
@@ -67,7 +68,6 @@ struct FastOutputs {
     toolchain: Option<String>,
     cmd_duration: Option<String>,
     time: Option<String>,
-    status: Option<String>,
     character: Option<String>,
     /// Carried forward for `compose_prompt()` to style the character module
     /// output (green on success, red on error).
@@ -385,7 +385,6 @@ fn run_fast_modules(ctx: &RenderContext<'_>) -> FastOutputs {
         toolchain: ToolchainModule::new().render(ctx).map(|o| o.content),
         cmd_duration: CmdDurationModule::new().render(ctx).map(|o| o.content),
         time: TimeModule::new().render(ctx).map(|o| o.content),
-        status: StatusModule::new().render(ctx).map(|o| o.content),
         character: CharacterModule::new().render(ctx).map(|o| o.content),
         last_exit_code: ctx.last_exit_code,
     }
@@ -402,48 +401,107 @@ fn run_slow_modules<G: GitProvider>(cwd: &Path, provider: G) -> SlowOutput {
 // Prompt composition
 // ---------------------------------------------------------------------------
 
-/// Apply a style to an optional module output.
-fn styled(value: Option<&str>, style: Style) -> Option<String> {
-    value.map(|s| style.paint(s))
+/// Nerd Font icon for a toolchain name.
+fn toolchain_icon(name: &str) -> Option<&'static str> {
+    match name {
+        "rust" => Some("\u{e7a8}"),   //
+        "node" => Some("\u{e718}"),   //
+        "go" => Some("\u{e627}"),     //
+        "python" => Some("\u{e73c}"), //
+        "ruby" => Some("\u{e23e}"),   //
+        "bun" => Some("\u{e79e}"),    //
+        "elixir" => Some("\u{e62d}"), //
+        _ => None,
+    }
 }
 
-/// Prompt layout:
-/// - Info line (left1):  `[directory] [git]  [toolchain] [cmd_duration] [time]`
-/// - Input line (left2): `[status] [character]`
+const CONNECTOR_STYLE: Style = Style::new();
+const MUTED: Style = Style::new().fg(Color::BrightBlack);
+const TIME_STYLE: Style = Style::new().fg(Color::Yellow);
+
+const fn connector(word: &'static str) -> Connector {
+    Connector {
+        word,
+        style: CONNECTOR_STYLE,
+    }
+}
+
+const fn icon(glyph: &'static str, style: Style) -> Icon {
+    Icon { glyph, style }
+}
+
+/// Prompt layout (Starship-compatible):
+/// - Info line (left1):  `[directory] on [git] via [toolchain] [cmd_duration]`
+/// - Input line (left2): `at [time] [character]`
 fn compose_prompt(fast: &FastOutputs, slow: Option<&SlowOutput>, cols: usize) -> PromptLines {
-    let dir_styled = styled(
-        fast.directory.as_deref(),
-        Style::new().fg(Color::Cyan).bold(),
-    );
+    // -- Line 1: info line --
+    let mut line1: Vec<Segment> = Vec::with_capacity(4);
+
+    if let Some(ref dir) = fast.directory {
+        line1.push(Segment {
+            content: dir.clone(),
+            connector: None,
+            icon: None,
+            content_style: Some(Style::new().fg(Color::Cyan).bold()),
+        });
+    }
+
     // Git output is already styled internally by the git module.
-    let git_ref = slow.and_then(|s| s.git.as_deref());
+    if let Some(git) = slow.and_then(|s| s.git.as_deref()) {
+        line1.push(Segment {
+            content: git.to_owned(),
+            connector: Some(connector("on")),
+            icon: Some(icon("\u{e0a0}", Style::new().fg(Color::Magenta))),
+            content_style: None, // pre-styled
+        });
+    }
 
-    let dir_ref = dir_styled.as_deref();
-    let info_left: Vec<&str> = [dir_ref, git_ref].into_iter().flatten().collect();
+    if let Some(ref tc) = fast.toolchain {
+        let icon = toolchain_icon(tc).map(|glyph| icon(glyph, MUTED));
+        line1.push(Segment {
+            content: tc.clone(),
+            connector: Some(connector("via")),
+            icon,
+            content_style: Some(MUTED),
+        });
+    }
 
-    let toolchain_styled = styled(fast.toolchain.as_deref(), Style::new().dimmed());
-    let duration_styled = styled(fast.cmd_duration.as_deref(), Style::new().fg(Color::Yellow));
-    let time_styled = styled(fast.time.as_deref(), Style::new().dimmed());
+    if let Some(ref dur) = fast.cmd_duration {
+        line1.push(Segment {
+            content: dur.clone(),
+            connector: None,
+            icon: None,
+            content_style: Some(Style::new().fg(Color::Yellow)),
+        });
+    }
 
-    let info_right_owned: Vec<String> = [toolchain_styled, duration_styled, time_styled]
-        .into_iter()
-        .flatten()
-        .collect();
-    let info_right: Vec<&str> = info_right_owned.iter().map(String::as_str).collect();
+    // -- Line 2: input line --
+    let mut line2: Vec<Segment> = Vec::with_capacity(2);
 
-    let char_style = if fast.last_exit_code == 0 {
-        Style::new().fg(Color::Green)
-    } else {
-        Style::new().fg(Color::Red)
-    };
-    let status_styled = styled(fast.status.as_deref(), Style::new().fg(Color::Red).bold());
-    let char_styled = styled(fast.character.as_deref(), char_style);
+    if let Some(ref time) = fast.time {
+        line2.push(Segment {
+            content: time.clone(),
+            connector: Some(connector("at")),
+            icon: None,
+            content_style: Some(TIME_STYLE),
+        });
+    }
 
-    let input_left_owned: Vec<String> =
-        [status_styled, char_styled].into_iter().flatten().collect();
-    let input_left: Vec<&str> = input_left_owned.iter().map(String::as_str).collect();
+    if let Some(ref ch) = fast.character {
+        let char_style = if fast.last_exit_code == 0 {
+            Style::new().fg(Color::Green)
+        } else {
+            Style::new().fg(Color::Red)
+        };
+        line2.push(Segment {
+            content: ch.clone(),
+            connector: None,
+            icon: None,
+            content_style: Some(char_style),
+        });
+    }
 
-    compose(&info_left, &info_right, &input_left, cols)
+    compose_segments(&line1, &line2, cols)
 }
 
 // ---------------------------------------------------------------------------
@@ -484,7 +542,6 @@ mod tests {
             toolchain: None,
             cmd_duration: None,
             time: None,
-            status: None,
             character: Some("\u{276f}".to_owned()),
             last_exit_code: 0,
         }
@@ -501,6 +558,18 @@ mod tests {
             duration_ms: None,
             keymap: "main".to_owned(),
         }
+    }
+
+    fn contains_ansi_code(line: &str, code: &str) -> bool {
+        line.contains(code)
+    }
+
+    fn contains_bright_black_ansi(line: &str) -> bool {
+        contains_ansi_code(line, "\x1b[90m")
+    }
+
+    fn contains_yellow_ansi(line: &str) -> bool {
+        contains_ansi_code(line, "\x1b[33m")
     }
 
     struct TestHarness {
@@ -574,31 +643,46 @@ mod tests {
     #[test]
     fn test_daemon_compose_prompt_fast_only() {
         let fast = FastOutputs {
-            time: Some("14:30".to_owned()),
+            time: Some("14:30:45".to_owned()),
             ..make_fast_outputs()
         };
-        let lines = compose_prompt(&fast, None, 40);
+        let lines = compose_prompt(&fast, None, 80);
+        // Line 1: directory only (no git, no toolchain)
         assert!(lines.left1.contains("/tmp"), "left1: {}", lines.left1);
-        assert!(lines.left1.contains("14:30"), "left1: {}", lines.left1);
-        assert!(lines.left2.contains('\u{276f}'), "left2: {}", lines.left2);
+        // Line 2: "at 14:30:45 ❯"
+        assert!(
+            lines.left2.contains("at"),
+            "left2 should have 'at': {}",
+            lines.left2
+        );
+        assert!(
+            lines.left2.contains("14:30:45"),
+            "left2 should have time: {}",
+            lines.left2
+        );
+        assert!(
+            lines.left2.contains('\u{276f}'),
+            "left2 should have character: {}",
+            lines.left2
+        );
     }
 
     #[test]
     fn test_daemon_compose_prompt_with_slow() {
         let fast = make_fast_outputs();
         let slow = SlowOutput {
-            git: Some("main +2".to_owned()),
+            git: Some("main".to_owned()),
         };
-        let lines = compose_prompt(&fast, Some(&slow), 40);
+        let lines = compose_prompt(&fast, Some(&slow), 80);
         assert!(lines.left1.contains("/tmp"), "left1: {}", lines.left1);
         assert!(
-            lines.left1.contains("main"),
-            "left1 should contain branch: {}",
+            lines.left1.contains("on"),
+            "left1 should contain 'on' connector: {}",
             lines.left1
         );
         assert!(
-            lines.left1.contains("+2"),
-            "left1 should contain staged: {}",
+            lines.left1.contains("main"),
+            "left1 should contain branch: {}",
             lines.left1
         );
     }
@@ -607,15 +691,15 @@ mod tests {
     fn test_daemon_compose_prompt_slow_none_git() {
         let fast = make_fast_outputs();
         let slow = SlowOutput { git: None };
-        let without_slow = compose_prompt(&fast, None, 40);
-        let with_none_git = compose_prompt(&fast, Some(&slow), 40);
+        let without_slow = compose_prompt(&fast, None, 80);
+        let with_none_git = compose_prompt(&fast, Some(&slow), 80);
         assert_eq!(without_slow, with_none_git);
     }
 
     #[test]
     fn test_daemon_compose_prompt_styled_directory() {
         let fast = make_fast_outputs();
-        let lines = compose_prompt(&fast, None, 40);
+        let lines = compose_prompt(&fast, None, 80);
         assert!(
             lines.left1.contains("\x1b[1;36m"),
             "directory should be bold cyan: {}",
@@ -626,7 +710,7 @@ mod tests {
     #[test]
     fn test_daemon_compose_prompt_styled_character_success() {
         let fast = make_fast_outputs();
-        let lines = compose_prompt(&fast, None, 40);
+        let lines = compose_prompt(&fast, None, 80);
         assert!(
             lines.left2.contains("\x1b[32m"),
             "character should be green on success: {}",
@@ -640,10 +724,104 @@ mod tests {
             last_exit_code: 1,
             ..make_fast_outputs()
         };
-        let lines = compose_prompt(&fast, None, 40);
+        let lines = compose_prompt(&fast, None, 80);
         assert!(
             lines.left2.contains("\x1b[31m"),
             "character should be red on error: {}",
+            lines.left2
+        );
+    }
+
+    #[test]
+    fn test_daemon_compose_prompt_with_toolchain() {
+        let fast = FastOutputs {
+            toolchain: Some("rust".to_owned()),
+            ..make_fast_outputs()
+        };
+        let lines = compose_prompt(&fast, None, 80);
+        assert!(
+            lines.left1.contains("via"),
+            "left1 should contain 'via' connector: {}",
+            lines.left1
+        );
+        assert!(
+            lines.left1.contains("rust"),
+            "left1 should contain toolchain: {}",
+            lines.left1
+        );
+    }
+
+    #[test]
+    fn test_daemon_compose_prompt_time_on_line2() {
+        let fast = FastOutputs {
+            time: Some("14:30:45".to_owned()),
+            ..make_fast_outputs()
+        };
+        let lines = compose_prompt(&fast, None, 80);
+        // Time should NOT be on line 1
+        assert!(
+            !lines.left1.contains("14:30:45"),
+            "time should not be on line 1: {}",
+            lines.left1
+        );
+        // Time should be on line 2 with "at" connector
+        assert!(
+            lines.left2.contains("14:30:45"),
+            "time should be on line 2: {}",
+            lines.left2
+        );
+        assert!(
+            contains_yellow_ansi(&lines.left2),
+            "time should use yellow styling: {}",
+            lines.left2
+        );
+    }
+
+    #[test]
+    fn test_daemon_compose_prompt_does_not_dim_connectors() {
+        let fast = FastOutputs {
+            toolchain: Some("rust".to_owned()),
+            time: Some("14:30:45".to_owned()),
+            ..make_fast_outputs()
+        };
+        let slow = SlowOutput {
+            git: Some("main".to_owned()),
+        };
+        let lines = compose_prompt(&fast, Some(&slow), 80);
+        assert!(
+            lines.left1.contains("on"),
+            "git connector should be present: {}",
+            lines.left1
+        );
+        assert!(
+            lines.left1.contains("via"),
+            "toolchain connector should be present: {}",
+            lines.left1
+        );
+        assert!(
+            lines.left2.contains("at"),
+            "time connector should be present: {}",
+            lines.left2
+        );
+        assert!(
+            !lines.left1.contains("\x1b[90mon\x1b[0m")
+                && !lines.left1.contains("\x1b[90mvia\x1b[0m"),
+            "connectors should not use bright black: {}",
+            lines.left1
+        );
+        assert!(
+            !lines.left2.contains("\x1b[90mat\x1b[0m"),
+            "time connector should not use bright black: {}",
+            lines.left2
+        );
+        assert!(
+            contains_bright_black_ansi(&lines.left1),
+            "toolchain content/icon should still use bright black: {}",
+            lines.left1
+        );
+        assert!(
+            contains_yellow_ansi(&lines.left2),
+            "time content should use yellow styling: {}",
             lines.left2
         );
     }

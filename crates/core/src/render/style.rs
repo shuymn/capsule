@@ -20,6 +20,8 @@ pub enum Color {
     Magenta,
     /// Cyan (ANSI 36).
     Cyan,
+    /// Bright black / gray (ANSI 90).
+    BrightBlack,
 }
 
 /// A text style with optional foreground color, bold, and dimmed attributes.
@@ -103,6 +105,7 @@ impl Color {
             Self::Blue => 34,
             Self::Magenta => 35,
             Self::Cyan => 36,
+            Self::BrightBlack => 90,
         }
     }
 }
@@ -193,6 +196,16 @@ mod tests {
             display_width(&painted),
             5,
             "dimmed text should have same display width as plain text"
+        );
+    }
+
+    #[test]
+    fn test_render_style_bright_black() {
+        let style = Style::new().fg(Color::BrightBlack);
+        let painted = style.paint("hello");
+        assert!(
+            painted.contains("\x1b[90m"),
+            "should contain bright black ANSI code: {painted}"
         );
     }
 }

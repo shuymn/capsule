@@ -2,11 +2,11 @@
 
 use super::{Module, ModuleOutput, ModuleSpeed, RenderContext};
 
-/// Displays the current local time in `HH:MM` format.
+/// Displays the current local time in `HH:MM:SS` format.
 #[derive(Debug)]
 #[allow(clippy::module_name_repetitions)]
 pub struct TimeModule {
-    time_fn: fn() -> Option<(u8, u8)>,
+    time_fn: fn() -> Option<(u8, u8, u8)>,
 }
 
 impl Default for TimeModule {
@@ -25,7 +25,7 @@ impl TimeModule {
     }
 
     #[cfg(test)]
-    fn with_time_fn(time_fn: fn() -> Option<(u8, u8)>) -> Self {
+    fn with_time_fn(time_fn: fn() -> Option<(u8, u8, u8)>) -> Self {
         Self { time_fn }
     }
 }
@@ -40,16 +40,16 @@ impl Module for TimeModule {
     }
 
     fn render(&self, _ctx: &RenderContext<'_>) -> Option<ModuleOutput> {
-        let (hour, minute) = (self.time_fn)()?;
+        let (hour, minute, second) = (self.time_fn)()?;
         Some(ModuleOutput {
-            content: format!("{hour:02}:{minute:02}"),
+            content: format!("{hour:02}:{minute:02}:{second:02}"),
         })
     }
 }
 
-fn system_local_time() -> Option<(u8, u8)> {
+fn system_local_time() -> Option<(u8, u8, u8)> {
     let now = ::time::OffsetDateTime::now_local().ok()?;
-    Some((now.hour(), now.minute()))
+    Some((now.hour(), now.minute(), now.second()))
 }
 
 #[cfg(test)]
@@ -72,30 +72,30 @@ mod tests {
     #[test]
     #[allow(clippy::unnecessary_wraps)]
     fn test_module_formats_time() {
-        fn fixed() -> Option<(u8, u8)> {
-            Some((14, 5))
+        fn fixed() -> Option<(u8, u8, u8)> {
+            Some((14, 5, 9))
         }
         let module = TimeModule::with_time_fn(fixed);
         let ctx = make_ctx();
         let output = module.render(&ctx);
-        assert_eq!(output.map(|o| o.content), Some("14:05".to_owned()));
+        assert_eq!(output.map(|o| o.content), Some("14:05:09".to_owned()));
     }
 
     #[test]
     #[allow(clippy::unnecessary_wraps)]
     fn test_module_midnight() {
-        fn midnight() -> Option<(u8, u8)> {
-            Some((0, 0))
+        fn midnight() -> Option<(u8, u8, u8)> {
+            Some((0, 0, 0))
         }
         let module = TimeModule::with_time_fn(midnight);
         let ctx = make_ctx();
         let output = module.render(&ctx);
-        assert_eq!(output.map(|o| o.content), Some("00:00".to_owned()));
+        assert_eq!(output.map(|o| o.content), Some("00:00:00".to_owned()));
     }
 
     #[test]
     fn test_module_time_unavailable_returns_none() {
-        fn unavailable() -> Option<(u8, u8)> {
+        fn unavailable() -> Option<(u8, u8, u8)> {
             None
         }
         let module = TimeModule::with_time_fn(unavailable);

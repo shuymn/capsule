@@ -182,39 +182,36 @@ fn format_git_output(status: &GitStatus) -> String {
         out.push_str(&style.paint(branch));
     }
 
-    push_count(&mut out, '+', status.staged, Style::new().fg(Color::Green));
-    push_count(
-        &mut out,
-        '!',
-        status.modified,
-        Style::new().fg(Color::Yellow),
-    );
-    push_count(
-        &mut out,
-        '?',
-        status.untracked,
-        Style::new().fg(Color::Yellow),
-    );
-    push_count(
-        &mut out,
-        '~',
-        status.conflicted,
-        Style::new().fg(Color::Red),
-    );
-    push_count(&mut out, '⇡', status.ahead, Style::new().fg(Color::Cyan));
-    push_count(&mut out, '⇣', status.behind, Style::new().fg(Color::Cyan));
+    let mut indicators = String::new();
+    if status.staged > 0 {
+        indicators.push('+');
+    }
+    if status.modified > 0 {
+        indicators.push('!');
+    }
+    if status.untracked > 0 {
+        indicators.push('?');
+    }
+    if status.conflicted > 0 {
+        indicators.push('~');
+    }
+    if status.ahead > 0 {
+        indicators.push('⇡');
+    }
+    if status.behind > 0 {
+        indicators.push('⇣');
+    }
 
-    out
-}
-
-fn push_count(out: &mut String, prefix: char, count: usize, style: Style) {
-    if count > 0 {
+    if !indicators.is_empty() {
         if !out.is_empty() {
             out.push(' ');
         }
-        let fragment = format!("{prefix}{count}");
-        out.push_str(&style.paint(&fragment));
+        let bracket_style = Style::new().fg(Color::Red).bold();
+        let bracketed = format!("[{indicators}]");
+        out.push_str(&bracket_style.paint(&bracketed));
     }
+
+    out
 }
 
 #[cfg(test)]
@@ -299,10 +296,16 @@ mod tests {
             output.contains("\x1b[1;35m"),
             "branch should be bold magenta"
         );
+        // No indicators → display width is just the branch name
+        assert_eq!(
+            display_width(&output),
+            display_width("main"),
+            "no extra content when no status"
+        );
     }
 
     #[test]
-    fn test_format_git_output_full() {
+    fn test_format_git_output_bracket_indicators() {
         let status = GitStatus {
             branch: Some("main".to_owned()),
             staged: 2,
@@ -313,13 +316,17 @@ mod tests {
             behind: 0,
         };
         let output = format_git_output(&status);
-        // "main +2 !1 ?3 ⇡1" = 16 visible chars
-        assert_eq!(display_width(&output), 16, "visible width: {output:?}");
+        // "main [+!?⇡]" = 4 + 1 + 6 = 11 visible chars
+        assert_eq!(display_width(&output), 11, "visible width: {output:?}");
         assert!(output.contains("main"), "should contain branch");
-        assert!(output.contains("+2"), "should contain staged count");
-        assert!(output.contains("!1"), "should contain modified count");
-        assert!(output.contains("?3"), "should contain untracked count");
-        assert!(output.contains("⇡1"), "should contain ahead count");
+        assert!(
+            output.contains("[+!?⇡]"),
+            "should contain bracketed indicators: {output:?}"
+        );
+        assert!(
+            output.contains("\x1b[1;31m"),
+            "brackets should be bold red: {output:?}"
+        );
     }
 
     #[test]
@@ -330,11 +337,15 @@ mod tests {
             ..GitStatus::default()
         };
         let output = format_git_output(&status);
-        assert_eq!(display_width(&output), 2, "visible width: {output:?}");
-        assert!(output.contains("+1"), "should contain staged count");
+        // "[+]" = 3 visible chars
+        assert_eq!(display_width(&output), 3, "visible width: {output:?}");
         assert!(
-            output.contains("\x1b[32m"),
-            "staged should be green: {output:?}"
+            output.contains("[+]"),
+            "should contain bracketed staged indicator: {output:?}"
+        );
+        assert!(
+            output.contains("\x1b[1;31m"),
+            "brackets should be bold red: {output:?}"
         );
     }
 
@@ -382,8 +393,8 @@ mod tests {
         assert!(output.is_some());
         let content = output.map(|o| o.content).unwrap_or_default();
         assert!(
-            content.contains("+2"),
-            "expected staged count in: {content}"
+            content.contains("[+]"),
+            "expected bracketed staged indicator in: {content}"
         );
     }
 

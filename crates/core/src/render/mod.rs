@@ -3,12 +3,14 @@
 //! The pipeline has three stages:
 //! - **Style** ([`style`]): ANSI color codes wrapped in zsh `%{..%}` escapes
 //! - **Layout** ([`layout`]): display width calculation and truncation
-//! - **Composition** ([`compose`]): arranging segments into right-padded prompt lines
+//! - **Composition**: arranging segments into left-aligned prompt lines
 
 pub mod layout;
+pub mod segment;
 pub mod style;
 
 pub use layout::{display_width, truncate};
+pub(crate) use segment::Segment;
 pub use style::{Color, Style};
 
 /// Composed prompt output ready for the wire protocol.
@@ -20,34 +22,27 @@ pub struct PromptLines {
     pub left2: String,
 }
 
-/// Compose module output segments into prompt lines.
+/// Compose [`Segment`]s into prompt lines with left-aligned layout.
 ///
-/// `info_left` and `info_right` form the info line (line 1). Right segments
-/// are right-aligned with space padding. When total width exceeds `cols`,
-/// the first left segment (directory) is truncated before right segments
-/// are dropped.
-///
-/// `input_left` segments form the input line (line 2), joined with spaces.
+/// All segments are rendered and joined left-to-right with spaces.
+/// When total width exceeds `cols`, the first segment on line 1
+/// (directory) is truncated. If still too wide, rightmost segments
+/// are dropped one at a time.
 #[must_use]
-pub fn compose(
-    info_left: &[&str],
-    info_right: &[&str],
-    input_left: &[&str],
-    cols: usize,
-) -> PromptLines {
+pub(crate) fn compose_segments(line1: &[Segment], line2: &[Segment], cols: usize) -> PromptLines {
     PromptLines {
-        left1: compose_info_line(info_left, info_right, cols),
-        left2: join_non_empty(input_left),
+        left1: compose_line(line1, cols),
+        left2: compose_line(line2, cols),
     }
 }
 
-// ---------------------------------------------------------------------------
-// Internal
-// ---------------------------------------------------------------------------
+fn render_segments(segments: &[Segment]) -> Vec<String> {
+    segments.iter().map(Segment::render).collect()
+}
 
-fn join_non_empty(parts: &[&str]) -> String {
+fn join_rendered(parts: &[String]) -> String {
     let mut out = String::new();
-    for part in parts.iter().copied().filter(|s| !s.is_empty()) {
+    for part in parts.iter().filter(|s| !s.is_empty()) {
         if !out.is_empty() {
             out.push(' ');
         }
@@ -56,224 +51,210 @@ fn join_non_empty(parts: &[&str]) -> String {
     out
 }
 
-fn compose_info_line(left: &[&str], right: &[&str], cols: usize) -> String {
-    if cols == 0 {
+fn compose_line(segments: &[Segment], cols: usize) -> String {
+    if cols == 0 || segments.is_empty() {
         return String::new();
     }
 
-    let left_joined = join_non_empty(left);
-    let right_joined = join_non_empty(right);
-    let left_w = display_width(&left_joined);
-    let right_w = display_width(&right_joined);
+    let rendered = render_segments(segments);
+    let joined = join_rendered(&rendered);
+    let width = display_width(&joined);
 
-    // Case 1: everything fits
-    if fits(left_w, right_w, cols) {
-        return padded(&left_joined, left_w, &right_joined, right_w, cols);
+    if width <= cols {
+        return joined;
     }
 
-    // Case 2: truncate directory (first left segment), keep all right
-    if let Some(line) = try_truncate_directory(left, &right_joined, right_w, cols) {
+    // Try truncating the first rendered segment (directory)
+    if let Some(line) = try_truncate_first_segment(&rendered, cols) {
         return line;
     }
 
-    // Case 3: drop right segments from the end, one at a time
-    for drop in 1..=right.len() {
-        let remaining_right = &right[..right.len() - drop];
-        let rj = join_non_empty(remaining_right);
-        let rw = display_width(&rj);
+    // Drop segments from the end, one at a time
+    for drop_count in 1..rendered.len() {
+        let remaining = &rendered[..rendered.len() - drop_count];
+        let rj = join_rendered(remaining);
 
-        if fits(left_w, rw, cols) {
-            return padded(&left_joined, left_w, &rj, rw, cols);
+        if display_width(&rj) <= cols {
+            return rj;
         }
 
-        // Also try truncating directory with fewer right segments
-        if let Some(line) = try_truncate_directory(left, &rj, rw, cols) {
+        if let Some(line) = try_truncate_first_segment(remaining, cols) {
             return line;
         }
     }
 
-    // Case 4: nothing fits — truncate left to cols
-    truncate(&left_joined, cols)
+    // Last resort: truncate everything to cols
+    truncate(&joined, cols)
 }
 
-fn fits(left_w: usize, right_w: usize, cols: usize) -> bool {
-    let gap = usize::from(left_w > 0 && right_w > 0);
-    left_w + gap + right_w <= cols
-}
-
-fn padded(left: &str, left_w: usize, right: &str, right_w: usize, cols: usize) -> String {
-    let padding = cols.saturating_sub(left_w + right_w);
-    let mut out = String::with_capacity(left.len() + padding + right.len());
-    out.push_str(left);
-    for _ in 0..padding {
-        out.push(' ');
-    }
-    out.push_str(right);
-    out
-}
-
-fn try_truncate_directory(
-    left: &[&str],
-    right_joined: &str,
-    right_w: usize,
-    cols: usize,
-) -> Option<String> {
-    if left.is_empty() {
+fn try_truncate_first_segment(rendered: &[String], cols: usize) -> Option<String> {
+    if rendered.is_empty() {
         return None;
     }
 
-    let other_left = join_non_empty(&left[1..]);
-    let other_w = display_width(&other_left);
+    let rest_joined = join_rendered(&rendered[1..]);
+    let rest_w = display_width(&rest_joined);
 
-    // Overhead: other left segments + separator (if any) + min gap + right
-    let sep = usize::from(other_w > 0);
-    let gap = usize::from(right_w > 0);
-    let overhead = other_w + sep + gap + right_w;
+    let sep = usize::from(!rest_joined.is_empty());
+    let overhead = rest_w + sep;
 
     if overhead >= cols {
         return None;
     }
 
     let available = cols - overhead;
-    let dir_truncated = truncate(left[0], available);
+    let dir_truncated = truncate(&rendered[0], available);
 
-    let mut new_left = dir_truncated;
-    if !other_left.is_empty() {
-        new_left.push(' ');
-        new_left.push_str(&other_left);
+    let mut out = dir_truncated;
+    if !rest_joined.is_empty() {
+        out.push(' ');
+        out.push_str(&rest_joined);
     }
 
-    let new_left_w = display_width(&new_left);
-    Some(padded(&new_left, new_left_w, right_joined, right_w, cols))
+    Some(out)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{segment::Connector, *};
 
-    // -- compose_info_line: right-alignment with padding --
+    fn seg(content: &str) -> Segment {
+        Segment {
+            content: content.to_owned(),
+            connector: None,
+            icon: None,
+            content_style: None,
+        }
+    }
 
-    #[test]
-    fn test_render_compose_fits_with_padding() {
-        let line = compose_info_line(&["~/proj", "main"], &["rust", "14:30"], 40);
-        assert_eq!(display_width(&line), 40);
-        assert!(line.starts_with("~/proj main"));
-        assert!(line.ends_with("rust 14:30"));
+    fn seg_with_connector(content: &str, word: &'static str) -> Segment {
+        Segment {
+            content: content.to_owned(),
+            connector: Some(Connector {
+                word,
+                style: Style::new().dimmed(),
+            }),
+            icon: None,
+            content_style: None,
+        }
     }
 
     #[test]
-    fn test_render_compose_right_aligned() {
-        let line = compose_info_line(&["left"], &["right"], 20);
-        assert_eq!(display_width(&line), 20);
-        assert!(line.starts_with("left"));
-        assert!(line.ends_with("right"));
-    }
-
-    #[test]
-    fn test_render_compose_exact_fit() {
-        // "ab" (2) + " " (1) + "cd" (2) = 5
-        let line = compose_info_line(&["ab"], &["cd"], 5);
-        assert_eq!(line, "ab cd");
-    }
-
-    // -- compose_info_line: directory truncation --
-
-    #[test]
-    fn test_render_compose_truncates_directory() {
-        let line = compose_info_line(&["very/long/directory/path/here"], &["right"], 15);
-        assert!(display_width(&line) <= 15);
-        assert!(
-            line.contains('\u{2026}'),
-            "should contain ellipsis: {line:?}"
+    fn test_compose_segments_basic() {
+        let result = compose_segments(
+            &[seg("dir"), seg_with_connector("main", "on")],
+            &[seg("❯")],
+            80,
         );
         assert!(
-            line.ends_with("right"),
-            "right should be preserved: {line:?}"
+            result.left1.contains("dir"),
+            "should contain dir: {}",
+            result.left1
         );
-    }
-
-    #[test]
-    fn test_render_compose_truncates_directory_preserves_other_left() {
-        let line = compose_info_line(&["very/long/directory/path", "main"], &["rust"], 20);
-        assert!(display_width(&line) <= 20);
         assert!(
-            line.contains("main"),
-            "other left segments preserved: {line:?}"
+            result.left1.contains("on"),
+            "should contain connector: {}",
+            result.left1
         );
-        assert!(line.ends_with("rust"), "right preserved: {line:?}");
-    }
-
-    // -- compose_info_line: dropping right segments --
-
-    #[test]
-    fn test_render_compose_drops_right_segments() {
-        // Right is too wide for cols, left is short
-        let line = compose_info_line(&["dir"], &["wide-seg-a", "wide-seg-b"], 15);
-        assert!(display_width(&line) <= 15);
-        // At least directory should be present
         assert!(
-            line.contains("dir"),
-            "directory should be preserved: {line:?}"
+            result.left1.contains("main"),
+            "should contain branch: {}",
+            result.left1
         );
-    }
-
-    // -- compose_info_line: edge cases --
-
-    #[test]
-    fn test_render_compose_empty_right() {
-        let line = compose_info_line(&["hello"], &[], 20);
-        assert_eq!(display_width(&line), 20);
-        assert!(line.starts_with("hello"));
-    }
-
-    #[test]
-    fn test_render_compose_empty_left() {
-        let line = compose_info_line(&[], &["right"], 20);
-        assert_eq!(display_width(&line), 20);
-        assert!(line.ends_with("right"));
-    }
-
-    #[test]
-    fn test_render_compose_both_empty() {
-        let line = compose_info_line(&[], &[], 20);
-        assert_eq!(display_width(&line), 20);
-    }
-
-    #[test]
-    fn test_render_compose_zero_cols() {
-        let line = compose_info_line(&["hello"], &["world"], 0);
-        assert_eq!(line, "");
-    }
-
-    // -- compose_info_line: styled content --
-
-    #[test]
-    fn test_render_compose_with_styled_segments() {
-        let styled_left = Style::new().fg(Color::Cyan).paint("~/project");
-        let styled_right = Style::new().fg(Color::Blue).paint("rust");
-
-        let line = compose_info_line(&[&styled_left], &[&styled_right], 30);
-        assert_eq!(display_width(&line), 30);
-    }
-
-    // -- compose: full prompt --
-
-    #[test]
-    fn test_render_compose_full_prompt() {
-        let result = compose(&["~/proj", "main"], &["rust", "14:30"], &["❯"], 40);
-        assert_eq!(display_width(&result.left1), 40);
         assert_eq!(result.left2, "❯");
     }
 
     #[test]
-    fn test_render_compose_input_line_joins_segments() {
-        let result = compose(&["dir"], &[], &["✗", "130"], 40);
-        assert_eq!(result.left2, "✗ 130");
+    fn test_compose_segments_left_aligned() {
+        let result = compose_segments(&[seg("dir"), seg("rust")], &[seg("❯")], 80);
+        // No right-padding: display width should be less than cols
+        assert!(
+            display_width(&result.left1) < 80,
+            "should not right-pad: width={}, line={}",
+            display_width(&result.left1),
+            result.left1
+        );
+        assert!(result.left1.starts_with("dir"), "left1: {}", result.left1);
     }
 
     #[test]
-    fn test_render_compose_input_line_skips_empty() {
-        let result = compose(&["dir"], &[], &["", "❯", ""], 40);
-        assert_eq!(result.left2, "❯");
+    fn test_compose_segments_truncates_first() {
+        let result = compose_segments(
+            &[seg("very/long/directory/path/here"), seg("git")],
+            &[seg("❯")],
+            15,
+        );
+        assert!(
+            display_width(&result.left1) <= 15,
+            "should fit in cols: width={}, line={}",
+            display_width(&result.left1),
+            result.left1
+        );
+        assert!(
+            result.left1.contains("git"),
+            "should preserve later segments: {}",
+            result.left1
+        );
+    }
+
+    #[test]
+    fn test_compose_segments_drops_rightmost() {
+        let result = compose_segments(
+            &[seg("dir"), seg("segment-aaa"), seg("segment-bbb")],
+            &[seg("❯")],
+            20,
+        );
+        assert!(
+            display_width(&result.left1) <= 20,
+            "should fit: width={}, line={}",
+            display_width(&result.left1),
+            result.left1
+        );
+        // dir (3) + " " (1) + segment-aaa (11) = 15 fits, segment-bbb dropped
+        assert!(
+            result.left1.contains("dir"),
+            "directory preserved: {}",
+            result.left1
+        );
+        assert!(
+            !result.left1.contains("segment-bbb"),
+            "rightmost should be dropped: {}",
+            result.left1
+        );
+    }
+
+    #[test]
+    fn test_compose_segments_zero_cols() {
+        let result = compose_segments(&[seg("hello")], &[seg("❯")], 0);
+        assert_eq!(result.left1, "");
+        assert_eq!(result.left2, "");
+    }
+
+    #[test]
+    fn test_compose_segments_empty() {
+        let result = compose_segments(&[], &[], 80);
+        assert_eq!(result.left1, "");
+        assert_eq!(result.left2, "");
+    }
+
+    #[test]
+    fn test_compose_segments_with_styled_content() {
+        let styled_seg = Segment {
+            content: "project".to_owned(),
+            connector: None,
+            icon: None,
+            content_style: Some(Style::new().fg(Color::Cyan)),
+        };
+        let result = compose_segments(&[styled_seg], &[seg("❯")], 30);
+        assert!(
+            result.left1.contains("project"),
+            "should contain content: {}",
+            result.left1
+        );
+        assert!(
+            result.left1.contains("\x1b[36m"),
+            "should contain cyan ANSI: {}",
+            result.left1
+        );
     }
 }

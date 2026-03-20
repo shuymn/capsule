@@ -166,6 +166,9 @@ _capsule_precmd() {
     fi
     _CAPSULE_CMD_START=""
 
+    # Match Starship's default add_newline behavior.
+    print
+
     # Check coproc health
     if [[ -z "$_CAPSULE_COPROC_PID" ]] || ! command kill -0 "$_CAPSULE_COPROC_PID" 2>/dev/null; then
         _capsule_start_coproc 2>/dev/null || {
@@ -278,6 +281,15 @@ mod tests {
     fn test_init_zsh_sets_prompt() {
         let script = generate();
         assert!(script.contains("PROMPT="), "script should set PROMPT");
+    }
+
+    #[test]
+    fn test_init_zsh_adds_blank_line_before_prompt() {
+        let script = generate();
+        assert!(
+            script.contains("# Match Starship's default add_newline behavior.\n    print"),
+            "script should print a blank line before each prompt"
+        );
     }
 
     #[test]

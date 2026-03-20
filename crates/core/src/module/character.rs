@@ -2,13 +2,13 @@
 
 use super::{Module, ModuleOutput, ModuleSpeed, RenderContext};
 
-/// Prompt character shown on success.
-const SUCCESS_CHAR: &str = "❯";
+/// Prompt character (always `❯`; color varies by exit status in composition).
+const PROMPT_CHAR: &str = "❯";
 
-/// Prompt character shown on failure.
-const ERROR_CHAR: &str = "✗";
-
-/// Displays a prompt character that differs based on the last command's exit status.
+/// Displays the prompt character `❯`.
+///
+/// Always outputs the same character; the composition layer applies
+/// green on success and red on error.
 #[derive(Debug, Default)]
 #[allow(clippy::module_name_repetitions)]
 pub struct CharacterModule;
@@ -30,14 +30,9 @@ impl Module for CharacterModule {
         ModuleSpeed::Fast
     }
 
-    fn render(&self, ctx: &RenderContext<'_>) -> Option<ModuleOutput> {
-        let ch = if ctx.last_exit_code == 0 {
-            SUCCESS_CHAR
-        } else {
-            ERROR_CHAR
-        };
+    fn render(&self, _ctx: &RenderContext<'_>) -> Option<ModuleOutput> {
         Some(ModuleOutput {
-            content: ch.to_owned(),
+            content: PROMPT_CHAR.to_owned(),
         })
     }
 }
@@ -60,25 +55,28 @@ mod tests {
     }
 
     #[test]
-    fn test_module_success_character() {
+    fn test_module_always_outputs_prompt_char() {
         let ctx = make_ctx(0);
         let output = CharacterModule::new().render(&ctx);
         assert_eq!(output.map(|o| o.content), Some("❯".to_owned()));
     }
 
     #[test]
-    fn test_module_error_character() {
+    fn test_module_same_char_on_error() {
         let ctx = make_ctx(1);
         let output = CharacterModule::new().render(&ctx);
-        assert_eq!(output.map(|o| o.content), Some("✗".to_owned()));
+        assert_eq!(output.map(|o| o.content), Some("❯".to_owned()));
     }
 
     #[test]
-    fn test_module_success_and_error_differ() {
+    fn test_module_success_and_error_same_content() {
         let success_ctx = make_ctx(0);
         let error_ctx = make_ctx(1);
         let success = CharacterModule::new().render(&success_ctx);
         let error = CharacterModule::new().render(&error_ctx);
-        assert_ne!(success, error, "success and error outputs must differ");
+        assert_eq!(
+            success, error,
+            "character content should be the same; color is applied by composition"
+        );
     }
 }
