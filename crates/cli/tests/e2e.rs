@@ -3,8 +3,9 @@
 //! Tests the full flow: daemon start → connect → request → response → shutdown.
 
 use std::{
+    io::{BufRead as _, Write as _},
     path::PathBuf,
-    process::{Child, Command},
+    process::{Child, Command, Stdio},
     time::Duration,
 };
 
@@ -244,5 +245,82 @@ async fn test_e2e_structured_logging() -> Result<(), Box<dyn std::error::Error>>
     let log_content = std::fs::read_to_string(&log_path)?;
     assert!(!log_content.is_empty(), "log file should not be empty");
 
+    Ok(())
+}
+
+/// `capsule connect` shall relay wire-format messages between stdin/stdout
+/// and the daemon socket.
+#[tokio::test]
+async fn test_e2e_connect_relay() -> Result<(), Box<dyn std::error::Error>> {
+    let mut daemon = DaemonProcess::start()?;
+
+    let capsule_bin = env!("CARGO_BIN_EXE_capsule");
+    let mut child = Command::new(capsule_bin)
+        .arg("connect")
+        .env("TMPDIR", daemon.tmpdir_path())
+        .env("HOME", daemon.tmpdir_path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    let mut child_stdin = child.stdin.take().ok_or("no stdin")?;
+    let child_stdout = child.stdout.take().ok_or("no stdout")?;
+
+    // Build wire-format Request and write to child's stdin
+    let req = Message::Request(Request {
+        version: PROTOCOL_VERSION,
+        session_id: test_session_id(),
+        generation: 1,
+        cwd: daemon.tmpdir_path().to_string_lossy().into_owned(),
+        cols: 80,
+        last_exit_code: 0,
+        duration_ms: None,
+        keymap: "main".to_owned(),
+    });
+    let mut wire = req.to_wire();
+    wire.push(b'\n');
+    child_stdin.write_all(&wire)?;
+    child_stdin.flush()?;
+
+    // Read response from child's stdout (LF-delimited)
+    let mut reader = std::io::BufReader::new(child_stdout);
+    let mut resp_buf = Vec::new();
+
+    // Use a timeout thread to avoid hanging forever
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        let n = reader.read_until(b'\n', &mut resp_buf);
+        let _ = tx.send((resp_buf, n));
+    });
+
+    let (resp_buf, n) = rx.recv_timeout(Duration::from_secs(5))?;
+    handle.join().map_err(|_panic| "reader thread panicked")?;
+
+    let n = n?;
+    assert!(n > 0, "should receive response bytes");
+
+    // Strip trailing LF and parse
+    let wire_data = if resp_buf.last() == Some(&b'\n') {
+        &resp_buf[..resp_buf.len() - 1]
+    } else {
+        &resp_buf
+    };
+    let response = Message::from_wire(wire_data)?;
+
+    match response {
+        Message::RenderResult(rr) => {
+            assert_eq!(rr.session_id, test_session_id());
+            assert_eq!(rr.generation, 1);
+            assert!(!rr.left1.is_empty(), "left1 should not be empty");
+        }
+        other => return Err(format!("expected RenderResult, got {other:?}").into()),
+    }
+
+    // Close stdin to let connect exit
+    drop(child_stdin);
+    child.wait()?;
+
+    daemon.stop()?;
     Ok(())
 }
