@@ -8,6 +8,7 @@ mod cache;
 mod session;
 
 use std::{
+    os::unix::fs::MetadataExt as _,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -28,12 +29,20 @@ use crate::{
         CharacterModule, CmdDurationModule, DirectoryModule, GitModule, GitProvider, Module,
         RenderContext, StatusModule, TimeModule, ToolchainModule,
     },
-    render::{PromptLines, compose},
+    render::{
+        PromptLines, compose,
+        style::{Color, Style},
+    },
 };
 
 const CACHE_MAX_SIZE: usize = 64;
 const CACHE_TTL: Duration = Duration::from_secs(30);
 const SESSION_TTL: Duration = Duration::from_mins(30);
+
+#[cfg(not(test))]
+const INODE_CHECK_INTERVAL: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const INODE_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Errors during daemon operation.
 #[derive(Debug, thiserror::Error)]
@@ -59,6 +68,9 @@ struct FastOutputs {
     time: Option<String>,
     status: Option<String>,
     character: Option<String>,
+    /// Carried forward for `compose_prompt()` to style the character module
+    /// output (green on success, red on error).
+    last_exit_code: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,24 +121,38 @@ impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
         }
     }
 
-    /// Runs the daemon until `shutdown` resolves.
+    /// Runs the daemon until `shutdown` resolves or the socket file is
+    /// removed/replaced.
     ///
-    /// Removes a stale socket file if present, binds a new listener, and
-    /// accepts connections until the shutdown signal fires. On exit the
-    /// socket file is removed.
+    /// Unconditionally removes any existing socket file, binds a new
+    /// listener, and accepts connections. The caller is expected to
+    /// guarantee exclusivity (e.g. via flock) so that unconditional
+    /// removal is safe.
+    ///
+    /// The accept loop also monitors the socket file's inode every
+    /// a fixed interval. If the file is deleted or replaced,
+    /// the daemon shuts down without removing the (now-foreign) socket.
     ///
     /// # Errors
     ///
-    /// Returns [`DaemonError`] on socket bind failure or if another daemon
-    /// is already listening.
+    /// Returns [`DaemonError`] on socket bind or accept failure.
     pub async fn run(
         self,
         shutdown: impl std::future::Future<Output = ()>,
     ) -> Result<(), DaemonError> {
-        remove_stale_socket(&self.socket_path).await?;
+        // Unconditionally remove any existing socket file.
+        // The caller guarantees exclusivity via flock, so no TOCTOU risk.
+        match std::fs::remove_file(&self.socket_path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(DaemonError::Socket(e)),
+        }
 
         let listener = UnixListener::bind(&self.socket_path)?;
         tracing::info!(socket = %self.socket_path.display(), "daemon listening");
+
+        // Record inode for orphan detection.
+        let original_inode = std::fs::metadata(&self.socket_path)?.ino();
 
         let socket_path = self.socket_path;
         let home_dir = Arc::new(self.home_dir);
@@ -134,6 +160,12 @@ impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
         let state = Arc::new(Mutex::new(SharedState::new()));
 
         tokio::pin!(shutdown);
+
+        let mut inode_check = tokio::time::interval(INODE_CHECK_INTERVAL);
+        // The first tick fires immediately; consume it.
+        inode_check.tick().await;
+
+        let mut inode_mismatch = false;
 
         loop {
             tokio::select! {
@@ -144,35 +176,35 @@ impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
                     let conn_home = Arc::clone(&home_dir);
                     let conn_git = git_provider.clone();
                     tokio::spawn(async move {
-                        let _ = handle_connection(stream, conn_state, conn_home, conn_git).await;
+                        if let Err(e) = handle_connection(stream, conn_state, conn_home, conn_git).await {
+                            tracing::warn!(error = %e, "client connection error");
+                        }
                     });
                 }
                 () = &mut shutdown => break,
+                _ = inode_check.tick() => {
+                    let path = socket_path.clone();
+                    let check = tokio::task::spawn_blocking(move || {
+                        std::fs::metadata(&path).map(|m| m.ino())
+                    }).await;
+                    match check {
+                        Ok(Ok(ino)) if ino == original_inode => {}
+                        _ => {
+                            tracing::info!("socket file changed or removed, shutting down");
+                            inode_mismatch = true;
+                            break;
+                        }
+                    }
+                }
             }
         }
 
         tracing::info!("daemon shutting down");
-        let _ = std::fs::remove_file(&socket_path);
+        if !inode_mismatch {
+            let _ = std::fs::remove_file(&socket_path);
+        }
         Ok(())
     }
-}
-
-// ---------------------------------------------------------------------------
-// Socket helpers
-// ---------------------------------------------------------------------------
-
-async fn remove_stale_socket(path: &Path) -> Result<(), DaemonError> {
-    if !path.exists() {
-        return Ok(());
-    }
-    if UnixStream::connect(path).await.is_ok() {
-        return Err(DaemonError::Socket(std::io::Error::new(
-            std::io::ErrorKind::AddrInUse,
-            "another daemon is already listening",
-        )));
-    }
-    std::fs::remove_file(path)?;
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -201,8 +233,12 @@ async fn handle_connection<G: GitProvider + Clone + Send + 'static>(
                 )
                 .await?;
             }
-            Ok(Some(_)) => {}           // ignore non-request messages
-            Ok(None) | Err(_) => break, // EOF or protocol error
+            Ok(Some(_)) => {}  // ignore non-request messages
+            Ok(None) => break, // EOF
+            Err(e) => {
+                tracing::debug!(error = %e, "protocol error, closing connection");
+                break;
+            }
         }
     }
 
@@ -330,22 +366,14 @@ fn run_fast_modules(ctx: &RenderContext<'_>) -> FastOutputs {
         time: TimeModule::new().render(ctx).map(|o| o.content),
         status: StatusModule::new().render(ctx).map(|o| o.content),
         character: CharacterModule::new().render(ctx).map(|o| o.content),
+        last_exit_code: ctx.last_exit_code,
     }
 }
 
 fn run_slow_modules<G: GitProvider>(cwd: &Path, provider: G) -> SlowOutput {
     let module = GitModule::new(provider);
-    // Git module only uses cwd from context; other fields are irrelevant.
-    let ctx = RenderContext {
-        cwd,
-        home_dir: Path::new("/"),
-        last_exit_code: 0,
-        duration_ms: None,
-        keymap: "main",
-        cols: 80,
-    };
     SlowOutput {
-        git: module.render(&ctx).map(|o| o.content),
+        git: module.render_for_cwd(cwd).map(|o| o.content),
     }
 }
 
@@ -353,31 +381,46 @@ fn run_slow_modules<G: GitProvider>(cwd: &Path, provider: G) -> SlowOutput {
 // Prompt composition
 // ---------------------------------------------------------------------------
 
+/// Apply a style to an optional module output.
+fn styled(value: Option<&str>, style: Style) -> Option<String> {
+    value.map(|s| style.paint(s))
+}
+
 /// Prompt layout:
 /// - Info line (left1):  `[directory] [git]  [toolchain] [cmd_duration] [time]`
 /// - Input line (left2): `[status] [character]`
 fn compose_prompt(fast: &FastOutputs, slow: Option<&SlowOutput>, cols: usize) -> PromptLines {
-    let info_left: Vec<&str> = [
+    let dir_styled = styled(
         fast.directory.as_deref(),
-        slow.and_then(|s| s.git.as_deref()),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
+        Style::new().fg(Color::Cyan).bold(),
+    );
+    // Git output is already styled internally by the git module.
+    let git_ref = slow.and_then(|s| s.git.as_deref());
 
-    let info_right: Vec<&str> = [
-        fast.toolchain.as_deref(),
-        fast.cmd_duration.as_deref(),
-        fast.time.as_deref(),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
+    let dir_ref = dir_styled.as_deref();
+    let info_left: Vec<&str> = [dir_ref, git_ref].into_iter().flatten().collect();
 
-    let input_left: Vec<&str> = [fast.status.as_deref(), fast.character.as_deref()]
+    let toolchain_styled = styled(fast.toolchain.as_deref(), Style::new().dimmed());
+    let duration_styled = styled(fast.cmd_duration.as_deref(), Style::new().fg(Color::Yellow));
+    let time_styled = styled(fast.time.as_deref(), Style::new().dimmed());
+
+    let info_right_owned: Vec<String> = [toolchain_styled, duration_styled, time_styled]
         .into_iter()
         .flatten()
         .collect();
+    let info_right: Vec<&str> = info_right_owned.iter().map(String::as_str).collect();
+
+    let char_style = if fast.last_exit_code == 0 {
+        Style::new().fg(Color::Green)
+    } else {
+        Style::new().fg(Color::Red)
+    };
+    let status_styled = styled(fast.status.as_deref(), Style::new().fg(Color::Red).bold());
+    let char_styled = styled(fast.character.as_deref(), char_style);
+
+    let input_left_owned: Vec<String> =
+        [status_styled, char_styled].into_iter().flatten().collect();
+    let input_left: Vec<&str> = input_left_owned.iter().map(String::as_str).collect();
 
     compose(&info_left, &info_right, &input_left, cols)
 }
@@ -412,6 +455,18 @@ mod tests {
 
     fn test_sid() -> SessionId {
         SessionId::from_bytes([0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef])
+    }
+
+    fn make_fast_outputs() -> FastOutputs {
+        FastOutputs {
+            directory: Some("/tmp".to_owned()),
+            toolchain: None,
+            cmd_duration: None,
+            time: None,
+            status: None,
+            character: Some("\u{276f}".to_owned()),
+            last_exit_code: 0,
+        }
     }
 
     fn make_request(cwd: &str, generation: u64, cols: u16) -> Request {
@@ -491,12 +546,8 @@ mod tests {
     #[test]
     fn test_daemon_compose_prompt_fast_only() {
         let fast = FastOutputs {
-            directory: Some("/tmp".to_owned()),
-            toolchain: None,
-            cmd_duration: None,
             time: Some("14:30".to_owned()),
-            status: None,
-            character: Some("\u{276f}".to_owned()),
+            ..make_fast_outputs()
         };
         let lines = compose_prompt(&fast, None, 40);
         assert!(lines.left1.contains("/tmp"), "left1: {}", lines.left1);
@@ -506,36 +557,67 @@ mod tests {
 
     #[test]
     fn test_daemon_compose_prompt_with_slow() {
-        let fast = FastOutputs {
-            directory: Some("/tmp".to_owned()),
-            toolchain: None,
-            cmd_duration: None,
-            time: None,
-            status: None,
-            character: Some("\u{276f}".to_owned()),
-        };
+        let fast = make_fast_outputs();
         let slow = SlowOutput {
             git: Some("main +2".to_owned()),
         };
         let lines = compose_prompt(&fast, Some(&slow), 40);
         assert!(lines.left1.contains("/tmp"), "left1: {}", lines.left1);
-        assert!(lines.left1.contains("main +2"), "left1: {}", lines.left1);
+        assert!(
+            lines.left1.contains("main"),
+            "left1 should contain branch: {}",
+            lines.left1
+        );
+        assert!(
+            lines.left1.contains("+2"),
+            "left1 should contain staged: {}",
+            lines.left1
+        );
     }
 
     #[test]
     fn test_daemon_compose_prompt_slow_none_git() {
-        let fast = FastOutputs {
-            directory: Some("/tmp".to_owned()),
-            toolchain: None,
-            cmd_duration: None,
-            time: None,
-            status: None,
-            character: Some("\u{276f}".to_owned()),
-        };
+        let fast = make_fast_outputs();
         let slow = SlowOutput { git: None };
         let without_slow = compose_prompt(&fast, None, 40);
         let with_none_git = compose_prompt(&fast, Some(&slow), 40);
         assert_eq!(without_slow, with_none_git);
+    }
+
+    #[test]
+    fn test_daemon_compose_prompt_styled_directory() {
+        let fast = make_fast_outputs();
+        let lines = compose_prompt(&fast, None, 40);
+        assert!(
+            lines.left1.contains("\x1b[1;36m"),
+            "directory should be bold cyan: {}",
+            lines.left1
+        );
+    }
+
+    #[test]
+    fn test_daemon_compose_prompt_styled_character_success() {
+        let fast = make_fast_outputs();
+        let lines = compose_prompt(&fast, None, 40);
+        assert!(
+            lines.left2.contains("\x1b[32m"),
+            "character should be green on success: {}",
+            lines.left2
+        );
+    }
+
+    #[test]
+    fn test_daemon_compose_prompt_styled_character_error() {
+        let fast = FastOutputs {
+            last_exit_code: 1,
+            ..make_fast_outputs()
+        };
+        let lines = compose_prompt(&fast, None, 40);
+        assert!(
+            lines.left2.contains("\x1b[31m"),
+            "character should be red on error: {}",
+            lines.left2
+        );
     }
 
     // -- Integration tests ----------------------------------------------------
@@ -613,7 +695,8 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let socket_path = dir.path().join("test.sock");
 
-        // Create a stale socket (listener dropped, file remains)
+        // Create an existing socket file (listener already dropped).
+        // Server unconditionally removes it before binding.
         {
             let _listener = UnixListener::bind(&socket_path)?;
         }
@@ -736,5 +819,40 @@ mod tests {
         }
 
         harness.shutdown().await
+    }
+
+    #[tokio::test]
+    async fn test_daemon_shuts_down_on_socket_removal() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let socket_path = dir.path().join("test.sock");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home)?;
+
+        let server = Server::new(socket_path.clone(), home, MockGitProvider { status: None });
+
+        // No explicit shutdown — daemon should exit via inode check.
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let server_handle = tokio::spawn(async move {
+            server
+                .run(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        // Wait for server to bind.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Remove the socket file.
+        std::fs::remove_file(&socket_path)?;
+
+        // Server should shut down within the inode check interval + margin.
+        let result = tokio::time::timeout(Duration::from_secs(2), server_handle).await??;
+        assert!(
+            result.is_ok(),
+            "server should shut down cleanly: {result:?}"
+        );
+        Ok(())
     }
 }
