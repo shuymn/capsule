@@ -31,12 +31,18 @@ impl<V> BoundedCache<V> {
     }
 
     /// Returns a reference to the cached value if it exists and has not expired.
-    pub(super) fn get(&self, key: &str) -> Option<&V> {
-        let entry = self.entries.get(key)?;
-        if entry.inserted_at.elapsed() > self.ttl {
+    ///
+    /// Expired entries are removed from the cache on access.
+    pub(super) fn get(&mut self, key: &str) -> Option<&V> {
+        let expired = self
+            .entries
+            .get(key)
+            .is_some_and(|e| e.inserted_at.elapsed() > self.ttl);
+        if expired {
+            self.entries.remove(key);
             return None;
         }
-        Some(&entry.value)
+        self.entries.get(key).map(|e| &e.value)
     }
 
     /// Inserts a value, evicting the oldest entry if the cache is full.
@@ -71,7 +77,7 @@ mod tests {
 
     #[test]
     fn test_cache_get_returns_none_for_missing_key() {
-        let cache = BoundedCache::<String>::new(10, Duration::from_mins(1));
+        let mut cache = BoundedCache::<String>::new(10, Duration::from_mins(1));
         assert!(cache.get("missing").is_none());
     }
 
@@ -123,6 +129,20 @@ mod tests {
         assert!(
             cache.get("key").is_none(),
             "expired entry should not be returned"
+        );
+    }
+
+    #[test]
+    fn test_cache_ttl_expiry_removes_entry() {
+        let mut cache = BoundedCache::new(10, Duration::from_millis(1));
+        cache.insert("key".to_owned(), "val".to_owned());
+        assert_eq!(cache.entries.len(), 1);
+        std::thread::sleep(Duration::from_millis(5));
+        cache.get("key");
+        assert_eq!(
+            cache.entries.len(),
+            0,
+            "expired entry should be removed from the map"
         );
     }
 }

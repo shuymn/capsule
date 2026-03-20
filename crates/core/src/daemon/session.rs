@@ -1,18 +1,23 @@
 //! Session tracking for connected clients.
 
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 use capsule_protocol::SessionId;
 
 /// State for a connected client session.
 pub(super) struct Session {
     last_generation: Option<u64>,
+    last_seen: Instant,
 }
 
 impl Session {
-    const fn new() -> Self {
+    fn new() -> Self {
         Self {
             last_generation: None,
+            last_seen: Instant::now(),
         }
     }
 
@@ -41,7 +46,7 @@ impl SessionMap {
 
     /// Checks if a request's generation is newer than the session's last.
     ///
-    /// Updates the session's generation if so.
+    /// Updates the session's generation and `last_seen` timestamp if so.
     /// Returns `true` if the request should be processed.
     pub(super) fn check_generation(&mut self, id: SessionId, generation: u64) -> bool {
         let session = self.get_or_create(id);
@@ -49,9 +54,16 @@ impl SessionMap {
             Some(last) if generation <= last => false,
             _ => {
                 session.last_generation = Some(generation);
+                session.last_seen = Instant::now();
                 true
             }
         }
+    }
+
+    /// Removes sessions that have not been seen for longer than `ttl`.
+    pub(super) fn prune_stale(&mut self, ttl: Duration) {
+        self.sessions
+            .retain(|_, session| session.last_seen.elapsed() <= ttl);
     }
 }
 
@@ -121,5 +133,25 @@ mod tests {
         map.check_generation(test_sid(), 42);
         let session = map.get_or_create(test_sid());
         assert_eq!(session.last_generation(), Some(42));
+    }
+
+    #[test]
+    fn test_session_prune_stale_removes_old() {
+        let mut map = SessionMap::new();
+        map.check_generation(test_sid(), 1);
+        std::thread::sleep(Duration::from_millis(5));
+        map.prune_stale(Duration::from_millis(1));
+        // Session should be pruned — re-creating gives a fresh session
+        let session = map.get_or_create(test_sid());
+        assert_eq!(session.last_generation(), None);
+    }
+
+    #[test]
+    fn test_session_prune_stale_keeps_active() {
+        let mut map = SessionMap::new();
+        map.check_generation(test_sid(), 1);
+        map.prune_stale(Duration::from_mins(1));
+        let session = map.get_or_create(test_sid());
+        assert_eq!(session.last_generation(), Some(1));
     }
 }

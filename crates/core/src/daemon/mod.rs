@@ -33,6 +33,7 @@ use crate::{
 
 const CACHE_MAX_SIZE: usize = 64;
 const CACHE_TTL: Duration = Duration::from_secs(30);
+const SESSION_TTL: Duration = Duration::from_mins(30);
 
 /// Errors during daemon operation.
 #[derive(Debug, thiserror::Error)]
@@ -224,9 +225,10 @@ async fn handle_request<G: GitProvider + Send + 'static>(
     let cwd = req.cwd.clone();
     let cols = req.cols;
 
-    // Generation check
+    // Generation check + session pruning
     {
         let mut s = state.lock().await;
+        s.sessions.prune_stale(SESSION_TTL);
         if !s.sessions.check_generation(session_id, generation) {
             tracing::debug!(session_id = %session_id, generation, "stale generation, discarding");
             return Ok(());
@@ -247,7 +249,7 @@ async fn handle_request<G: GitProvider + Send + 'static>(
 
     // Cache lookup for slow results
     let cached_slow = {
-        let s = state.lock().await;
+        let mut s = state.lock().await;
         s.cache.get(&cwd).cloned()
     };
 
