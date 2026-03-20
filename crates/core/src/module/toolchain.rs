@@ -7,6 +7,8 @@ use super::{Module, ModuleOutput, ModuleSpeed, RenderContext};
 /// File-to-toolchain mappings, checked in order.
 const TOOLCHAIN_FILES: &[(&str, &str)] = &[
     ("Cargo.toml", "rust"),
+    ("bun.lockb", "bun"),
+    ("bunfig.toml", "bun"),
     ("package.json", "node"),
     ("go.mod", "go"),
     ("pyproject.toml", "python"),
@@ -126,6 +128,41 @@ mod tests {
             output.map(|o| o.content),
             Some("rust".to_owned()),
             "Cargo.toml should take precedence"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_module_detects_bun_lockb() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("bun.lockb"), "")?;
+        let ctx = make_ctx(dir.path());
+        let output = ToolchainModule::new().render(&ctx);
+        assert_eq!(output.map(|o| o.content), Some("bun".to_owned()));
+        Ok(())
+    }
+
+    #[test]
+    fn test_module_detects_bunfig_toml() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("bunfig.toml"), "")?;
+        let ctx = make_ctx(dir.path());
+        let output = ToolchainModule::new().render(&ctx);
+        assert_eq!(output.map(|o| o.content), Some("bun".to_owned()));
+        Ok(())
+    }
+
+    #[test]
+    fn test_module_bun_takes_precedence_over_node() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("bun.lockb"), "")?;
+        std::fs::write(dir.path().join("package.json"), "{}")?;
+        let ctx = make_ctx(dir.path());
+        let output = ToolchainModule::new().render(&ctx);
+        assert_eq!(
+            output.map(|o| o.content),
+            Some("bun".to_owned()),
+            "bun.lockb should take precedence over package.json"
         );
         Ok(())
     }

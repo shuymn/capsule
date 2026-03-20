@@ -22,11 +22,12 @@ pub enum Color {
     Cyan,
 }
 
-/// A text style with optional foreground color and bold attribute.
+/// A text style with optional foreground color, bold, and dimmed attributes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Style {
     fg: Option<Color>,
     bold: bool,
+    dimmed: bool,
 }
 
 impl Style {
@@ -36,6 +37,7 @@ impl Style {
         Self {
             fg: None,
             bold: false,
+            dimmed: false,
         }
     }
 
@@ -53,18 +55,31 @@ impl Style {
         self
     }
 
+    /// Enables dimmed (faint) rendering.
+    #[must_use]
+    pub const fn dimmed(mut self) -> Self {
+        self.dimmed = true;
+        self
+    }
+
     /// Apply ANSI styling to `text`, wrapping escape sequences in zsh `%{..%}`.
     ///
     /// Returns `text` unchanged when no style attributes are set.
     #[must_use]
     pub fn paint(&self, text: &str) -> String {
-        if self.fg.is_none() && !self.bold {
+        if self.fg.is_none() && !self.bold && !self.dimmed {
             return text.to_owned();
         }
 
         let mut codes = String::with_capacity(8);
         if self.bold {
             codes.push('1');
+        }
+        if self.dimmed {
+            if !codes.is_empty() {
+                codes.push(';');
+            }
+            codes.push('2');
         }
         if let Some(color) = self.fg {
             if !codes.is_empty() {
@@ -146,5 +161,38 @@ mod tests {
     fn test_render_style_default_is_unstyled() {
         let style = Style::default();
         assert_eq!(style.paint("test"), "test");
+    }
+
+    #[test]
+    fn test_render_style_dimmed() {
+        let style = Style::new().dimmed();
+        let painted = style.paint("hello");
+        assert!(
+            painted.contains("\x1b[2m"),
+            "should contain dimmed ANSI code"
+        );
+        assert!(painted.contains("\x1b[0m"), "should contain reset");
+        assert!(painted.contains("hello"), "text should be present");
+    }
+
+    #[test]
+    fn test_render_style_dimmed_and_color() {
+        let style = Style::new().fg(Color::Cyan).dimmed();
+        let painted = style.paint("hello");
+        assert!(
+            painted.contains("\x1b[2;36m"),
+            "should contain dimmed+cyan ANSI code: {painted}"
+        );
+    }
+
+    #[test]
+    fn test_render_style_dimmed_display_width_unchanged() {
+        let style = Style::new().dimmed();
+        let painted = style.paint("hello");
+        assert_eq!(
+            display_width(&painted),
+            5,
+            "dimmed text should have same display width as plain text"
+        );
     }
 }

@@ -3,6 +3,7 @@
 use super::{Module, ModuleOutput, ModuleSpeed, RenderContext};
 
 /// Displays the current local time in `HH:MM` format.
+#[derive(Debug)]
 #[allow(clippy::module_name_repetitions)]
 pub struct TimeModule {
     time_fn: fn() -> Option<(u8, u8)>,

@@ -1,8 +1,9 @@
 //! Git module — displays git branch and working tree status.
 
-use std::{fmt::Write, path::Path, process::Command};
+use std::{path::Path, process::Command};
 
 use super::{Module, ModuleOutput, ModuleSpeed, RenderContext};
+use crate::render::style::{Color, Style};
 
 /// Errors that can occur when querying git.
 #[derive(Debug, thiserror::Error)]
@@ -82,6 +83,28 @@ impl<G> GitModule<G> {
     }
 }
 
+impl<G: GitProvider> GitModule<G> {
+    /// Renders git status for the given working directory.
+    ///
+    /// This is the core implementation used by both [`Module::render`] and
+    /// the daemon's slow-module path (which has no full [`RenderContext`]).
+    pub fn render_for_cwd(&self, cwd: &Path) -> Option<ModuleOutput> {
+        let status = match self.provider.status(cwd) {
+            Ok(Some(s)) => s,
+            Ok(None) => return None,
+            Err(e) => {
+                tracing::warn!(error = %e, cwd = %cwd.display(), "git status failed");
+                return None;
+            }
+        };
+        let content = format_git_output(&status);
+        if content.is_empty() {
+            return None;
+        }
+        Some(ModuleOutput { content })
+    }
+}
+
 impl<G: GitProvider> Module for GitModule<G> {
     fn name(&self) -> &'static str {
         "git"
@@ -92,14 +115,7 @@ impl<G: GitProvider> Module for GitModule<G> {
     }
 
     fn render(&self, ctx: &RenderContext<'_>) -> Option<ModuleOutput> {
-        let Ok(Some(status)) = self.provider.status(ctx.cwd) else {
-            return None;
-        };
-        let content = format_git_output(&status);
-        if content.is_empty() {
-            return None;
-        }
-        Some(ModuleOutput { content })
+        self.render_for_cwd(ctx.cwd)
     }
 }
 
@@ -159,30 +175,45 @@ fn parse_changed_entry(line: &str, status: &mut GitStatus) {
 // ---------------------------------------------------------------------------
 
 fn format_git_output(status: &GitStatus) -> String {
-    let initial_capacity = status.branch.as_ref().map_or(0, String::len);
-    let mut out = String::with_capacity(initial_capacity);
+    let mut out = String::with_capacity(64);
 
     if let Some(ref branch) = status.branch {
-        out.push_str(branch);
+        let style = Style::new().fg(Color::Magenta).bold();
+        out.push_str(&style.paint(branch));
     }
 
-    push_count(&mut out, '+', status.staged);
-    push_count(&mut out, '!', status.modified);
-    push_count(&mut out, '?', status.untracked);
-    push_count(&mut out, '~', status.conflicted);
-    push_count(&mut out, '⇡', status.ahead);
-    push_count(&mut out, '⇣', status.behind);
+    push_count(&mut out, '+', status.staged, Style::new().fg(Color::Green));
+    push_count(
+        &mut out,
+        '!',
+        status.modified,
+        Style::new().fg(Color::Yellow),
+    );
+    push_count(
+        &mut out,
+        '?',
+        status.untracked,
+        Style::new().fg(Color::Yellow),
+    );
+    push_count(
+        &mut out,
+        '~',
+        status.conflicted,
+        Style::new().fg(Color::Red),
+    );
+    push_count(&mut out, '⇡', status.ahead, Style::new().fg(Color::Cyan));
+    push_count(&mut out, '⇣', status.behind, Style::new().fg(Color::Cyan));
 
     out
 }
 
-fn push_count(out: &mut String, prefix: char, count: usize) {
+fn push_count(out: &mut String, prefix: char, count: usize, style: Style) {
     if count > 0 {
         if !out.is_empty() {
             out.push(' ');
         }
-        // write! on String is infallible
-        let _ = write!(out, "{prefix}{count}");
+        let fragment = format!("{prefix}{count}");
+        out.push_str(&style.paint(&fragment));
     }
 }
 
@@ -191,6 +222,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+    use crate::render::layout::display_width;
 
     // -- Parsing tests --
 
@@ -260,7 +292,13 @@ mod tests {
             branch: Some("main".to_owned()),
             ..GitStatus::default()
         };
-        assert_eq!(format_git_output(&status), "main");
+        let output = format_git_output(&status);
+        assert_eq!(display_width(&output), 4, "visible width: {output:?}");
+        assert!(output.contains("main"), "should contain branch name");
+        assert!(
+            output.contains("\x1b[1;35m"),
+            "branch should be bold magenta"
+        );
     }
 
     #[test]
@@ -274,7 +312,14 @@ mod tests {
             ahead: 1,
             behind: 0,
         };
-        assert_eq!(format_git_output(&status), "main +2 !1 ?3 ⇡1");
+        let output = format_git_output(&status);
+        // "main +2 !1 ?3 ⇡1" = 16 visible chars
+        assert_eq!(display_width(&output), 16, "visible width: {output:?}");
+        assert!(output.contains("main"), "should contain branch");
+        assert!(output.contains("+2"), "should contain staged count");
+        assert!(output.contains("!1"), "should contain modified count");
+        assert!(output.contains("?3"), "should contain untracked count");
+        assert!(output.contains("⇡1"), "should contain ahead count");
     }
 
     #[test]
@@ -284,7 +329,13 @@ mod tests {
             staged: 1,
             ..GitStatus::default()
         };
-        assert_eq!(format_git_output(&status), "+1");
+        let output = format_git_output(&status);
+        assert_eq!(display_width(&output), 2, "visible width: {output:?}");
+        assert!(output.contains("+1"), "should contain staged count");
+        assert!(
+            output.contains("\x1b[32m"),
+            "staged should be green: {output:?}"
+        );
     }
 
     // -- Mock provider tests --
