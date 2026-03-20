@@ -3,3 +3,4 @@
 #![warn(clippy::pedantic, clippy::nursery, clippy::cargo)]
 
 pub mod module;
+pub mod render;
