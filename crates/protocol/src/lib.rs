@@ -10,7 +10,9 @@ pub mod message;
 pub mod netstring;
 
 pub use codec::{MessageReader, MessageWriter};
-pub use message::{Message, PROTOCOL_VERSION, RenderResult, Request, SessionId, Update};
+pub use message::{
+    Hello, HelloAck, Message, PROTOCOL_VERSION, RenderResult, Request, SessionId, Update,
+};
 
 /// Errors that can occur during protocol operations.
 #[derive(Debug, thiserror::Error)]
@@ -31,7 +33,7 @@ pub enum ProtocolError {
     #[error("netstring: input truncated")]
     Truncated,
 
-    /// The message type field is not `Q`, `R`, or `U`.
+    /// The message type discriminator is not recognized.
     #[error("message: unknown type")]
     UnknownMessageType,
 

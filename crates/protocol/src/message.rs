@@ -11,6 +11,8 @@ pub const PROTOCOL_VERSION: u8 = 1;
 const TYPE_REQUEST: &[u8] = b"Q";
 const TYPE_RENDER_RESULT: &[u8] = b"R";
 const TYPE_UPDATE: &[u8] = b"U";
+const TYPE_HELLO: &[u8] = b"H";
+const TYPE_HELLO_ACK: &[u8] = b"A";
 
 /// An 8-byte session identifier, displayed as 16 hex characters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -129,6 +131,28 @@ pub struct Update {
     pub left2: String,
 }
 
+/// Build ID handshake: client → daemon.
+///
+/// Wire type: `H` (3 fields).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hello {
+    /// Protocol version.
+    pub version: u8,
+    /// Binary fingerprint of the sender.
+    pub build_id: String,
+}
+
+/// Build ID handshake: daemon → client.
+///
+/// Wire type: `A` (3 fields).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HelloAck {
+    /// Protocol version.
+    pub version: u8,
+    /// Binary fingerprint of the daemon.
+    pub build_id: String,
+}
+
 /// Any message on the wire.
 #[allow(clippy::module_name_repetitions)]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,6 +163,10 @@ pub enum Message {
     RenderResult(RenderResult),
     /// A deferred update.
     Update(Update),
+    /// A build ID handshake request.
+    Hello(Hello),
+    /// A build ID handshake acknowledgement.
+    HelloAck(HelloAck),
 }
 
 // ---------------------------------------------------------------------------
@@ -218,6 +246,30 @@ impl Update {
     }
 }
 
+impl Hello {
+    /// Serialize to wire format (without trailing LF).
+    #[must_use]
+    pub fn to_wire(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(64);
+        netstring::encode_into(&mut buf, self.version.to_string().as_bytes());
+        netstring::encode_into(&mut buf, TYPE_HELLO);
+        netstring::encode_into(&mut buf, self.build_id.as_bytes());
+        buf
+    }
+}
+
+impl HelloAck {
+    /// Serialize to wire format (without trailing LF).
+    #[must_use]
+    pub fn to_wire(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(64);
+        netstring::encode_into(&mut buf, self.version.to_string().as_bytes());
+        netstring::encode_into(&mut buf, TYPE_HELLO_ACK);
+        netstring::encode_into(&mut buf, self.build_id.as_bytes());
+        buf
+    }
+}
+
 impl Message {
     /// Serialize to wire format (without trailing LF).
     #[must_use]
@@ -226,6 +278,8 @@ impl Message {
             Self::Request(r) => r.to_wire(),
             Self::RenderResult(r) => r.to_wire(),
             Self::Update(u) => u.to_wire(),
+            Self::Hello(h) => h.to_wire(),
+            Self::HelloAck(a) => a.to_wire(),
         }
     }
 
@@ -258,6 +312,8 @@ impl Message {
                 version, &fields,
             )?)),
             TYPE_UPDATE => Ok(Self::Update(Update::from_fields(version, &fields)?)),
+            TYPE_HELLO => Ok(Self::Hello(Hello::from_fields(version, &fields)?)),
+            TYPE_HELLO_ACK => Ok(Self::HelloAck(HelloAck::from_fields(version, &fields)?)),
             _ => Err(ProtocolError::UnknownMessageType),
         }
     }
@@ -372,6 +428,40 @@ impl Update {
     }
 }
 
+impl Hello {
+    const FIELD_COUNT: usize = 3;
+
+    fn from_fields(version: u8, fields: &[&[u8]]) -> Result<Self, ProtocolError> {
+        if fields.len() != Self::FIELD_COUNT {
+            return Err(ProtocolError::WrongFieldCount {
+                expected: Self::FIELD_COUNT,
+                got: fields.len(),
+            });
+        }
+        Ok(Self {
+            version,
+            build_id: field_to_string(fields[2], "build_id")?,
+        })
+    }
+}
+
+impl HelloAck {
+    const FIELD_COUNT: usize = 3;
+
+    fn from_fields(version: u8, fields: &[&[u8]]) -> Result<Self, ProtocolError> {
+        if fields.len() != Self::FIELD_COUNT {
+            return Err(ProtocolError::WrongFieldCount {
+                expected: Self::FIELD_COUNT,
+                got: fields.len(),
+            });
+        }
+        Ok(Self {
+            version,
+            build_id: field_to_string(fields[2], "build_id")?,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -410,6 +500,20 @@ mod tests {
             generation: 42,
             left1: "~/project  main *2".to_owned(),
             left2: "❯ ".to_owned(),
+        }
+    }
+
+    fn sample_hello() -> Hello {
+        Hello {
+            version: PROTOCOL_VERSION,
+            build_id: "12345:1700000000000000000".to_owned(),
+        }
+    }
+
+    fn sample_hello_ack() -> HelloAck {
+        HelloAck {
+            version: PROTOCOL_VERSION,
+            build_id: "12345:1700000000000000000".to_owned(),
         }
     }
 
@@ -520,6 +624,40 @@ mod tests {
         let wire = upd.to_wire();
         let parsed = Message::from_wire(&wire)?;
         assert_eq!(parsed, Message::Update(upd));
+        Ok(())
+    }
+
+    // -- Hello round-trip --
+
+    #[test]
+    fn test_hello_round_trip() -> Result<(), ProtocolError> {
+        let hello = sample_hello();
+        let wire = hello.to_wire();
+        let parsed = Message::from_wire(&wire)?;
+        assert_eq!(parsed, Message::Hello(hello));
+        Ok(())
+    }
+
+    #[test]
+    fn test_hello_empty_build_id() -> Result<(), ProtocolError> {
+        let hello = Hello {
+            version: PROTOCOL_VERSION,
+            build_id: String::new(),
+        };
+        let wire = hello.to_wire();
+        let parsed = Message::from_wire(&wire)?;
+        assert_eq!(parsed, Message::Hello(hello));
+        Ok(())
+    }
+
+    // -- HelloAck round-trip --
+
+    #[test]
+    fn test_hello_ack_round_trip() -> Result<(), ProtocolError> {
+        let ack = sample_hello_ack();
+        let wire = ack.to_wire();
+        let parsed = Message::from_wire(&wire)?;
+        assert_eq!(parsed, Message::HelloAck(ack));
         Ok(())
     }
 

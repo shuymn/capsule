@@ -79,7 +79,7 @@ impl<W: AsyncWrite + Unpin + Send> MessageWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::{RenderResult, Request, SessionId, Update};
+    use crate::message::{Hello, HelloAck, RenderResult, Request, SessionId, Update};
 
     fn sample_session_id() -> SessionId {
         SessionId::from_bytes([0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef])
@@ -185,6 +185,50 @@ mod tests {
         assert_eq!(reader.read_message().await?, Some(msg2));
         assert_eq!(reader.read_message().await?, Some(msg3));
         assert_eq!(reader.read_message().await?, None);
+        Ok(())
+    }
+
+    fn sample_hello() -> Hello {
+        Hello {
+            version: 1,
+            build_id: "12345:1700000000000000000".to_owned(),
+        }
+    }
+
+    fn sample_hello_ack() -> HelloAck {
+        HelloAck {
+            version: 1,
+            build_id: "12345:1700000000000000000".to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_codec_round_trip_hello() -> Result<(), ProtocolError> {
+        let (client, server) = tokio::io::duplex(4096);
+        let mut writer = MessageWriter::new(client);
+        let mut reader = MessageReader::new(server);
+
+        let msg = Message::Hello(sample_hello());
+        writer.write_message(&msg).await?;
+        drop(writer);
+
+        let received = reader.read_message().await?;
+        assert_eq!(received, Some(msg));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_codec_round_trip_hello_ack() -> Result<(), ProtocolError> {
+        let (client, server) = tokio::io::duplex(4096);
+        let mut writer = MessageWriter::new(client);
+        let mut reader = MessageReader::new(server);
+
+        let msg = Message::HelloAck(sample_hello_ack());
+        writer.write_message(&msg).await?;
+        drop(writer);
+
+        let received = reader.read_message().await?;
+        assert_eq!(received, Some(msg));
         Ok(())
     }
 
