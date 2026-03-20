@@ -1,10 +1,10 @@
 [package]
-name = "rust-template"
+name = "capsule"
 version = "0.1.0"
 edition = "2024"
 description = "Personal Rust template (bin-first, Task, opinionated rustfmt + clippy)."
 license = "MIT"
-repository = "https://github.com/shuymn/rust-template"
+repository = "https://github.com/shuymn/capsule"
 keywords = ["template"]
 categories = ["development-tools"]
 

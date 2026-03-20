@@ -1,16 +1,5 @@
-# rust-template
+# capsule
 
-<!-- template:start -->
-Minimal Rust template with:
-
-- [Taskfile.yml](Taskfile.yml) as the primary entrypoint for local tasks, CI, and hooks
-- **Nightly** toolchain with opinionated [rustfmt.toml](rustfmt.toml), [clippy.toml](clippy.toml), and `Cargo.toml` `[lints]`; `clippy::pedantic` / `nursery` / `cargo` enabled at the crate root
-- [lefthook.yml](lefthook.yml) for `pre-commit` and `pre-push` automation
-- GitHub Actions running the same `task` commands as local development
-- Starter docs for repository rules and review conventions
-
-Template source: `https://github.com/shuymn/rust-template` (`shuymn/rust-template`).
-<!-- template:end -->
 
 This repository was initialized from a Rust project template.
 
