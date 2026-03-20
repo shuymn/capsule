@@ -27,9 +27,9 @@ tasks:
   run:
     desc: Run the default binary
     summary: |
-      Runs the package's default binary target.
+      Runs the capsule binary.
     cmds:
-      - cargo run
+      - cargo run -p capsule-cli
 
   test:
     desc: Run all tests

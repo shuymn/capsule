@@ -1,20 +1,21 @@
-[package]
-name = "capsule"
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-description = "Personal Rust template (bin-first, Task, opinionated rustfmt + clippy)."
 license = "MIT"
 repository = "https://github.com/shuymn/capsule"
-keywords = ["template"]
-categories = ["development-tools"]
+readme = "README.md"
+keywords = ["prompt", "zsh", "macos"]
+categories = ["command-line-utilities"]
 
-[dependencies]
-
-[lints.rust]
+[workspace.lints.rust]
 unsafe_code = "forbid"
 unused_must_use = "deny"
 
-[lints.clippy]
+[workspace.lints.clippy]
 # Deny footguns and half-finished code paths
 dbg_macro = "deny"
 expect_used = "deny"
@@ -30,3 +31,14 @@ unwrap_used = "deny"
 # Stricter API / docs hygiene (warnings promoted to errors via -D warnings in task lint)
 missing_errors_doc = "warn"
 missing_panics_doc = "warn"
+
+[workspace.dependencies]
+clap = { version = "4", features = ["derive"] }
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+strum = { version = "0.27", features = ["derive"] }
+unicode-width = "0.2"
+tokio = { version = "1", features = ["rt", "net", "io-util", "signal", "time", "process", "macros"] }
+tempfile = "3"

@@ -1,0 +1,22 @@
+[package]
+name = "capsule-cli"
+description = "macOS zsh prompt engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+
+[[bin]]
+name = "capsule"
+path = "src/main.rs"
+
+[dependencies]
+capsule-core = { path = "../core" }
+capsule-protocol = { path = "../protocol" }
+clap.workspace = true
+
+[lints]
+workspace = true

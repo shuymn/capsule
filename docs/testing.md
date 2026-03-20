@@ -6,7 +6,7 @@ Read this file before writing or modifying tests in this repository.
 
 - Use `task test` for the full suite (unit, integration, and doctests via `cargo test`).
 - Use `task check` for CI-equivalent local verification (includes `cargo doc` without dependency docs).
-- For focused runs: `cargo test -p capsule <filter>` or `cargo test <name> -- --nocapture` as needed.
+- For focused runs: `cargo test -p <crate> <filter>` or `cargo test <name> -- --nocapture` as needed.
 
 ## Suite Expectations
 

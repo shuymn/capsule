@@ -1,0 +1,17 @@
+[package]
+name = "capsule-core"
+description = "Core library for capsule prompt engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+publish = false
+
+[dependencies]
+capsule-protocol = { path = "../protocol" }
+
+[lints]
+workspace = true
