@@ -1,0 +1,120 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+version: "3"
+
+tasks:
+  default:
+    desc: Show available tasks
+    summary: |
+      Lists public tasks.
+      For machine-readable discovery, use: task --list --json
+    cmds:
+      - task --list
+
+  build:
+    desc: Build the workspace
+    summary: |
+      Builds the workspace with Cargo using the lockfile as-is.
+    cmds:
+      - cargo build --workspace --locked
+
+  build:release:
+    desc: Build optimized artifacts
+    summary: |
+      Builds the workspace in release mode.
+    cmds:
+      - cargo build --workspace --release --locked
+
+  run:
+    desc: Run the default binary
+    summary: |
+      Runs the package's default binary target.
+    cmds:
+      - cargo run
+
+  test:
+    desc: Run all tests
+    summary: |
+      Runs unit, integration, and documentation tests across the workspace.
+    cmds:
+      - cargo test --workspace --all-targets --all-features --locked
+
+  doc:
+    desc: Build documentation
+    summary: |
+      Builds documentation for the workspace without dependency docs.
+    cmds:
+      - cargo doc --workspace --no-deps
+
+  lint:
+    desc: Run Clippy
+    summary: |
+      Runs Clippy across the workspace and treats warnings as errors.
+      Pedantic, nursery, and cargo lint groups are enabled from src (see main.rs / future lib.rs).
+      Thresholds: clippy.toml. Levels: Cargo.toml [lints].
+    cmds:
+      - cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+  fmt:check:
+    desc: Check formatting
+    summary: |
+      Verifies Rust formatting without modifying files.
+      Uses the repo toolchain (nightly) so rustfmt.toml unstable options apply.
+    cmds:
+      - cargo fmt --all -- --check
+
+  fmt:fix:
+    aliases: [fmt]
+    desc: Format code
+    summary: |
+      Formats all Rust sources in the workspace (nightly rustfmt; see rustfmt.toml).
+    cmds:
+      - cargo fmt --all
+
+  clean:
+    desc: Remove build artifacts
+    summary: |
+      Removes Cargo build artifacts.
+    cmds:
+      - cargo clean
+
+  install:lefthook:
+    internal: true
+    desc: Install git hooks if needed
+    summary: |
+      Ensures lefthook hooks are installed.
+      Requires lefthook to be installed and available on PATH.
+    preconditions:
+      - sh: command -v lefthook >/dev/null 2>&1
+        msg: "lefthook is not installed. Please install it first."
+    status:
+      - test -f .git/hooks/pre-commit
+      - grep -q lefthook .git/hooks/pre-commit
+    cmds:
+      - lefthook install
+
+  check:fast:
+    desc: Run fast local verification
+    summary: |
+      Runs formatting checks, linting, and a normal build.
+    deps:
+      - task: install:lefthook
+        silent: true
+    cmds:
+      - task: fmt:check
+      - task: lint
+      - task: build
+
+  check:full:
+    aliases: [check]
+    desc: Run full verification
+    summary: |
+      Runs formatting checks, linting, tests, documentation build, and build.
+    deps:
+      - task: install:lefthook
+        silent: true
+    cmds:
+      - task: fmt:check
+      - task: lint
+      - task: test
+      - task: doc
+      - task: build

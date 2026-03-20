@@ -1,0 +1,63 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+version: "3"
+
+tasks:
+  init:
+    desc: Initialize repository from template by replacing placeholder names
+    dir: "{{.TASKFILE_DIR}}/.."
+    summary: |
+      One-shot initialization: replaces the template GitHub path, slug, and crate
+      name with values derived from MODULE across known files, removes the
+      template-only README section, deletes `.taskfiles/`, refreshes Cargo.lock,
+      and creates a local initialization commit.
+      MODULE defaults to a github.com/... path derived from `git remote get-url origin`.
+      If the derived crate name is invalid for Cargo, fix `Cargo.toml` manually and run `cargo generate-lockfile`.
+      Usage: task -t .taskfiles/template.yml init [MODULE=github.com/owner/repo]
+    preconditions:
+      - sh: git config user.name >/dev/null 2>&1
+        msg: "git user.name is not configured."
+      - sh: git config user.email >/dev/null 2>&1
+        msg: "git user.email is not configured."
+      - sh: command -v cargo >/dev/null 2>&1
+        msg: "cargo is not installed. Install Rust (rustup) first."
+      - sh: command -v perl >/dev/null 2>&1
+        msg: "perl is required for template initialization."
+    vars:
+      OLD_GITHUB_REPO: github.com/shuymn/rust-template
+      OLD_SLUG: shuymn/rust-template
+      OLD_CRATE: rust-template
+      MODULE:
+        sh: |
+          if [ -n "{{.MODULE}}" ]; then
+            printf '%s' '{{.MODULE}}'
+          else
+            git remote get-url origin 2>/dev/null \
+              | sed 's|\.git$||; s|^https://||; s|^git@\([^:]*\):\(.*\)$|\1/\2|'
+          fi
+      NEW_SLUG:
+        sh: printf '%s' '{{.MODULE}}' | sed 's|^github\.com/||'
+      NEW_CRATE:
+        sh: printf '%s' '{{.MODULE}}' | awk -F/ '{print $NF}'
+    cmds:
+      - |
+        perl -i -pe 's|\Q{{.OLD_GITHUB_REPO}}\E|{{.MODULE}}|g' \
+          README.md AGENTS.md \
+          docs/coding.md docs/testing.md docs/tooling.md docs/review.md \
+          .github/workflows/ci.yml
+      - perl -i -pe 's|\Qhttps://github.com/shuymn/rust-template\E|https://{{.MODULE}}|g' Cargo.toml
+      - |
+        perl -i -pe 's|\Q{{.OLD_SLUG}}\E|{{.NEW_SLUG}}|g' \
+          README.md AGENTS.md \
+          docs/coding.md docs/testing.md docs/tooling.md docs/review.md \
+          .github/workflows/ci.yml
+      - |
+        perl -i -pe 's|\Q{{.OLD_CRATE}}\E|{{.NEW_CRATE}}|g' \
+          Cargo.toml README.md \
+          docs/coding.md docs/testing.md docs/tooling.md docs/review.md
+      - perl -i -pe 's|^# \Q{{.OLD_CRATE}}\E$|# {{.NEW_CRATE}}|' README.md
+      - perl -i -0pe 's/\n<!-- template:start -->.*?<!-- template:end -->\n/\n/s' README.md
+      - cargo generate-lockfile
+      - rm -rf .taskfiles
+      - |
+        git add -A
+        git diff --staged --quiet || git commit -m "chore: initialize from template"

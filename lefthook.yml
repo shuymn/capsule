@@ -1,0 +1,40 @@
+assert_lefthook_installed: true
+glob_matcher: doublestar
+no_tty: true
+skip_lfs: true
+
+output:
+  - summary
+  - failure
+  - execution
+  - execution_out
+
+pre-commit:
+  piped: true
+  commands:
+    fmt:
+      tags: [format]
+      glob: "**/*.rs"
+      run: task fmt
+      stage_fixed: true
+
+    lint:
+      tags: [lint]
+      glob: "**/*.rs"
+      run: task lint
+
+    build:
+      tags: [build]
+      glob: "**/*.rs,Cargo.toml,Cargo.lock"
+      run: task build
+
+  skip:
+    - merge: true
+    - rebase: true
+
+pre-push:
+  piped: true
+  commands:
+    checks:
+      tags: [build, test]
+      run: task check

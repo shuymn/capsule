@@ -1,0 +1,7 @@
+# Clippy configuration (thresholds). Lint levels live in Cargo.toml [lints] and crate attributes.
+cognitive-complexity-threshold = 15
+too-many-arguments-threshold = 5
+too-many-lines-threshold = 200
+type-complexity-threshold = 250
+single-char-binding-names-threshold = 2
+excessive-nesting-threshold = 6

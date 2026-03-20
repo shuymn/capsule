@@ -1,0 +1,32 @@
+[package]
+name = "rust-template"
+version = "0.1.0"
+edition = "2024"
+description = "Personal Rust template (bin-first, Task, opinionated rustfmt + clippy)."
+license = "MIT"
+repository = "https://github.com/shuymn/rust-template"
+keywords = ["template"]
+categories = ["development-tools"]
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+[lints.clippy]
+# Deny footguns and half-finished code paths
+dbg_macro = "deny"
+expect_used = "deny"
+infinite_loop = "deny"
+map_err_ignore = "deny"
+panic = "deny"
+str_to_string = "deny"
+implicit_clone = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"
+
+# Stricter API / docs hygiene (warnings promoted to errors via -D warnings in task lint)
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
