@@ -125,6 +125,8 @@ impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
         remove_stale_socket(&self.socket_path).await?;
 
         let listener = UnixListener::bind(&self.socket_path)?;
+        tracing::info!(socket = %self.socket_path.display(), "daemon listening");
+
         let socket_path = self.socket_path;
         let home_dir = Arc::new(self.home_dir);
         let git_provider = self.git_provider;
@@ -136,6 +138,7 @@ impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
             tokio::select! {
                 result = listener.accept() => {
                     let (stream, _) = result?;
+                    tracing::debug!("client connected");
                     let conn_state = Arc::clone(&state);
                     let conn_home = Arc::clone(&home_dir);
                     let conn_git = git_provider.clone();
@@ -147,6 +150,7 @@ impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
             }
         }
 
+        tracing::info!("daemon shutting down");
         let _ = std::fs::remove_file(&socket_path);
         Ok(())
     }
@@ -224,6 +228,7 @@ async fn handle_request<G: GitProvider + Send + 'static>(
     {
         let mut s = state.lock().await;
         if !s.sessions.check_generation(session_id, generation) {
+            tracing::debug!(session_id = %session_id, generation, "stale generation, discarding");
             return Ok(());
         }
     }
@@ -255,6 +260,12 @@ async fn handle_request<G: GitProvider + Send + 'static>(
         left1: lines.left1.clone(),
         left2: lines.left2.clone(),
     };
+    tracing::debug!(
+        session_id = %session_id,
+        generation,
+        cwd = %cwd,
+        "sending RenderResult"
+    );
     let mut w = writer.lock().await;
     w.write_message(&Message::RenderResult(result)).await?;
     drop(w);
@@ -284,6 +295,11 @@ async fn handle_request<G: GitProvider + Send + 'static>(
         // Send Update if prompt changed
         let new_lines = compose_prompt(&fast, Some(&slow), usize::from(cols));
         if new_lines.left1 != sent_left1 || new_lines.left2 != sent_left2 {
+            tracing::debug!(
+                session_id = %session_id,
+                generation,
+                "sending Update (slow modules changed prompt)"
+            );
             let update = Update {
                 version: PROTOCOL_VERSION,
                 session_id,
