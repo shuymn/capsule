@@ -1,6 +1,6 @@
 //! `capsule daemon` — starts the prompt daemon server.
 
-use std::{fs::File, path::PathBuf};
+use std::{fs::File, io::Write as _, path::PathBuf};
 
 use anyhow::Context as _;
 use capsule_core::{daemon::Server, module::CommandGitProvider};
@@ -53,7 +53,7 @@ fn init_tracing() -> anyhow::Result<()> {
 pub fn run() -> anyhow::Result<()> {
     init_tracing()?;
 
-    let lock_file = File::options()
+    let mut lock_file = File::options()
         .create(true)
         .truncate(false)
         .write(true)
@@ -72,16 +72,23 @@ pub fn run() -> anyhow::Result<()> {
     }
     // `lock_file` held until function return — dropping it releases the flock.
 
+    // Write PID so `capsule connect` can send SIGTERM on build_id mismatch.
+    lock_file
+        .set_len(0)
+        .context("failed to truncate lock file")?;
+    write!(lock_file, "{}", std::process::id()).context("failed to write PID to lock file")?;
+
     let socket_path = socket_path();
     let home_dir = home_dir()?;
     let git_provider = CommandGitProvider;
+    let build_id = crate::build_id::compute().unwrap_or_default();
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
 
     rt.block_on(async {
-        let server = Server::new(socket_path, home_dir, git_provider);
+        let server = Server::new(socket_path, home_dir, git_provider, build_id);
 
         let mut sigterm =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
@@ -103,7 +110,7 @@ pub fn socket_path() -> PathBuf {
     tmpdir().join("capsule.sock")
 }
 
-fn lock_path() -> PathBuf {
+pub fn lock_path() -> PathBuf {
     tmpdir().join("capsule.lock")
 }
 

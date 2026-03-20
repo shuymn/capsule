@@ -10,7 +10,7 @@ use std::{
 };
 
 use capsule_protocol::{
-    Message, MessageReader, MessageWriter, PROTOCOL_VERSION, Request, SessionId,
+    Hello, Message, MessageReader, MessageWriter, PROTOCOL_VERSION, Request, SessionId,
 };
 
 // ---------------------------------------------------------------------------
@@ -321,6 +321,41 @@ async fn test_e2e_connect_relay() -> Result<(), Box<dyn std::error::Error>> {
     drop(child_stdin);
     child.wait()?;
 
+    daemon.stop()?;
+    Ok(())
+}
+
+/// Daemon shall respond to a Hello message with a HelloAck containing
+/// its build ID.
+#[tokio::test]
+async fn test_e2e_hello_handshake() -> Result<(), Box<dyn std::error::Error>> {
+    let mut daemon = DaemonProcess::start()?;
+
+    let stream = tokio::net::UnixStream::connect(&daemon.socket_path).await?;
+    let (reader, writer) = stream.into_split();
+    let mut reader = MessageReader::new(reader);
+    let mut writer = MessageWriter::new(writer);
+
+    let hello = Hello {
+        version: PROTOCOL_VERSION,
+        build_id: "test:123".to_owned(),
+    };
+    writer.write_message(&Message::Hello(hello)).await?;
+
+    let resp = tokio::time::timeout(Duration::from_secs(5), reader.read_message()).await??;
+    match resp {
+        Some(Message::HelloAck(ack)) => {
+            assert_eq!(ack.version, PROTOCOL_VERSION);
+            assert!(
+                !ack.build_id.is_empty(),
+                "daemon should return its build_id"
+            );
+        }
+        other => return Err(format!("expected HelloAck, got {other:?}").into()),
+    }
+
+    drop(reader);
+    drop(writer);
     daemon.stop()?;
     Ok(())
 }

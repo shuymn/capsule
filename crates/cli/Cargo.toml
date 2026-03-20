@@ -16,13 +16,13 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 capsule-core = { path = "../core" }
+capsule-protocol = { path = "../protocol" }
 clap.workspace = true
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
-capsule-protocol = { path = "../protocol" }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 

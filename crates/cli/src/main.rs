@@ -2,6 +2,7 @@
 
 #![warn(clippy::pedantic, clippy::nursery, clippy::cargo)]
 
+mod build_id;
 mod cli;
 mod connect;
 mod daemon;
