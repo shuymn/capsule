@@ -54,12 +54,16 @@ _capsule_init() {
 
 _capsule_zshexit() {
     if [[ -n "$_CAPSULE_COPROC_PID" ]]; then
+        setopt localoptions no_monitor
         command kill "$_CAPSULE_COPROC_PID" 2>/dev/null
+        wait "$_CAPSULE_COPROC_PID" 2>/dev/null
         _capsule_cleanup_fds
     fi
 }
 
 _capsule_start_coproc() {
+    setopt localoptions no_monitor
+
     # Kill existing coproc if any
     if [[ -n "$_CAPSULE_COPROC_PID" ]]; then
         command kill "$_CAPSULE_COPROC_PID" 2>/dev/null
@@ -76,6 +80,16 @@ _capsule_start_coproc() {
 
     # Duplicate coproc fds for explicit access
     exec {_CAPSULE_FD_IN}>&p {_CAPSULE_FD_OUT}<&p
+
+    # Detach from zsh's coproc tracking by replacing with a trivial
+    # coproc that exits immediately. Our duplicated fds remain valid;
+    # capsule connect keeps running as a regular (untracked) process.
+    coproc : 2>/dev/null
+    wait $! 2>/dev/null
+
+    # Now that capsule connect is no longer a coproc, disown it
+    # to remove from the job table entirely.
+    disown $_CAPSULE_COPROC_PID 2>/dev/null
 
     return 0
 }
@@ -197,6 +211,11 @@ _capsule_preexec() {
     if (( ${+EPOCHREALTIME} )); then
         _CAPSULE_CMD_START=$EPOCHREALTIME
     fi
+    # The exec builtin replaces the process without firing zshexit;
+    # clean up coproc manually so capsule connect does not hang.
+    if [[ "$1" == exec\ * ]]; then
+        _capsule_zshexit
+    fi
 }
 
 _capsule_async_callback() {
@@ -217,6 +236,10 @@ _capsule_async_callback() {
 }
 
 _capsule_init
+
+# Suppress "you have running jobs" on exit for the capsule coproc.
+# Stopped job warnings (CHECK_JOBS) are preserved.
+setopt NO_CHECK_RUNNING_JOBS
 "#;
 
 #[cfg(test)]
@@ -294,12 +317,18 @@ mod tests {
     }
 
     #[test]
-    fn test_init_zsh_calls_init_at_end() {
+    fn test_init_zsh_calls_init_before_global_options() {
         let script = generate();
-        let trimmed = script.trim_end();
         assert!(
-            trimmed.ends_with("_capsule_init"),
-            "script should call _capsule_init at the end"
+            script.contains("_capsule_init\n"),
+            "script should call _capsule_init"
+        );
+        // _capsule_init must precede global setopt so functions are defined first.
+        let init_pos = script.find("_capsule_init\n");
+        let setopt_pos = script.find("setopt NO_CHECK_RUNNING_JOBS");
+        assert!(
+            init_pos < setopt_pos,
+            "_capsule_init should precede global setopt"
         );
     }
 }
