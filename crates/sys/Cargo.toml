@@ -1,0 +1,30 @@
+[package]
+name = "capsule-sys"
+description = "Platform-specific FFI bindings for capsule"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
+publish = false
+
+[lints.rust]
+# FFI crate — unsafe is required for C interop.
+unsafe_code = "allow"
+unused_must_use = "deny"
+
+[lints.clippy]
+dbg_macro = "deny"
+expect_used = "deny"
+infinite_loop = "deny"
+map_err_ignore = "deny"
+panic = "deny"
+str_to_string = "deny"
+implicit_clone = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
