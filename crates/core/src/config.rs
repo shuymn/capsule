@@ -23,6 +23,8 @@ pub struct Config {
     pub cmd_duration: CmdDurationConfig,
     /// Connector words between segments.
     pub connectors: ConnectorConfig,
+    /// Timeout settings for module execution.
+    pub timeout: TimeoutConfig,
     /// User-defined prompt modules (`[[module]]` array).
     #[serde(default)]
     pub module: Vec<ModuleDef>,
@@ -270,6 +272,25 @@ impl SourceDef {
     #[must_use]
     pub const fn is_command(&self) -> bool {
         self.command.is_some()
+    }
+}
+
+/// Timeout settings for module execution.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(default)]
+pub struct TimeoutConfig {
+    /// Maximum time in milliseconds to wait for fast modules (env/file).
+    pub fast_ms: u64,
+    /// Maximum time in milliseconds to wait for slow modules (commands/git).
+    pub slow_ms: u64,
+}
+
+impl Default for TimeoutConfig {
+    fn default() -> Self {
+        Self {
+            fast_ms: 500,
+            slow_ms: 5000,
+        }
     }
 }
 
