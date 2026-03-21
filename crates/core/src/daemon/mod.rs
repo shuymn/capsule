@@ -28,7 +28,7 @@ use tokio::{
 use crate::{
     module::{
         CharacterModule, CmdDurationModule, DirectoryModule, GitModule, GitProvider, Module,
-        RenderContext, TimeModule, ToolchainModule,
+        RenderContext, TimeModule, ToolchainInfo, detect_toolchain,
     },
     render::{
         PromptLines, compose_segments,
@@ -65,7 +65,6 @@ pub enum DaemonError {
 #[derive(Debug, Clone)]
 struct FastOutputs {
     directory: Option<String>,
-    toolchain: Option<String>,
     cmd_duration: Option<String>,
     time: Option<String>,
     character: Option<String>,
@@ -77,6 +76,7 @@ struct FastOutputs {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SlowOutput {
     git: Option<String>,
+    toolchain: Option<ToolchainInfo>,
 }
 
 struct SharedState {
@@ -382,7 +382,6 @@ async fn handle_request<G: GitProvider + Send + 'static>(
 fn run_fast_modules(ctx: &RenderContext<'_>) -> FastOutputs {
     FastOutputs {
         directory: DirectoryModule::new().render(ctx).map(|o| o.content),
-        toolchain: ToolchainModule::new().render(ctx).map(|o| o.content),
         cmd_duration: CmdDurationModule::new().render(ctx).map(|o| o.content),
         time: TimeModule::new().render(ctx).map(|o| o.content),
         character: CharacterModule::new().render(ctx).map(|o| o.content),
@@ -391,9 +390,10 @@ fn run_fast_modules(ctx: &RenderContext<'_>) -> FastOutputs {
 }
 
 fn run_slow_modules<G: GitProvider>(cwd: &Path, provider: G) -> SlowOutput {
-    let module = GitModule::new(provider);
+    let git_module = GitModule::new(provider);
     SlowOutput {
-        git: module.render_for_cwd(cwd).map(|o| o.content),
+        git: git_module.render_for_cwd(cwd).map(|o| o.content),
+        toolchain: detect_toolchain(cwd),
     }
 }
 
@@ -401,22 +401,31 @@ fn run_slow_modules<G: GitProvider>(cwd: &Path, provider: G) -> SlowOutput {
 // Prompt composition
 // ---------------------------------------------------------------------------
 
-/// Nerd Font icon for a toolchain name.
+/// Nerd Font icon for a toolchain name (Starship nerd-font-symbols preset).
 fn toolchain_icon(name: &str) -> Option<&'static str> {
     match name {
-        "rust" => Some("\u{e7a8}"),   //
-        "node" => Some("\u{e718}"),   //
-        "go" => Some("\u{e627}"),     //
-        "python" => Some("\u{e73c}"), //
-        "ruby" => Some("\u{e23e}"),   //
-        "bun" => Some("\u{e79e}"),    //
-        "elixir" => Some("\u{e62d}"), //
+        "rust" => Some("\u{f1617}"),
+        "node" => Some("\u{e718}"),
+        "go" => Some("\u{e627}"),
+        "python" => Some("\u{e235}"),
+        "ruby" => Some("\u{e791}"),
+        "bun" => Some("\u{e76f}"),
         _ => None,
     }
 }
 
+/// Starship-compatible theme color for a toolchain.
+fn toolchain_style(name: &str) -> Style {
+    match name {
+        "node" => Style::new().fg(Color::Green).bold(),
+        "go" => Style::new().fg(Color::Cyan).bold(),
+        "python" => Style::new().fg(Color::Yellow).bold(),
+        "rust" | "ruby" | "bun" => Style::new().fg(Color::Red).bold(),
+        _ => Style::new().fg(Color::BrightBlack),
+    }
+}
+
 const CONNECTOR_STYLE: Style = Style::new();
-const MUTED: Style = Style::new().fg(Color::BrightBlack);
 const TIME_STYLE: Style = Style::new().fg(Color::Yellow);
 
 const fn connector(word: &'static str) -> Connector {
@@ -456,13 +465,14 @@ fn compose_prompt(fast: &FastOutputs, slow: Option<&SlowOutput>, cols: usize) ->
         });
     }
 
-    if let Some(ref tc) = fast.toolchain {
-        let icon = toolchain_icon(tc).map(|glyph| icon(glyph, MUTED));
+    if let Some(tc) = slow.and_then(|s| s.toolchain.as_ref()) {
+        let style = toolchain_style(tc.name);
+        let tc_icon = toolchain_icon(tc.name).map(|glyph| icon(glyph, style));
         line1.push(Segment {
-            content: tc.clone(),
+            content: tc.version.clone(),
             connector: Some(connector("via")),
-            icon,
-            content_style: Some(MUTED),
+            icon: tc_icon,
+            content_style: Some(style),
         });
     }
 
@@ -539,11 +549,17 @@ mod tests {
     fn make_fast_outputs() -> FastOutputs {
         FastOutputs {
             directory: Some("/tmp".to_owned()),
-            toolchain: None,
             cmd_duration: None,
             time: None,
             character: Some("\u{276f}".to_owned()),
             last_exit_code: 0,
+        }
+    }
+
+    fn make_slow_output() -> SlowOutput {
+        SlowOutput {
+            git: None,
+            toolchain: None,
         }
     }
 
@@ -562,10 +578,6 @@ mod tests {
 
     fn contains_ansi_code(line: &str, code: &str) -> bool {
         line.contains(code)
-    }
-
-    fn contains_bright_black_ansi(line: &str) -> bool {
-        contains_ansi_code(line, "\x1b[90m")
     }
 
     fn contains_yellow_ansi(line: &str) -> bool {
@@ -672,6 +684,7 @@ mod tests {
         let fast = make_fast_outputs();
         let slow = SlowOutput {
             git: Some("main".to_owned()),
+            ..make_slow_output()
         };
         let lines = compose_prompt(&fast, Some(&slow), 80);
         assert!(lines.left1.contains("/tmp"), "left1: {}", lines.left1);
@@ -690,7 +703,7 @@ mod tests {
     #[test]
     fn test_daemon_compose_prompt_slow_none_git() {
         let fast = make_fast_outputs();
-        let slow = SlowOutput { git: None };
+        let slow = make_slow_output();
         let without_slow = compose_prompt(&fast, None, 80);
         let with_none_git = compose_prompt(&fast, Some(&slow), 80);
         assert_eq!(without_slow, with_none_git);
@@ -733,20 +746,58 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_compose_prompt_with_toolchain() {
-        let fast = FastOutputs {
-            toolchain: Some("rust".to_owned()),
-            ..make_fast_outputs()
+    fn test_daemon_compose_prompt_with_toolchain_version() {
+        let fast = make_fast_outputs();
+        let slow = SlowOutput {
+            toolchain: Some(ToolchainInfo {
+                name: "rust",
+                version: "v1.82.0".to_owned(),
+            }),
+            ..make_slow_output()
         };
-        let lines = compose_prompt(&fast, None, 80);
+        let lines = compose_prompt(&fast, Some(&slow), 80);
         assert!(
             lines.left1.contains("via"),
             "left1 should contain 'via' connector: {}",
             lines.left1
         );
         assert!(
-            lines.left1.contains("rust"),
-            "left1 should contain toolchain: {}",
+            lines.left1.contains("v1.82.0"),
+            "left1 should contain version: {}",
+            lines.left1
+        );
+        assert!(
+            !lines.left1.contains("rust"),
+            "left1 should not contain toolchain name: {}",
+            lines.left1
+        );
+    }
+
+    #[test]
+    fn test_daemon_compose_prompt_toolchain_uses_theme_color() {
+        let fast = make_fast_outputs();
+        let slow = SlowOutput {
+            toolchain: Some(ToolchainInfo {
+                name: "rust",
+                version: "v1.82.0".to_owned(),
+            }),
+            ..make_slow_output()
+        };
+        let lines = compose_prompt(&fast, Some(&slow), 80);
+        assert!(
+            lines.left1.contains("\x1b[1;31m"),
+            "rust toolchain should use bold red: {}",
+            lines.left1
+        );
+    }
+
+    #[test]
+    fn test_daemon_compose_prompt_no_toolchain_without_slow() {
+        let fast = make_fast_outputs();
+        let lines = compose_prompt(&fast, None, 80);
+        assert!(
+            !lines.left1.contains("via"),
+            "toolchain should not appear without slow output: {}",
             lines.left1
         );
     }
@@ -780,12 +831,15 @@ mod tests {
     #[test]
     fn test_daemon_compose_prompt_does_not_dim_connectors() {
         let fast = FastOutputs {
-            toolchain: Some("rust".to_owned()),
             time: Some("14:30:45".to_owned()),
             ..make_fast_outputs()
         };
         let slow = SlowOutput {
             git: Some("main".to_owned()),
+            toolchain: Some(ToolchainInfo {
+                name: "rust",
+                version: "v1.82.0".to_owned(),
+            }),
         };
         let lines = compose_prompt(&fast, Some(&slow), 80);
         assert!(
@@ -815,8 +869,8 @@ mod tests {
             lines.left2
         );
         assert!(
-            contains_bright_black_ansi(&lines.left1),
-            "toolchain content/icon should still use bright black: {}",
+            lines.left1.contains("\x1b[1;31m"),
+            "rust toolchain should use bold red: {}",
             lines.left1
         );
         assert!(

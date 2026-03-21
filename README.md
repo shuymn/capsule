@@ -33,7 +33,7 @@ The rendered prompt is split into two lines.
 Line 1 currently combines available segments such as:
 
 - current directory
-- detected toolchain (`rust`, `node`, `python`, `go`, `bun`, `ruby`, `elixir`)
+- detected toolchain with version (`rust`, `node`, `python`, `go`, `bun`, `ruby`)
 - Git branch and working tree indicators
 - command duration when the previous command took at least 2 seconds
 
