@@ -80,12 +80,24 @@ impl GitProvider for CommandGitProvider {
 #[allow(clippy::module_name_repetitions)]
 pub struct GitModule<G> {
     provider: G,
+    indicator_color: Color,
 }
 
 impl<G> GitModule<G> {
-    /// Creates a new `GitModule` with the given provider.
+    /// Creates a new `GitModule` with the given provider and default indicator color.
     pub const fn new(provider: G) -> Self {
-        Self { provider }
+        Self {
+            provider,
+            indicator_color: Color::Red,
+        }
+    }
+
+    /// Creates a new `GitModule` with the given provider and custom indicator color.
+    pub const fn with_indicator_color(provider: G, indicator_color: Color) -> Self {
+        Self {
+            provider,
+            indicator_color,
+        }
     }
 }
 
@@ -103,7 +115,7 @@ impl<G: GitProvider> GitModule<G> {
                 return None;
             }
         };
-        let content = format_git_output(&status);
+        let content = format_git_output(&status, self.indicator_color);
         if content.is_empty() {
             return None;
         }
@@ -188,7 +200,7 @@ fn parse_changed_entry(line: &str, status: &mut GitStatus) {
 // Formatting
 // ---------------------------------------------------------------------------
 
-fn format_git_output(status: &GitStatus) -> String {
+fn format_git_output(status: &GitStatus, indicator_color: Color) -> String {
     let mut out = String::with_capacity(64);
 
     if let Some(ref branch) = status.branch {
@@ -234,7 +246,7 @@ fn format_git_output(status: &GitStatus) -> String {
         if !out.is_empty() {
             out.push(' ');
         }
-        let bracket_style = Style::new().fg(Color::Red).bold();
+        let bracket_style = Style::new().fg(indicator_color).bold();
         indicators.insert(0, '[');
         indicators.push(']');
         out.push_str(&bracket_style.paint(&indicators));
@@ -318,7 +330,7 @@ mod tests {
             branch: Some("main".to_owned()),
             ..GitStatus::default()
         };
-        let output = format_git_output(&status);
+        let output = format_git_output(&status, Color::Red);
         assert_eq!(display_width(&output), 4, "visible width: {output:?}");
         assert!(output.contains("main"), "should contain branch name");
         assert!(
@@ -343,7 +355,7 @@ mod tests {
             ahead: 1,
             ..GitStatus::default()
         };
-        let output = format_git_output(&status);
+        let output = format_git_output(&status, Color::Red);
         // "main [!+?⇡]" = 4 + 1 + 6 = 11 visible chars
         assert_eq!(display_width(&output), 11, "visible width: {output:?}");
         assert!(output.contains("main"), "should contain branch");
@@ -364,7 +376,7 @@ mod tests {
             staged: 1,
             ..GitStatus::default()
         };
-        let output = format_git_output(&status);
+        let output = format_git_output(&status, Color::Red);
         // "[+]" = 3 visible chars
         assert_eq!(display_width(&output), 3, "visible width: {output:?}");
         assert!(
@@ -508,7 +520,7 @@ mod tests {
             conflicted: 1,
             ..GitStatus::default()
         };
-        let output = format_git_output(&status);
+        let output = format_git_output(&status, Color::Red);
         assert!(
             output.contains("[=]"),
             "conflict should use '=' not '~': {output:?}"
@@ -522,7 +534,7 @@ mod tests {
             stashed: 3,
             ..GitStatus::default()
         };
-        let output = format_git_output(&status);
+        let output = format_git_output(&status, Color::Red);
         assert!(output.contains("[$]"), "stash should show '$': {output:?}");
     }
 
@@ -533,7 +545,7 @@ mod tests {
             deleted: 1,
             ..GitStatus::default()
         };
-        let output = format_git_output(&status);
+        let output = format_git_output(&status, Color::Red);
         assert!(
             output.contains("[✘]"),
             "deleted should show '✘': {output:?}"
@@ -547,7 +559,7 @@ mod tests {
             renamed: 1,
             ..GitStatus::default()
         };
-        let output = format_git_output(&status);
+        let output = format_git_output(&status, Color::Red);
         assert!(
             output.contains("[»]"),
             "renamed should show '»': {output:?}"
@@ -562,7 +574,7 @@ mod tests {
             behind: 1,
             ..GitStatus::default()
         };
-        let output = format_git_output(&status);
+        let output = format_git_output(&status, Color::Red);
         assert!(
             output.contains('⇕'),
             "diverged (ahead+behind) should show '⇕': {output:?}"
@@ -591,7 +603,7 @@ mod tests {
             ahead: 1,
             behind: 0,
         };
-        let output = format_git_output(&status);
+        let output = format_git_output(&status, Color::Red);
         // Strip all ANSI/zsh escapes to get visible text
         let clean = strip_ansi_and_zsh(&output);
         // Expected visible: "main [=$✘»!+?⇡]"

@@ -127,11 +127,11 @@ mod tests {
         }
     }
 
-    fn seg_with_connector(content: &str, word: &'static str) -> Segment {
+    fn seg_with_connector(content: &str, word: &str) -> Segment {
         Segment {
             content: content.to_owned(),
             connector: Some(Connector {
-                word,
+                word: word.to_owned(),
                 style: Style::new().dimmed(),
             }),
             icon: None,

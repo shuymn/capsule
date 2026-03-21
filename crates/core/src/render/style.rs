@@ -6,7 +6,8 @@
 use std::fmt::Write;
 
 /// Terminal foreground colors.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Color {
     /// Red (ANSI 31).
     Red,

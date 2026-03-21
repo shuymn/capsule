@@ -2,21 +2,37 @@
 
 use super::{Module, ModuleOutput, ModuleSpeed, RenderContext};
 
-/// Threshold in milliseconds below which duration is not shown.
-const THRESHOLD_MS: u64 = 2000;
+/// Default threshold in milliseconds below which duration is not shown.
+const DEFAULT_THRESHOLD_MS: u64 = 2000;
 
 /// Displays the duration of the last command when it exceeds the threshold.
 ///
 /// Returns `None` when duration is absent or below the threshold.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 #[allow(clippy::module_name_repetitions)]
-pub struct CmdDurationModule;
+pub struct CmdDurationModule {
+    threshold_ms: u64,
+}
+
+impl Default for CmdDurationModule {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl CmdDurationModule {
-    /// Creates a new `CmdDurationModule`.
+    /// Creates a new `CmdDurationModule` with the default threshold.
     #[must_use]
     pub const fn new() -> Self {
-        Self
+        Self {
+            threshold_ms: DEFAULT_THRESHOLD_MS,
+        }
+    }
+
+    /// Creates a new `CmdDurationModule` with a custom threshold.
+    #[must_use]
+    pub const fn with_threshold(threshold_ms: u64) -> Self {
+        Self { threshold_ms }
     }
 }
 
@@ -31,7 +47,7 @@ impl Module for CmdDurationModule {
 
     fn render(&self, ctx: &RenderContext<'_>) -> Option<ModuleOutput> {
         let ms = ctx.duration_ms?;
-        if ms < THRESHOLD_MS {
+        if ms < self.threshold_ms {
             return None;
         }
         Some(ModuleOutput {

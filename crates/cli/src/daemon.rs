@@ -4,6 +4,7 @@ use std::{fs::File, io::Write as _, path::PathBuf};
 
 use anyhow::Context as _;
 use capsule_core::{
+    config,
     daemon::{
         Server,
         listener::{ListenerMode, ListenerSource, acquire_listener},
@@ -90,13 +91,14 @@ fn run_server(
     let home_dir = home_dir()?;
     let git_provider = CommandGitProvider;
     let build_id = crate::build_id::compute().unwrap_or_default();
+    let cfg = std::sync::Arc::new(config::load_default_config());
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
 
     rt.block_on(async {
-        let server = Server::new(home_dir, git_provider, build_id, mode);
+        let server = Server::new(home_dir, git_provider, build_id, mode, cfg);
 
         let mut sigterm =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;

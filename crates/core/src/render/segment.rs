@@ -10,7 +10,7 @@ use super::style::Style;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Connector {
     /// The connector text (e.g., "on", "via", "at").
-    pub(crate) word: &'static str,
+    pub(crate) word: String,
     /// Style applied to the connector word.
     pub(crate) style: Style,
 }
@@ -19,7 +19,7 @@ pub(crate) struct Connector {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Icon {
     /// The icon glyph (Nerd Font).
-    pub(crate) glyph: &'static str,
+    pub(crate) glyph: String,
     /// Style applied to the icon.
     pub(crate) style: Style,
 }
@@ -50,12 +50,12 @@ impl Segment {
         let mut out = String::with_capacity(self.content.len() + 32);
 
         if let Some(ref conn) = self.connector {
-            out.push_str(&conn.style.paint(conn.word));
+            out.push_str(&conn.style.paint(&conn.word));
             out.push(' ');
         }
 
         if let Some(ref icon) = self.icon {
-            out.push_str(&icon.style.paint(icon.glyph));
+            out.push_str(&icon.style.paint(&icon.glyph));
             out.push(' ');
         }
 
@@ -106,7 +106,7 @@ mod tests {
         let seg = Segment {
             content: "main".to_owned(),
             connector: Some(Connector {
-                word: "on",
+                word: "on".to_owned(),
                 style: Style::new().dimmed(),
             }),
             icon: None,
@@ -128,7 +128,7 @@ mod tests {
             content: "main".to_owned(),
             connector: None,
             icon: Some(Icon {
-                glyph: "",
+                glyph: String::new(),
                 style: Style::new().fg(Color::Magenta),
             }),
             content_style: None,
@@ -143,11 +143,11 @@ mod tests {
         let seg = Segment {
             content: "main".to_owned(),
             connector: Some(Connector {
-                word: "on",
+                word: "on".to_owned(),
                 style: Style::new().dimmed(),
             }),
             icon: Some(Icon {
-                glyph: "",
+                glyph: String::new(),
                 style: Style::new().fg(Color::Magenta),
             }),
             content_style: Some(Style::new().fg(Color::Magenta).bold()),
@@ -163,11 +163,11 @@ mod tests {
         let seg = Segment {
             content: "dir".to_owned(),
             connector: Some(Connector {
-                word: "on",
+                word: "on".to_owned(),
                 style: Style::new().fg(Color::BrightBlack),
             }),
             icon: Some(Icon {
-                glyph: "*",
+                glyph: "*".to_owned(),
                 style: Style::new().fg(Color::Magenta),
             }),
             content_style: Some(Style::new().fg(Color::Cyan)),
@@ -198,7 +198,7 @@ mod tests {
         let seg = Segment {
             content: "main".to_owned(),
             connector: Some(Connector {
-                word: "on",
+                word: "on".to_owned(),
                 style: Style::new().fg(Color::BrightBlack),
             }),
             icon: None,

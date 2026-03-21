@@ -28,9 +28,10 @@ use tokio::{
 };
 
 use crate::{
+    config::Config,
     module::{
-        CharacterModule, CmdDurationModule, DirectoryModule, GitModule, GitProvider, Module,
-        RenderContext, TimeModule, ToolchainInfo, detect_toolchain,
+        CmdDurationModule, DirectoryModule, GitModule, GitProvider, Module, RenderContext,
+        TimeModule, ToolchainInfo, detect_toolchain,
     },
     render::{
         PromptLines, compose_segments,
@@ -109,6 +110,7 @@ pub struct Server<G> {
     git_provider: G,
     build_id: String,
     listener_mode: ListenerMode,
+    config: Arc<Config>,
 }
 
 impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
@@ -121,17 +123,20 @@ impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
     /// * `build_id` — binary fingerprint for Hello/HelloAck negotiation
     /// * `listener_mode` — how the listener was obtained (carries socket
     ///   path for [`ListenerMode::Bound`])
+    /// * `config` — prompt configuration
     pub const fn new(
         home_dir: PathBuf,
         git_provider: G,
         build_id: String,
         listener_mode: ListenerMode,
+        config: Arc<Config>,
     ) -> Self {
         Self {
             home_dir,
             git_provider,
             build_id,
             listener_mode,
+            config,
         }
     }
 
@@ -166,6 +171,7 @@ impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
             git_provider: self.git_provider,
             build_id: Arc::new(self.build_id),
             state: Arc::new(Mutex::new(SharedState::new())),
+            config: self.config,
         };
 
         match self.listener_mode {
@@ -183,6 +189,7 @@ struct AcceptCtx<G> {
     git_provider: G,
     build_id: Arc<String>,
     state: Arc<Mutex<SharedState>>,
+    config: Arc<Config>,
 }
 
 impl<G> AcceptCtx<G> {
@@ -190,18 +197,28 @@ impl<G> AcceptCtx<G> {
     where
         G: GitProvider + Clone + Send + 'static,
     {
-        let conn_state = Arc::clone(&self.state);
-        let conn_home = Arc::clone(&self.home_dir);
-        let conn_git = self.git_provider.clone();
-        let conn_build_id = Arc::clone(&self.build_id);
+        let ctx = ConnectionCtx {
+            state: Arc::clone(&self.state),
+            home_dir: Arc::clone(&self.home_dir),
+            git_provider: self.git_provider.clone(),
+            build_id: Arc::clone(&self.build_id),
+            config: Arc::clone(&self.config),
+        };
         tokio::spawn(async move {
-            if let Err(e) =
-                handle_connection(stream, conn_state, conn_home, conn_git, conn_build_id).await
-            {
+            if let Err(e) = handle_connection(stream, ctx).await {
                 tracing::warn!(error = %e, "client connection error");
             }
         });
     }
+}
+
+/// Per-connection context, cloned from [`AcceptCtx`] for each spawned handler.
+struct ConnectionCtx<G> {
+    state: Arc<Mutex<SharedState>>,
+    home_dir: Arc<PathBuf>,
+    git_provider: G,
+    build_id: Arc<String>,
+    config: Arc<Config>,
 }
 
 impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
@@ -286,10 +303,7 @@ impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
 
 async fn handle_connection<G: GitProvider + Clone + Send + 'static>(
     stream: UnixStream,
-    state: Arc<Mutex<SharedState>>,
-    home_dir: Arc<PathBuf>,
-    git_provider: G,
-    build_id: Arc<String>,
+    ctx: ConnectionCtx<G>,
 ) -> Result<(), DaemonError> {
     let (reader, writer) = stream.into_split();
     let mut msg_reader = MessageReader::new(reader);
@@ -300,17 +314,18 @@ async fn handle_connection<G: GitProvider + Clone + Send + 'static>(
             Ok(Some(Message::Request(req))) => {
                 handle_request(
                     req,
-                    Arc::clone(&state),
+                    Arc::clone(&ctx.state),
                     Arc::clone(&msg_writer),
-                    &home_dir,
-                    git_provider.clone(),
+                    &ctx.home_dir,
+                    ctx.git_provider.clone(),
+                    Arc::clone(&ctx.config),
                 )
                 .await?;
             }
             Ok(Some(Message::Hello(_))) => {
                 let ack = HelloAck {
                     version: PROTOCOL_VERSION,
-                    build_id: (*build_id).clone(),
+                    build_id: (*ctx.build_id).clone(),
                 };
                 let mut w = msg_writer.lock().await;
                 w.write_message(&Message::HelloAck(ack)).await?;
@@ -332,12 +347,14 @@ async fn handle_connection<G: GitProvider + Clone + Send + 'static>(
 // Request pipeline
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_request<G: GitProvider + Send + 'static>(
     req: Request,
     state: Arc<Mutex<SharedState>>,
     writer: Arc<Mutex<MessageWriter<tokio::net::unix::OwnedWriteHalf>>>,
     home_dir: &Path,
     git_provider: G,
+    config: Arc<Config>,
 ) -> Result<(), DaemonError> {
     let session_id = req.session_id;
     let generation = req.generation;
@@ -364,7 +381,7 @@ async fn handle_request<G: GitProvider + Send + 'static>(
         keymap: &req.keymap,
         cols,
     };
-    let fast = run_fast_modules(&ctx);
+    let fast = run_fast_modules(&ctx, &config);
 
     // Cache lookup for slow results
     let cached_slow = {
@@ -373,7 +390,7 @@ async fn handle_request<G: GitProvider + Send + 'static>(
     };
 
     // Compose and send RenderResult
-    let lines = compose_prompt(&fast, cached_slow.as_ref(), usize::from(cols));
+    let lines = compose_prompt(&fast, cached_slow.as_ref(), usize::from(cols), &config);
     let result = RenderResult {
         version: PROTOCOL_VERSION,
         session_id,
@@ -394,11 +411,14 @@ async fn handle_request<G: GitProvider + Send + 'static>(
     // Spawn slow module recomputation in background
     let sent_left1 = lines.left1;
     let sent_left2 = lines.left2;
+    let slow_config = Arc::clone(&config);
     tokio::spawn(async move {
         let cwd_for_slow = PathBuf::from(&cwd);
-        let Ok(slow) =
-            tokio::task::spawn_blocking(move || run_slow_modules(&cwd_for_slow, git_provider))
-                .await
+        let indicator_color = slow_config.git.indicator_color;
+        let Ok(slow) = tokio::task::spawn_blocking(move || {
+            run_slow_modules(&cwd_for_slow, git_provider, indicator_color)
+        })
+        .await
         else {
             return;
         };
@@ -414,7 +434,7 @@ async fn handle_request<G: GitProvider + Send + 'static>(
         }
 
         // Send Update if prompt changed
-        let new_lines = compose_prompt(&fast, Some(&slow), usize::from(cols));
+        let new_lines = compose_prompt(&fast, Some(&slow), usize::from(cols), &slow_config);
         if new_lines.left1 != sent_left1 || new_lines.left2 != sent_left2 {
             tracing::debug!(
                 session_id = %session_id,
@@ -441,20 +461,29 @@ async fn handle_request<G: GitProvider + Send + 'static>(
 // Module execution
 // ---------------------------------------------------------------------------
 
-fn run_fast_modules(ctx: &RenderContext<'_>) -> FastOutputs {
+fn run_fast_modules(ctx: &RenderContext<'_>, config: &Config) -> FastOutputs {
     let read_only = std::fs::metadata(ctx.cwd).is_ok_and(|m| m.permissions().readonly());
+    let time = if config.time.enabled {
+        TimeModule::with_show_seconds(config.time.show_seconds())
+            .render(ctx)
+            .map(|o| o.content)
+    } else {
+        None
+    };
     FastOutputs {
         directory: DirectoryModule::new().render(ctx).map(|o| o.content),
-        cmd_duration: CmdDurationModule::new().render(ctx).map(|o| o.content),
-        time: TimeModule::new().render(ctx).map(|o| o.content),
-        character: CharacterModule::new().render(ctx).map(|o| o.content),
+        cmd_duration: CmdDurationModule::with_threshold(config.cmd_duration.threshold_ms)
+            .render(ctx)
+            .map(|o| o.content),
+        time,
+        character: Some(config.character.glyph.clone()),
         last_exit_code: ctx.last_exit_code,
         read_only,
     }
 }
 
-fn run_slow_modules<G: GitProvider>(cwd: &Path, provider: G) -> SlowOutput {
-    let git_module = GitModule::new(provider);
+fn run_slow_modules<G: GitProvider>(cwd: &Path, provider: G, indicator_color: Color) -> SlowOutput {
+    let git_module = GitModule::with_indicator_color(provider, indicator_color);
     SlowOutput {
         git: git_module.render_for_cwd(cwd).map(|o| o.content),
         toolchain: detect_toolchain(cwd),
@@ -466,7 +495,9 @@ fn run_slow_modules<G: GitProvider>(cwd: &Path, provider: G) -> SlowOutput {
 // ---------------------------------------------------------------------------
 
 /// Nerd Font icon for a toolchain name (Starship nerd-font-symbols preset).
-fn toolchain_icon(name: &str) -> Option<&'static str> {
+///
+/// Accepts `&Config` for future toolchain DSL support (Theme 15).
+fn toolchain_icon(_config: &Config, name: &str) -> Option<&'static str> {
     match name {
         "rust" => Some("\u{f1617}"),
         "node" => Some("\u{e718}"),
@@ -479,7 +510,9 @@ fn toolchain_icon(name: &str) -> Option<&'static str> {
 }
 
 /// Starship-compatible theme color for a toolchain.
-fn toolchain_style(name: &str) -> Style {
+///
+/// Accepts `&Config` for future toolchain DSL support (Theme 15).
+fn toolchain_style(_config: &Config, name: &str) -> Style {
     match name {
         "node" => Style::new().fg(Color::Green).bold(),
         "go" => Style::new().fg(Color::Cyan).bold(),
@@ -490,32 +523,40 @@ fn toolchain_style(name: &str) -> Style {
 }
 
 const CONNECTOR_STYLE: Style = Style::new();
-const DIR_STYLE: Style = Style::new().fg(Color::Cyan).bold();
-const TIME_STYLE: Style = Style::new().fg(Color::Yellow);
 
-const fn connector(word: &'static str) -> Connector {
+fn make_connector(word: &str) -> Connector {
     Connector {
-        word,
+        word: word.to_owned(),
         style: CONNECTOR_STYLE,
     }
 }
 
-const fn icon(glyph: &'static str, style: Style) -> Icon {
-    Icon { glyph, style }
+fn make_icon(glyph: &str, style: Style) -> Icon {
+    Icon {
+        glyph: glyph.to_owned(),
+        style,
+    }
 }
 
 /// Prompt layout (Starship-compatible):
 /// - Info line (left1):  `[directory] on [git] via [toolchain] [cmd_duration]`
 /// - Input line (left2): `at [time] [character]`
-fn compose_prompt(fast: &FastOutputs, slow: Option<&SlowOutput>, cols: usize) -> PromptLines {
+fn compose_prompt(
+    fast: &FastOutputs,
+    slow: Option<&SlowOutput>,
+    cols: usize,
+    config: &Config,
+) -> PromptLines {
+    let dir_style = Style::new().fg(config.directory.color).bold();
+
     // -- Line 1: info line --
     let mut line1: Vec<Segment> = Vec::with_capacity(4);
 
     if let Some(ref dir) = fast.directory {
         if fast.read_only {
-            // Pre-style: path in bold cyan + lock icon in red
+            // Pre-style: path in bold dir color + lock icon in red
             let lock_style = Style::new().fg(Color::Red);
-            let content = format!("{} {}", DIR_STYLE.paint(dir), lock_style.paint("\u{f023}"));
+            let content = format!("{} {}", dir_style.paint(dir), lock_style.paint("\u{f023}"));
             line1.push(Segment {
                 content,
                 connector: None,
@@ -527,7 +568,7 @@ fn compose_prompt(fast: &FastOutputs, slow: Option<&SlowOutput>, cols: usize) ->
                 content: dir.clone(),
                 connector: None,
                 icon: None,
-                content_style: Some(DIR_STYLE),
+                content_style: Some(dir_style),
             });
         }
     }
@@ -536,18 +577,18 @@ fn compose_prompt(fast: &FastOutputs, slow: Option<&SlowOutput>, cols: usize) ->
     if let Some(git) = slow.and_then(|s| s.git.as_deref()) {
         line1.push(Segment {
             content: git.to_owned(),
-            connector: Some(connector("on")),
-            icon: Some(icon("\u{f418}", Style::new().fg(Color::Magenta))),
+            connector: Some(make_connector(&config.connectors.git)),
+            icon: Some(make_icon(&config.git.icon, Style::new().fg(Color::Magenta))),
             content_style: None, // pre-styled
         });
     }
 
     if let Some(tc) = slow.and_then(|s| s.toolchain.as_ref()) {
-        let style = toolchain_style(tc.name);
-        let tc_icon = toolchain_icon(tc.name).map(|glyph| icon(glyph, style));
+        let style = toolchain_style(config, tc.name);
+        let tc_icon = toolchain_icon(config, tc.name).map(|glyph| make_icon(glyph, style));
         line1.push(Segment {
             content: tc.version.clone(),
-            connector: Some(connector("via")),
+            connector: Some(make_connector(&config.connectors.toolchain)),
             icon: tc_icon,
             content_style: Some(style),
         });
@@ -556,9 +597,9 @@ fn compose_prompt(fast: &FastOutputs, slow: Option<&SlowOutput>, cols: usize) ->
     if let Some(ref dur) = fast.cmd_duration {
         line1.push(Segment {
             content: dur.clone(),
-            connector: Some(connector("took")),
+            connector: Some(make_connector(&config.connectors.cmd_duration)),
             icon: None,
-            content_style: Some(Style::new().fg(Color::Yellow)),
+            content_style: Some(Style::new().fg(config.cmd_duration.color)),
         });
     }
 
@@ -568,17 +609,17 @@ fn compose_prompt(fast: &FastOutputs, slow: Option<&SlowOutput>, cols: usize) ->
     if let Some(ref time) = fast.time {
         line2.push(Segment {
             content: time.clone(),
-            connector: Some(connector("at")),
+            connector: Some(make_connector(&config.connectors.time)),
             icon: None,
-            content_style: Some(TIME_STYLE),
+            content_style: Some(Style::new().fg(config.time.color)),
         });
     }
 
     if let Some(ref ch) = fast.character {
         let char_style = if fast.last_exit_code == 0 {
-            Style::new().fg(Color::Green)
+            Style::new().fg(config.character.success_color)
         } else {
-            Style::new().fg(Color::Red)
+            Style::new().fg(config.character.error_color)
         };
         line2.push(Segment {
             content: ch.clone(),
@@ -619,6 +660,10 @@ mod tests {
 
     // -- Helpers --------------------------------------------------------------
 
+    fn default_config() -> Config {
+        Config::default()
+    }
+
     fn test_sid() -> SessionId {
         SessionId::from_bytes([0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef])
     }
@@ -654,12 +699,8 @@ mod tests {
         }
     }
 
-    fn contains_ansi_code(line: &str, code: &str) -> bool {
-        line.contains(code)
-    }
-
     fn contains_yellow_ansi(line: &str) -> bool {
-        contains_ansi_code(line, "\x1b[33m")
+        line.contains("\x1b[33m")
     }
 
     struct TestHarness {
@@ -690,6 +731,7 @@ mod tests {
                 provider,
                 build_id.to_owned(),
                 ListenerMode::Bound(socket_path.clone()),
+                Arc::new(Config::default()),
             );
             let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
@@ -743,7 +785,7 @@ mod tests {
             time: Some("14:30:45".to_owned()),
             ..make_fast_outputs()
         };
-        let lines = compose_prompt(&fast, None, 80);
+        let lines = compose_prompt(&fast, None, 80, &default_config());
         // Line 1: directory only (no git, no toolchain)
         assert!(lines.left1.contains("/tmp"), "left1: {}", lines.left1);
         // Line 2: "at 14:30:45 ❯"
@@ -771,7 +813,7 @@ mod tests {
             git: Some("main".to_owned()),
             ..make_slow_output()
         };
-        let lines = compose_prompt(&fast, Some(&slow), 80);
+        let lines = compose_prompt(&fast, Some(&slow), 80, &default_config());
         assert!(lines.left1.contains("/tmp"), "left1: {}", lines.left1);
         assert!(
             lines.left1.contains("on"),
@@ -789,15 +831,15 @@ mod tests {
     fn test_daemon_compose_prompt_slow_none_git() {
         let fast = make_fast_outputs();
         let slow = make_slow_output();
-        let without_slow = compose_prompt(&fast, None, 80);
-        let with_none_git = compose_prompt(&fast, Some(&slow), 80);
+        let without_slow = compose_prompt(&fast, None, 80, &default_config());
+        let with_none_git = compose_prompt(&fast, Some(&slow), 80, &default_config());
         assert_eq!(without_slow, with_none_git);
     }
 
     #[test]
     fn test_daemon_compose_prompt_styled_directory() {
         let fast = make_fast_outputs();
-        let lines = compose_prompt(&fast, None, 80);
+        let lines = compose_prompt(&fast, None, 80, &default_config());
         assert!(
             lines.left1.contains("\x1b[1;36m"),
             "directory should be bold cyan: {}",
@@ -808,7 +850,7 @@ mod tests {
     #[test]
     fn test_daemon_compose_prompt_styled_character_success() {
         let fast = make_fast_outputs();
-        let lines = compose_prompt(&fast, None, 80);
+        let lines = compose_prompt(&fast, None, 80, &default_config());
         assert!(
             lines.left2.contains("\x1b[32m"),
             "character should be green on success: {}",
@@ -822,7 +864,7 @@ mod tests {
             last_exit_code: 1,
             ..make_fast_outputs()
         };
-        let lines = compose_prompt(&fast, None, 80);
+        let lines = compose_prompt(&fast, None, 80, &default_config());
         assert!(
             lines.left2.contains("\x1b[31m"),
             "character should be red on error: {}",
@@ -840,7 +882,7 @@ mod tests {
             }),
             ..make_slow_output()
         };
-        let lines = compose_prompt(&fast, Some(&slow), 80);
+        let lines = compose_prompt(&fast, Some(&slow), 80, &default_config());
         assert!(
             lines.left1.contains("via"),
             "left1 should contain 'via' connector: {}",
@@ -868,7 +910,7 @@ mod tests {
             }),
             ..make_slow_output()
         };
-        let lines = compose_prompt(&fast, Some(&slow), 80);
+        let lines = compose_prompt(&fast, Some(&slow), 80, &default_config());
         assert!(
             lines.left1.contains("\x1b[1;31m"),
             "rust toolchain should use bold red: {}",
@@ -879,7 +921,7 @@ mod tests {
     #[test]
     fn test_daemon_compose_prompt_no_toolchain_without_slow() {
         let fast = make_fast_outputs();
-        let lines = compose_prompt(&fast, None, 80);
+        let lines = compose_prompt(&fast, None, 80, &default_config());
         assert!(
             !lines.left1.contains("via"),
             "toolchain should not appear without slow output: {}",
@@ -893,7 +935,7 @@ mod tests {
             time: Some("14:30:45".to_owned()),
             ..make_fast_outputs()
         };
-        let lines = compose_prompt(&fast, None, 80);
+        let lines = compose_prompt(&fast, None, 80, &default_config());
         // Time should NOT be on line 1
         assert!(
             !lines.left1.contains("14:30:45"),
@@ -926,7 +968,7 @@ mod tests {
                 version: "v1.82.0".to_owned(),
             }),
         };
-        let lines = compose_prompt(&fast, Some(&slow), 80);
+        let lines = compose_prompt(&fast, Some(&slow), 80, &default_config());
         assert!(
             lines.left1.contains("on"),
             "git connector should be present: {}",
@@ -974,7 +1016,7 @@ mod tests {
             git: Some("main".to_owned()),
             ..make_slow_output()
         };
-        let lines = compose_prompt(&fast, Some(&slow), 80);
+        let lines = compose_prompt(&fast, Some(&slow), 80, &default_config());
         assert!(
             lines.left1.contains('\u{f418}'),
             "branch icon should be \\u{{f418}}: {}",
@@ -988,7 +1030,7 @@ mod tests {
             cmd_duration: Some("3s".to_owned()),
             ..make_fast_outputs()
         };
-        let lines = compose_prompt(&fast, None, 80);
+        let lines = compose_prompt(&fast, None, 80, &default_config());
         assert!(
             lines.left1.contains("took"),
             "cmd_duration should have 'took' connector: {}",
@@ -1007,7 +1049,7 @@ mod tests {
             read_only: true,
             ..make_fast_outputs()
         };
-        let lines = compose_prompt(&fast, None, 80);
+        let lines = compose_prompt(&fast, None, 80, &default_config());
         assert!(
             lines.left1.contains('\u{f023}'),
             "readonly dir should show lock icon: {}",
@@ -1021,12 +1063,12 @@ mod tests {
             read_only: true,
             ..make_fast_outputs()
         };
-        let lines = compose_prompt(&fast, None, 80);
+        let lines = compose_prompt(&fast, None, 80, &default_config());
         // The lock icon portion should be styled red (ANSI \x1b[31m)
         let lock_pos = lines.left1.find('\u{f023}');
         assert!(lock_pos.is_some(), "lock icon should be present");
         // Check that red ANSI code appears before the lock icon
-        let before_lock = &lines.left1[..lock_pos.map_or(0, |p| p)];
+        let before_lock = &lines.left1[..lock_pos.unwrap_or(0)];
         assert!(
             before_lock.contains("\x1b[31m"),
             "lock icon should be styled red: {}",
@@ -1037,10 +1079,140 @@ mod tests {
     #[test]
     fn test_daemon_compose_prompt_writable_no_lock_icon() {
         let fast = make_fast_outputs(); // read_only: false
-        let lines = compose_prompt(&fast, None, 80);
+        let lines = compose_prompt(&fast, None, 80, &default_config());
         assert!(
             !lines.left1.contains('\u{f023}'),
             "writable dir should not show lock icon: {}",
+            lines.left1
+        );
+    }
+
+    // -- Config override tests ------------------------------------------------
+
+    #[test]
+    fn test_daemon_compose_prompt_custom_character_glyph() {
+        let fast = FastOutputs {
+            character: Some("$".to_owned()),
+            ..make_fast_outputs()
+        };
+        let lines = compose_prompt(&fast, None, 80, &default_config());
+        assert!(
+            lines.left2.contains('$'),
+            "left2 should contain custom glyph '$': {}",
+            lines.left2
+        );
+    }
+
+    #[test]
+    fn test_daemon_compose_prompt_custom_character_colors() {
+        let fast = make_fast_outputs();
+        let mut config = default_config();
+        config.character.success_color = Color::Magenta;
+        let lines = compose_prompt(&fast, None, 80, &config);
+        // Magenta = ANSI 35
+        assert!(
+            lines.left2.contains("\x1b[35m"),
+            "character should use magenta on success: {}",
+            lines.left2
+        );
+    }
+
+    #[test]
+    fn test_daemon_compose_prompt_custom_directory_color() {
+        let fast = make_fast_outputs();
+        let mut config = default_config();
+        config.directory.color = Color::Green;
+        let lines = compose_prompt(&fast, None, 80, &config);
+        // Bold green = ANSI 1;32
+        assert!(
+            lines.left1.contains("\x1b[1;32m"),
+            "directory should use bold green: {}",
+            lines.left1
+        );
+    }
+
+    #[test]
+    fn test_daemon_compose_prompt_custom_connectors() {
+        let fast = FastOutputs {
+            time: Some("14:30:45".to_owned()),
+            cmd_duration: Some("3s".to_owned()),
+            ..make_fast_outputs()
+        };
+        let slow = SlowOutput {
+            git: Some("main".to_owned()),
+            ..make_slow_output()
+        };
+        let mut config = default_config();
+        config.connectors.git = "branch".to_owned();
+        config.connectors.time = "time".to_owned();
+        config.connectors.cmd_duration = "duration".to_owned();
+        let lines = compose_prompt(&fast, Some(&slow), 80, &config);
+        assert!(
+            lines.left1.contains("branch"),
+            "git connector should be 'branch': {}",
+            lines.left1
+        );
+        assert!(
+            lines.left1.contains("duration"),
+            "cmd_duration connector should be 'duration': {}",
+            lines.left1
+        );
+        assert!(
+            lines.left2.contains("time"),
+            "time connector should be 'time': {}",
+            lines.left2
+        );
+    }
+
+    #[test]
+    fn test_daemon_compose_prompt_time_disabled() {
+        let fast = FastOutputs {
+            time: None, // time disabled via run_fast_modules
+            ..make_fast_outputs()
+        };
+        let lines = compose_prompt(&fast, None, 80, &default_config());
+        assert!(
+            !lines.left2.contains("at"),
+            "time connector should not appear when time is None: {}",
+            lines.left2
+        );
+    }
+
+    #[test]
+    fn test_daemon_compose_prompt_custom_git_icon() {
+        let fast = make_fast_outputs();
+        let slow = SlowOutput {
+            git: Some("main".to_owned()),
+            ..make_slow_output()
+        };
+        let mut config = default_config();
+        config.git.icon = "\u{e0a0}".to_owned();
+        let lines = compose_prompt(&fast, Some(&slow), 80, &config);
+        assert!(
+            lines.left1.contains('\u{e0a0}'),
+            "git icon should be custom icon: {}",
+            lines.left1
+        );
+        assert!(
+            !lines.left1.contains('\u{f418}'),
+            "default git icon should not appear: {}",
+            lines.left1
+        );
+    }
+
+    #[test]
+    fn test_daemon_compose_prompt_custom_cmd_duration_color() {
+        let fast = FastOutputs {
+            cmd_duration: Some("3s".to_owned()),
+            ..make_fast_outputs()
+        };
+        let mut config = default_config();
+        config.cmd_duration.color = Color::Red;
+        let lines = compose_prompt(&fast, None, 80, &config);
+        // Red = ANSI 31
+        assert!(
+            lines.left1.contains("\x1b[31m"),
+            "cmd_duration should use red: {}",
             lines.left1
         );
     }
@@ -1137,6 +1309,7 @@ mod tests {
             MockGitProvider { status: None },
             "test-build-id".to_owned(),
             ListenerMode::Bound(socket_path.clone()),
+            Arc::new(Config::default()),
         );
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -1268,6 +1441,7 @@ mod tests {
             MockGitProvider { status: None },
             "test-build-id".to_owned(),
             ListenerMode::Bound(socket_path.clone()),
+            Arc::new(Config::default()),
         );
 
         // No explicit shutdown — daemon should exit via inode check.
