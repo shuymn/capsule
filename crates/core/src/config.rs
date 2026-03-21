@@ -316,6 +316,29 @@ impl Default for ConnectorConfig {
     }
 }
 
+/// Errors while reading or parsing a configuration file.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigLoadError {
+    /// Reading the config file failed.
+    #[error("failed to read config `{path}`")]
+    Read {
+        /// Path that failed to read.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// Parsing the config file failed.
+    #[error("failed to parse config `{path}`")]
+    Parse {
+        /// Path that failed to parse.
+        path: PathBuf,
+        /// Underlying TOML parse error.
+        #[source]
+        source: toml::de::Error,
+    },
+}
+
 /// Resolve the config file path.
 ///
 /// Uses `$XDG_CONFIG_HOME/capsule/config.toml` if set, otherwise
@@ -337,19 +360,40 @@ pub fn resolve_config_path() -> Option<PathBuf> {
 /// - If the file does not exist, returns compiled-in defaults.
 /// - If the file has syntax errors, logs the error and returns defaults.
 pub fn load_config(path: &Path) -> Config {
-    match std::fs::read_to_string(path) {
-        Ok(content) => match toml::from_str::<Config>(&content) {
-            Ok(config) => config,
-            Err(e) => {
-                tracing::error!(path = %path.display(), error = %e, "config parse error, using defaults");
-                Config::default()
-            }
-        },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
-        Err(e) => {
-            tracing::error!(path = %path.display(), error = %e, "failed to read config, using defaults");
+    match read_config(path) {
+        Ok(Some(config)) => config,
+        Ok(None) => Config::default(),
+        Err(ConfigLoadError::Parse { path, source }) => {
+            tracing::error!(path = %path.display(), error = %source, "config parse error, using defaults");
             Config::default()
         }
+        Err(ConfigLoadError::Read { path, source }) => {
+            tracing::error!(path = %path.display(), error = %source, "failed to read config, using defaults");
+            Config::default()
+        }
+    }
+}
+
+/// Read configuration from the given path without falling back to defaults.
+///
+/// Returns `Ok(None)` when the file does not exist.
+///
+/// # Errors
+///
+/// Returns [`ConfigLoadError`] when the file cannot be read or parsed.
+pub fn read_config(path: &Path) -> Result<Option<Config>, ConfigLoadError> {
+    match std::fs::read_to_string(path) {
+        Ok(content) => toml::from_str::<Config>(&content)
+            .map(Some)
+            .map_err(|source| ConfigLoadError::Parse {
+                path: path.to_path_buf(),
+                source,
+            }),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(ConfigLoadError::Read {
+            path: path.to_path_buf(),
+            source,
+        }),
     }
 }
 
