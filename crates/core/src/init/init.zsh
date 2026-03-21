@@ -36,8 +36,9 @@ _capsule_init() {
 }
 
 _capsule_zshexit() {
+    emulate -L zsh
     if [[ -n "$_CAPSULE_COPROC_PID" ]]; then
-        setopt localoptions no_monitor
+        setopt no_monitor
         command kill "$_CAPSULE_COPROC_PID" 2>/dev/null
         wait "$_CAPSULE_COPROC_PID" 2>/dev/null
         _capsule_cleanup_fds
@@ -45,11 +46,13 @@ _capsule_zshexit() {
 }
 
 _capsule_start_coproc() {
-    setopt localoptions no_monitor
+    emulate -L zsh
+    setopt no_monitor
 
     # Kill existing coproc if any
     if [[ -n "$_CAPSULE_COPROC_PID" ]]; then
         command kill "$_CAPSULE_COPROC_PID" 2>/dev/null
+        wait "$_CAPSULE_COPROC_PID" 2>/dev/null
         _capsule_cleanup_fds
     fi
 
@@ -61,23 +64,31 @@ _capsule_start_coproc() {
         return 1
     fi
 
-    # Duplicate coproc fds for explicit access
-    exec {_CAPSULE_FD_IN}>&p {_CAPSULE_FD_OUT}<&p
+    # Duplicate coproc fds for explicit access.
+    # If this fails (fd limit, race), clean up and bail.
+    if ! exec {_CAPSULE_FD_IN}>&p {_CAPSULE_FD_OUT}<&p 2>/dev/null; then
+        command kill "$_CAPSULE_COPROC_PID" 2>/dev/null
+        _CAPSULE_COPROC_PID=""
+        _CAPSULE_FD_IN=0
+        _CAPSULE_FD_OUT=0
+        return 1
+    fi
 
     # Detach from zsh's coproc tracking by replacing with a trivial
-    # coproc that exits immediately. Our duplicated fds remain valid;
-    # capsule connect keeps running as a regular (untracked) process.
+    # coproc that exits immediately. Our duplicated fds remain valid
+    # (kernel refcounts); capsule connect keeps running as a regular
+    # (untracked) process.
     coproc : 2>/dev/null
     wait $! 2>/dev/null
 
-    # Now that capsule connect is no longer a coproc, disown it
-    # to remove from the job table entirely.
+    # Remove from the job table entirely.
     disown $_CAPSULE_COPROC_PID 2>/dev/null
 
     return 0
 }
 
 _capsule_cleanup_fds() {
+    emulate -L zsh
     if (( _CAPSULE_FD_OUT > 0 )); then
         zle -F $_CAPSULE_FD_OUT 2>/dev/null
         exec {_CAPSULE_FD_OUT}<&- 2>/dev/null
@@ -92,14 +103,21 @@ _capsule_cleanup_fds() {
 
 # Encode a string as a netstring: <byte_len>:<data>,
 # Result is stored in REPLY (avoids subshell).
+# no_multibyte makes ${#1} count bytes, matching the Rust decoder.
 _capsule_ns() {
-    setopt localoptions no_multibyte
+    emulate -L zsh
+    setopt no_multibyte
     REPLY="${#1}:${1},"
 }
 
 # Build and send a Request message to the coproc.
 _capsule_send_request() {
-    setopt localoptions no_multibyte
+    emulate -L zsh
+    setopt no_multibyte
+
+    # Guard: refuse to write to fd 0 (stdin) if fds are uninitialized.
+    (( _CAPSULE_FD_IN > 0 )) || return 1
+
     local msg=""
 
     _capsule_ns 1; msg+=$REPLY
@@ -119,11 +137,14 @@ _capsule_send_request() {
 # Parse netstring fields from a wire-format line.
 # Populates the _capsule_fields array (1-indexed in zsh).
 _capsule_parse_wire() {
-    setopt localoptions no_multibyte
+    emulate -L zsh
+    setopt no_multibyte
     _capsule_fields=()
     local input=$1
 
     while [[ -n "$input" ]]; do
+        # Guard: malformed input without ':' would spin; bail out.
+        [[ "$input" == *:* ]] || break
         local len_str=${input%%:*}
         input=${input#*:}
         local -i len=$len_str
@@ -137,7 +158,12 @@ _capsule_parse_wire() {
 }
 
 _capsule_precmd() {
+    # Capture $? immediately — must be the very first statement.
+    # NOTE: If another plugin prepends to precmd_functions after capsule,
+    # this will capture that plugin's exit code, not the user's command.
     _CAPSULE_LAST_EXIT=$?
+
+    emulate -L zsh
     (( _CAPSULE_GENERATION++ ))
 
     # Calculate duration
@@ -194,24 +220,31 @@ _capsule_precmd() {
 }
 
 _capsule_preexec() {
+    emulate -L zsh
     if (( ${+EPOCHREALTIME} )); then
         _CAPSULE_CMD_START=$EPOCHREALTIME
     fi
     # The exec builtin replaces the process without firing zshexit;
     # clean up coproc manually so capsule connect does not hang.
-    if [[ "$1" == exec\ * ]]; then
+    # Match exec with optional leading whitespace or variable assignments.
+    if [[ "$1" == (#s)[[:space:]]#(|*[[:space:]])exec[[:space:]]* ]]; then
         _capsule_zshexit
     fi
 }
 
 _capsule_async_callback() {
+    emulate -L zsh
     local fd=$1
     local line
     if IFS= read -ru $fd line 2>/dev/null; then
         _capsule_parse_wire "$line"
         if (( ${#_capsule_fields} >= 6 )) && [[ "${_capsule_fields[2]}" == "U" ]]; then
-            PROMPT="${_capsule_fields[5]}"$'\n'"${_capsule_fields[6]} "
-            zle reset-prompt 2>/dev/null
+            # Discard stale Updates from older generations.
+            local -i update_gen=${_capsule_fields[4]}
+            if (( update_gen >= _CAPSULE_GENERATION )); then
+                PROMPT="${_capsule_fields[5]}"$'\n'"${_capsule_fields[6]} "
+                zle reset-prompt 2>/dev/null
+            fi
         fi
     else
         # Coproc died — clean up and use fallback
@@ -222,7 +255,3 @@ _capsule_async_callback() {
 }
 
 _capsule_init
-
-# Suppress "you have running jobs" on exit for the capsule coproc.
-# Stopped job warnings (CHECK_JOBS) are preserved.
-setopt NO_CHECK_RUNNING_JOBS

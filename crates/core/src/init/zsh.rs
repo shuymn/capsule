@@ -99,18 +99,21 @@ mod tests {
     }
 
     #[test]
-    fn test_init_zsh_calls_init_before_global_options() {
+    fn test_init_zsh_calls_init_at_end() {
         let script = generate();
         assert!(
-            script.contains("_capsule_init\n"),
-            "script should call _capsule_init"
+            script.trim_end().ends_with("_capsule_init"),
+            "script should call _capsule_init as the last statement"
         );
-        // _capsule_init must precede global setopt so functions are defined first.
-        let init_pos = script.find("_capsule_init\n");
-        let setopt_pos = script.find("setopt NO_CHECK_RUNNING_JOBS");
+    }
+
+    #[test]
+    fn test_init_zsh_no_global_setopt() {
+        let script = generate();
+        // Global setopt was removed — all options are now local to functions.
         assert!(
-            init_pos < setopt_pos,
-            "_capsule_init should precede global setopt"
+            !script.contains("setopt NO_CHECK_RUNNING_JOBS"),
+            "should not set global shell options"
         );
     }
 }
