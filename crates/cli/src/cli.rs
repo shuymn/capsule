@@ -9,8 +9,11 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Start the prompt daemon
-    Daemon,
+    /// Daemon management
+    Daemon {
+        #[command(subcommand)]
+        action: Option<DaemonAction>,
+    },
     /// Connect to the daemon (coproc relay)
     Connect,
     /// Output shell initialization script
@@ -18,6 +21,14 @@ pub enum Command {
         /// Target shell
         shell: Shell,
     },
+}
+
+#[derive(Subcommand)]
+pub enum DaemonAction {
+    /// Install the launchd plist and load the daemon service
+    Install,
+    /// Uninstall the launchd service and remove the plist
+    Uninstall,
 }
 
 #[derive(Clone, ValueEnum)]

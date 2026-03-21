@@ -45,6 +45,7 @@ impl DaemonProcess {
 
         let mut cmd = Command::new(capsule_bin);
         cmd.arg("daemon")
+            .env("CAPSULE_SOCK_DIR", tmpdir.path())
             .env("TMPDIR", tmpdir.path())
             .env("HOME", tmpdir.path())
             .stdin(std::process::Stdio::null())
@@ -257,6 +258,7 @@ async fn test_e2e_connect_relay() -> Result<(), Box<dyn std::error::Error>> {
     let capsule_bin = env!("CARGO_BIN_EXE_capsule");
     let mut child = Command::new(capsule_bin)
         .arg("connect")
+        .env("CAPSULE_SOCK_DIR", daemon.tmpdir_path())
         .env("TMPDIR", daemon.tmpdir_path())
         .env("HOME", daemon.tmpdir_path())
         .stdin(Stdio::piped())
@@ -336,6 +338,7 @@ async fn test_e2e_connect_reconnects_after_daemon_restart() -> Result<(), Box<dy
     // Start capsule connect
     let mut connect = Command::new(capsule_bin)
         .arg("connect")
+        .env("CAPSULE_SOCK_DIR", daemon.tmpdir_path())
         .env("TMPDIR", daemon.tmpdir_path())
         .env("HOME", daemon.tmpdir_path())
         .stdin(Stdio::piped())

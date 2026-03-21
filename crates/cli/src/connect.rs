@@ -24,12 +24,12 @@ use crate::daemon::{lock_path, socket_path};
 ///
 /// Returns an error if the daemon cannot be started or the relay fails.
 pub fn run() -> anyhow::Result<()> {
-    let socket_path = socket_path();
+    let socket_path = socket_path()?;
 
     ensure_daemon(&socket_path)?;
 
     if !negotiate_build_id(&socket_path).unwrap_or(false) {
-        restart_daemon(&socket_path, &lock_path())?;
+        restart_daemon(&socket_path, &lock_path()?)?;
     }
 
     let rt = tokio::runtime::Builder::new_current_thread()

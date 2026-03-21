@@ -3,7 +3,13 @@
 use std::{fs::File, io::Write as _, path::PathBuf};
 
 use anyhow::Context as _;
-use capsule_core::{daemon::Server, module::CommandGitProvider};
+use capsule_core::{
+    daemon::{
+        Server,
+        listener::{ListenerMode, ListenerSource, acquire_listener},
+    },
+    module::CommandGitProvider,
+};
 
 /// Initialize tracing subscriber if `CAPSULE_LOG` is set.
 ///
@@ -37,48 +43,50 @@ fn init_tracing() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// launchd socket name matching the plist `SockServiceName`.
+const LAUNCHD_SOCKET_NAME: &str = "Listeners";
+
 /// Run the daemon server.
 ///
-/// Acquires an exclusive file lock (`$TMPDIR/capsule.lock`) to prevent
-/// multiple daemons from running simultaneously. If another daemon holds
-/// the lock, returns immediately with `Ok(())`.
+/// In standalone (bind) mode, acquires an exclusive file lock
+/// (`~/.capsule/capsule.lock`) to prevent multiple daemons. If another
+/// daemon holds the lock, returns immediately with `Ok(())`.
 ///
-/// Binds to `$TMPDIR/capsule.sock`, serves prompt requests, and shuts down
-/// on SIGTERM or SIGINT.
+/// In launchd mode, flock is skipped (launchd guarantees single instance).
 ///
 /// # Errors
 ///
-/// Returns an error if the lock file cannot be opened, the socket cannot be
-/// bound, or the runtime fails.
+/// Returns an error if the lock file cannot be opened, the listener cannot
+/// be acquired, or the runtime fails.
 pub fn run() -> anyhow::Result<()> {
     init_tracing()?;
 
-    let mut lock_file = File::options()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(lock_path())
-        .context("failed to open lock file")?;
+    // Ensure ~/.capsule/ exists (for socket and lock files).
+    let dir = capsule_dir()?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
 
-    match lock_file.try_lock() {
-        Ok(()) => {}
-        Err(std::fs::TryLockError::WouldBlock) => {
-            tracing::info!("another daemon is already running");
-            return Ok(());
-        }
-        Err(std::fs::TryLockError::Error(e)) => {
-            return Err(e).context("failed to acquire lock");
-        }
+    // Try launchd socket activation first.
+    let launchd_source = ListenerSource::Launchd(LAUNCHD_SOCKET_NAME.to_owned());
+    if let Ok(listener) = acquire_listener(&launchd_source) {
+        return run_server(listener, launchd_source.mode());
     }
-    // `lock_file` held until function return — dropping it releases the flock.
 
-    // Write PID so `capsule connect` can send SIGTERM on build_id mismatch.
-    lock_file
-        .set_len(0)
-        .context("failed to truncate lock file")?;
-    write!(lock_file, "{}", std::process::id()).context("failed to write PID to lock file")?;
+    // Standalone mode: flock before bind.
+    let Some(_lock_file) = acquire_flock()? else {
+        return Ok(()); // another daemon is running
+    };
 
-    let socket_path = socket_path();
+    let source = ListenerSource::Bind(socket_path()?);
+    let listener = acquire_listener(&source).context("failed to bind socket")?;
+
+    run_server(listener, source.mode())
+}
+
+/// Start the server with an already-acquired listener.
+fn run_server(
+    listener: std::os::unix::net::UnixListener,
+    mode: ListenerMode,
+) -> anyhow::Result<()> {
     let home_dir = home_dir()?;
     let git_provider = CommandGitProvider;
     let build_id = crate::build_id::compute().unwrap_or_default();
@@ -88,7 +96,7 @@ pub fn run() -> anyhow::Result<()> {
         .build()?;
 
     rt.block_on(async {
-        let server = Server::new(socket_path, home_dir, git_provider, build_id);
+        let server = Server::new(home_dir, git_provider, build_id, mode);
 
         let mut sigterm =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
@@ -100,26 +108,239 @@ pub fn run() -> anyhow::Result<()> {
             }
         };
 
-        server.run(shutdown).await?;
+        server.run(listener, shutdown).await?;
         Ok(())
     })
 }
 
-/// Determine the socket path from the environment.
-pub fn socket_path() -> PathBuf {
-    tmpdir().join("capsule.sock")
-}
+// ---------------------------------------------------------------------------
+// install / uninstall
+// ---------------------------------------------------------------------------
 
-pub fn lock_path() -> PathBuf {
-    tmpdir().join("capsule.lock")
-}
+/// launchd service label.
+const LAUNCHD_LABEL: &str = "com.github.shuymn.capsule";
 
-fn tmpdir() -> PathBuf {
-    PathBuf::from(
-        std::env::var("TMPDIR")
-            .or_else(|_| std::env::var("TMP"))
-            .unwrap_or_else(|_| "/tmp".to_owned()),
+/// Generate the launchd plist XML for the capsule daemon.
+///
+/// Uses socket activation: launchd creates the socket and launches
+/// the daemon on first connection. The daemon retrieves the socket fd
+/// via `launch_activate_socket`.
+fn generate_plist(capsule_bin: &std::path::Path, socket_path: &std::path::Path) -> String {
+    // SockPathMode 448 = 0o700 (owner read/write/execute)
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{LAUNCHD_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{}</string>
+        <string>daemon</string>
+    </array>
+    <key>Sockets</key>
+    <dict>
+        <key>{LAUNCHD_SOCKET_NAME}</key>
+        <dict>
+            <key>SockPathName</key>
+            <string>{}</string>
+            <key>SockPathMode</key>
+            <integer>448</integer>
+        </dict>
+    </dict>
+</dict>
+</plist>
+"#,
+        capsule_bin.display(),
+        socket_path.display(),
     )
+}
+
+/// Path to the launchd plist file.
+///
+/// # Errors
+///
+/// Returns an error if `HOME` is not set.
+fn plist_path() -> anyhow::Result<PathBuf> {
+    let home = home_dir()?;
+    Ok(home
+        .join("Library/LaunchAgents")
+        .join(format!("{LAUNCHD_LABEL}.plist")))
+}
+
+/// Install the launchd plist and load the daemon service.
+///
+/// Idempotent: if the plist already exists with identical content, no
+/// reload occurs. If the content differs, the service is reloaded.
+///
+/// # Errors
+///
+/// Returns an error if the plist cannot be written or launchctl fails.
+pub fn install() -> anyhow::Result<()> {
+    let capsule_bin = std::env::current_exe().context("cannot find capsule binary")?;
+    // Use the canonical socket path (ignores $CAPSULE_SOCK_DIR) so the
+    // plist always references the production path.
+    let home = home_dir()?;
+    let canonical_socket = home.join(".capsule/capsule.sock");
+    let plist_content = generate_plist(&capsule_bin, &canonical_socket);
+    let plist = plist_path()?;
+    let uid = uid()?;
+
+    // Check if plist already exists with same content.
+    if let Ok(existing) = std::fs::read_to_string(&plist) {
+        if existing == plist_content {
+            println!("plist is already current, no reload needed");
+            return Ok(());
+        }
+        // Content differs — bootout before bootstrap.
+        let _ = std::process::Command::new("launchctl")
+            .args(["bootout", &format!("gui/{uid}/{LAUNCHD_LABEL}")])
+            .status();
+    }
+
+    // Ensure LaunchAgents directory exists.
+    if let Some(parent) = plist.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+
+    std::fs::write(&plist, &plist_content)
+        .with_context(|| format!("failed to write {}", plist.display()))?;
+
+    let status = std::process::Command::new("launchctl")
+        .args(["bootstrap", &format!("gui/{uid}"), &plist.to_string_lossy()])
+        .status()
+        .context("failed to run launchctl bootstrap")?;
+
+    if status.success() {
+        println!("capsule daemon installed and loaded");
+    } else {
+        anyhow::bail!("launchctl bootstrap failed with {status}");
+    }
+
+    Ok(())
+}
+
+/// Uninstall the launchd service and remove the plist.
+///
+/// # Errors
+///
+/// Returns an error if launchctl fails or the plist cannot be removed.
+pub fn uninstall() -> anyhow::Result<()> {
+    let uid = uid()?;
+    let plist = plist_path()?;
+
+    // Bootout the service (stops it if running).
+    let status = std::process::Command::new("launchctl")
+        .args(["bootout", &format!("gui/{uid}/{LAUNCHD_LABEL}")])
+        .status()
+        .context("failed to run launchctl bootout")?;
+
+    if !status.success() {
+        // Service may not be loaded — that's ok, continue to remove plist.
+        eprintln!("warning: launchctl bootout exited with {status}");
+    }
+
+    // Remove plist file.
+    match std::fs::remove_file(&plist) {
+        Ok(()) => println!("capsule daemon uninstalled"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            println!("plist not found, nothing to remove");
+        }
+        Err(e) => {
+            return Err(e).with_context(|| format!("failed to remove {}", plist.display()));
+        }
+    }
+
+    Ok(())
+}
+
+/// Get the current user's UID for launchctl gui/ domain.
+fn uid() -> anyhow::Result<u32> {
+    let output = std::process::Command::new("id")
+        .arg("-u")
+        .output()
+        .context("failed to run `id -u`")?;
+    let s = String::from_utf8_lossy(&output.stdout);
+    s.trim()
+        .parse()
+        .with_context(|| format!("failed to parse uid from `id -u`: {s:?}"))
+}
+
+// ---------------------------------------------------------------------------
+// flock
+// ---------------------------------------------------------------------------
+
+/// Acquire the flock and write PID. Returns `Some(file)` if acquired,
+/// `None` if another daemon already holds the lock.
+fn acquire_flock() -> anyhow::Result<Option<File>> {
+    let mut lock_file = File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(lock_path()?)
+        .context("failed to open lock file")?;
+
+    match lock_file.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => {
+            tracing::info!("another daemon is already running");
+            return Ok(None);
+        }
+        Err(std::fs::TryLockError::Error(e)) => {
+            return Err(e).context("failed to acquire lock");
+        }
+    }
+
+    // Write PID so `capsule connect` can send SIGTERM on build_id mismatch.
+    lock_file
+        .set_len(0)
+        .context("failed to truncate lock file")?;
+    write!(lock_file, "{}", std::process::id()).context("failed to write PID to lock file")?;
+
+    Ok(Some(lock_file))
+}
+
+/// Determine the socket path.
+///
+/// Uses `$CAPSULE_SOCK_DIR` (for testing) or `~/.capsule/`.
+///
+/// # Errors
+///
+/// Returns an error if the base directory cannot be determined.
+pub fn socket_path() -> anyhow::Result<PathBuf> {
+    Ok(capsule_dir()?.join("capsule.sock"))
+}
+
+/// Path to the daemon lock file.
+///
+/// # Errors
+///
+/// Returns an error if the base directory cannot be determined.
+pub fn lock_path() -> anyhow::Result<PathBuf> {
+    Ok(capsule_dir()?.join("capsule.lock"))
+}
+
+/// Base directory for capsule runtime files.
+///
+/// Uses `$CAPSULE_SOCK_DIR` if set (for testing), otherwise `~/.capsule/`.
+///
+/// # Errors
+///
+/// Returns an error if neither `$CAPSULE_SOCK_DIR` nor `$HOME` is set.
+fn capsule_dir() -> anyhow::Result<PathBuf> {
+    if let Ok(dir) = std::env::var("CAPSULE_SOCK_DIR") {
+        return Ok(PathBuf::from(dir));
+    }
+    Ok(home_dir()?.join(".capsule"))
+}
+
+/// Log file directory (`$TMPDIR`).
+///
+/// macOS always sets `$TMPDIR` to a per-user temporary directory.
+fn tmpdir() -> PathBuf {
+    PathBuf::from(std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_owned()))
 }
 
 fn home_dir() -> anyhow::Result<PathBuf> {
@@ -130,7 +351,9 @@ fn home_dir() -> anyhow::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs::File;
+    use std::{fs::File, path::PathBuf};
+
+    use super::*;
 
     #[test]
     fn test_daemon_flock_prevents_dual_startup() -> Result<(), Box<dyn std::error::Error>> {
@@ -157,5 +380,59 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    #[test]
+    fn test_generate_plist_contains_required_keys() {
+        let bin = PathBuf::from("/usr/local/bin/capsule");
+        let sock = PathBuf::from("/Users/test/.capsule/capsule.sock");
+        let plist = generate_plist(&bin, &sock);
+
+        assert!(plist.contains(LAUNCHD_LABEL), "plist should contain label");
+        assert!(
+            plist.contains("/usr/local/bin/capsule"),
+            "plist should contain binary path"
+        );
+        assert!(
+            plist.contains("daemon"),
+            "plist should contain 'daemon' argument"
+        );
+        assert!(
+            plist.contains(LAUNCHD_SOCKET_NAME),
+            "plist should contain socket name"
+        );
+        assert!(
+            plist.contains("/Users/test/.capsule/capsule.sock"),
+            "plist should contain socket path"
+        );
+        assert!(
+            plist.contains("SockPathMode"),
+            "plist should set socket permissions"
+        );
+    }
+
+    #[test]
+    fn test_generate_plist_no_inetd_compatibility() {
+        let bin = PathBuf::from("/usr/local/bin/capsule");
+        let sock = PathBuf::from("/Users/test/.capsule/capsule.sock");
+        let plist = generate_plist(&bin, &sock);
+
+        assert!(
+            !plist.contains("inetdCompatibility"),
+            "plist should not use inetdCompatibility"
+        );
+    }
+
+    #[test]
+    fn test_generate_plist_valid_xml() {
+        let bin = PathBuf::from("/usr/local/bin/capsule");
+        let sock = PathBuf::from("/Users/test/.capsule/capsule.sock");
+        let plist = generate_plist(&bin, &sock);
+
+        assert!(
+            plist.starts_with("<?xml"),
+            "plist should start with XML declaration"
+        );
+        assert!(plist.contains("</plist>"), "plist should be well-formed");
     }
 }
