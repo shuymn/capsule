@@ -98,6 +98,7 @@ name = "capsule-core"
 version = "0.1.0"
 dependencies = [
  "capsule-protocol",
+ "capsule-sys",
  "tempfile",
  "thiserror",
  "time",
@@ -113,6 +114,10 @@ dependencies = [
  "thiserror",
  "tokio",
 ]
+
+[[package]]
+name = "capsule-sys"
+version = "0.1.0"
 
 [[package]]
 name = "cfg-if"

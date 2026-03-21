@@ -12,6 +12,7 @@ publish = false
 
 [dependencies]
 capsule-protocol = { path = "../protocol" }
+capsule-sys = { path = "../sys" }
 thiserror = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }

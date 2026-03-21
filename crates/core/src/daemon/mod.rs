@@ -5,6 +5,7 @@
 //! per-client generation and slow module results.
 
 mod cache;
+pub mod listener;
 mod session;
 
 use std::{
@@ -19,6 +20,7 @@ use capsule_protocol::{
     HelloAck, Message, MessageReader, MessageWriter, PROTOCOL_VERSION, RenderResult, Request,
     Update,
 };
+use listener::ListenerMode;
 use session::SessionMap;
 use tokio::{
     net::{UnixListener, UnixStream},
@@ -103,10 +105,10 @@ impl SharedState {
 ///
 /// Generic over `G` to allow injecting a mock [`GitProvider`] in tests.
 pub struct Server<G> {
-    socket_path: PathBuf,
     home_dir: PathBuf,
     git_provider: G,
     build_id: String,
+    listener_mode: ListenerMode,
 }
 
 impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
@@ -114,62 +116,105 @@ impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
     ///
     /// # Parameters
     ///
-    /// * `socket_path` — path where the Unix socket will be created
     /// * `home_dir` — user's home directory (for `~` substitution)
     /// * `git_provider` — [`GitProvider`] implementation for slow module
     /// * `build_id` — binary fingerprint for Hello/HelloAck negotiation
+    /// * `listener_mode` — how the listener was obtained (carries socket
+    ///   path for [`ListenerMode::Bound`])
     pub const fn new(
-        socket_path: PathBuf,
         home_dir: PathBuf,
         git_provider: G,
         build_id: String,
+        listener_mode: ListenerMode,
     ) -> Self {
         Self {
-            socket_path,
             home_dir,
             git_provider,
             build_id,
+            listener_mode,
         }
     }
 
-    /// Runs the daemon until `shutdown` resolves or the socket file is
-    /// removed/replaced.
+    /// Runs the daemon until `shutdown` resolves or (in bound mode) the
+    /// socket file is removed/replaced.
     ///
-    /// Unconditionally removes any existing socket file, binds a new
-    /// listener, and accepts connections. The caller is expected to
-    /// guarantee exclusivity (e.g. via flock) so that unconditional
-    /// removal is safe.
+    /// The caller provides a pre-acquired [`UnixListener`] (obtained via
+    /// [`acquire_listener`](listener::acquire_listener)).
     ///
-    /// The accept loop also monitors the socket file's inode every
-    /// a fixed interval. If the file is deleted or replaced,
-    /// the daemon shuts down without removing the (now-foreign) socket.
+    /// In [`ListenerMode::Bound`], the accept loop monitors the socket
+    /// file's inode at a fixed interval. If the file is deleted or
+    /// replaced, the daemon shuts down without removing the (now-foreign)
+    /// socket.
+    ///
+    /// In [`ListenerMode::Activated`], inode monitoring is skipped and
+    /// the socket file is never removed (launchd owns the lifecycle).
     ///
     /// # Errors
     ///
-    /// Returns [`DaemonError`] on socket bind or accept failure.
+    /// Returns [`DaemonError`] if the listener cannot be converted to a
+    /// tokio listener or on accept failure.
     pub async fn run(
         self,
+        std_listener: std::os::unix::net::UnixListener,
         shutdown: impl std::future::Future<Output = ()>,
     ) -> Result<(), DaemonError> {
-        // Unconditionally remove any existing socket file.
-        // The caller guarantees exclusivity via flock, so no TOCTOU risk.
-        match std::fs::remove_file(&self.socket_path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(DaemonError::Socket(e)),
+        let listener = UnixListener::from_std(std_listener)?;
+        tracing::info!("daemon listening");
+
+        let ctx = AcceptCtx {
+            home_dir: Arc::new(self.home_dir),
+            git_provider: self.git_provider,
+            build_id: Arc::new(self.build_id),
+            state: Arc::new(Mutex::new(SharedState::new())),
+        };
+
+        match self.listener_mode {
+            ListenerMode::Bound(socket_path) => {
+                Self::run_bound(socket_path, listener, shutdown, ctx).await
+            }
+            ListenerMode::Activated => Self::run_activated(listener, shutdown, ctx).await,
         }
+    }
+}
 
-        let listener = UnixListener::bind(&self.socket_path)?;
-        tracing::info!(socket = %self.socket_path.display(), "daemon listening");
+/// Shared state for the accept loops (avoids passing many args).
+struct AcceptCtx<G> {
+    home_dir: Arc<PathBuf>,
+    git_provider: G,
+    build_id: Arc<String>,
+    state: Arc<Mutex<SharedState>>,
+}
 
+impl<G> AcceptCtx<G> {
+    fn spawn_handler(&self, stream: UnixStream)
+    where
+        G: GitProvider + Clone + Send + 'static,
+    {
+        let conn_state = Arc::clone(&self.state);
+        let conn_home = Arc::clone(&self.home_dir);
+        let conn_git = self.git_provider.clone();
+        let conn_build_id = Arc::clone(&self.build_id);
+        tokio::spawn(async move {
+            if let Err(e) =
+                handle_connection(stream, conn_state, conn_home, conn_git, conn_build_id).await
+            {
+                tracing::warn!(error = %e, "client connection error");
+            }
+        });
+    }
+}
+
+impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
+    /// Accept loop with inode monitoring (standalone/bound mode).
+    async fn run_bound(
+        socket_path: PathBuf,
+        listener: UnixListener,
+        shutdown: impl std::future::Future<Output = ()>,
+        ctx: AcceptCtx<G>,
+    ) -> Result<(), DaemonError> {
         // Record inode for orphan detection.
-        let original_inode = std::fs::metadata(&self.socket_path)?.ino();
-
-        let socket_path = self.socket_path;
-        let home_dir = Arc::new(self.home_dir);
-        let git_provider = self.git_provider;
-        let build_id = Arc::new(self.build_id);
-        let state = Arc::new(Mutex::new(SharedState::new()));
+        let original_inode = std::fs::metadata(&socket_path)?.ino();
+        let socket_path = Arc::new(socket_path);
 
         tokio::pin!(shutdown);
 
@@ -184,21 +229,13 @@ impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
                 result = listener.accept() => {
                     let (stream, _) = result?;
                     tracing::debug!("client connected");
-                    let conn_state = Arc::clone(&state);
-                    let conn_home = Arc::clone(&home_dir);
-                    let conn_git = git_provider.clone();
-                    let conn_build_id = Arc::clone(&build_id);
-                    tokio::spawn(async move {
-                        if let Err(e) = handle_connection(stream, conn_state, conn_home, conn_git, conn_build_id).await {
-                            tracing::warn!(error = %e, "client connection error");
-                        }
-                    });
+                    ctx.spawn_handler(stream);
                 }
                 () = &mut shutdown => break,
                 _ = inode_check.tick() => {
-                    let path = socket_path.clone();
+                    let path = Arc::clone(&socket_path);
                     let check = tokio::task::spawn_blocking(move || {
-                        std::fs::metadata(&path).map(|m| m.ino())
+                        std::fs::metadata(&*path).map(|m| m.ino())
                     }).await;
                     match check {
                         Ok(Ok(ino)) if ino == original_inode => {}
@@ -214,8 +251,31 @@ impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
 
         tracing::info!("daemon shutting down");
         if !inode_mismatch {
-            let _ = std::fs::remove_file(&socket_path);
+            let _ = std::fs::remove_file(&*socket_path);
         }
+        Ok(())
+    }
+
+    /// Accept loop without inode monitoring (socket activation mode).
+    async fn run_activated(
+        listener: UnixListener,
+        shutdown: impl std::future::Future<Output = ()>,
+        ctx: AcceptCtx<G>,
+    ) -> Result<(), DaemonError> {
+        tokio::pin!(shutdown);
+
+        loop {
+            tokio::select! {
+                result = listener.accept() => {
+                    let (stream, _) = result?;
+                    tracing::debug!("client connected");
+                    ctx.spawn_handler(stream);
+                }
+                () = &mut shutdown => break,
+            }
+        }
+
+        tracing::info!("daemon shutting down");
         Ok(())
     }
 }
@@ -623,18 +683,25 @@ mod tests {
             let home = dir.path().join("home");
             std::fs::create_dir_all(&home)?;
 
-            let server = Server::new(socket_path.clone(), home, provider, build_id.to_owned());
+            let listener =
+                listener::acquire_listener(&listener::ListenerSource::Bind(socket_path.clone()))?;
+            let server = Server::new(
+                home,
+                provider,
+                build_id.to_owned(),
+                ListenerMode::Bound(socket_path.clone()),
+            );
             let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
             let server_handle = tokio::spawn(async move {
                 server
-                    .run(async {
+                    .run(listener, async {
                         let _ = shutdown_rx.await;
                     })
                     .await
             });
 
-            // Wait for server to bind
+            // Wait for server to accept connections
             tokio::time::sleep(Duration::from_millis(50)).await;
 
             Ok(Self {
@@ -1062,17 +1129,20 @@ mod tests {
 
         let home = dir.path().join("home");
         std::fs::create_dir_all(&home)?;
+
+        let listener =
+            listener::acquire_listener(&listener::ListenerSource::Bind(socket_path.clone()))?;
         let server = Server::new(
-            socket_path.clone(),
             home,
             MockGitProvider { status: None },
             "test-build-id".to_owned(),
+            ListenerMode::Bound(socket_path.clone()),
         );
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let server_handle = tokio::spawn(async move {
             server
-                .run(async {
+                .run(listener, async {
                     let _ = shutdown_rx.await;
                 })
                 .await
@@ -1191,11 +1261,13 @@ mod tests {
         let home = dir.path().join("home");
         std::fs::create_dir_all(&home)?;
 
+        let listener =
+            listener::acquire_listener(&listener::ListenerSource::Bind(socket_path.clone()))?;
         let server = Server::new(
-            socket_path.clone(),
             home,
             MockGitProvider { status: None },
             "test-build-id".to_owned(),
+            ListenerMode::Bound(socket_path.clone()),
         );
 
         // No explicit shutdown — daemon should exit via inode check.
@@ -1203,7 +1275,7 @@ mod tests {
 
         let server_handle = tokio::spawn(async move {
             server
-                .run(async {
+                .run(listener, async {
                     let _ = shutdown_rx.await;
                 })
                 .await
