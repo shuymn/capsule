@@ -13,7 +13,7 @@ use tokio::{net::UnixStream, sync::Mutex, task::JoinSet};
 use super::{DaemonError, ReloadableConfig, SESSION_TTL, SharedState, prompt};
 use crate::module::{
     CustomModuleInfo, GitModule, GitProvider, ModuleSpeed, ResolvedModule, check_when,
-    detect_module, required_env_var_names,
+    custom::ResolvedSource, detect_module, required_env_var_names,
 };
 
 /// Per-connection context, cloned from the accept loop for each spawned handler.
@@ -99,6 +99,14 @@ struct DetectInput<'a> {
     timeout: Duration,
 }
 
+fn should_detect_inline(speed: ModuleSpeed, module: &ResolvedModule) -> bool {
+    speed == ModuleSpeed::Fast
+        && module
+            .sources
+            .iter()
+            .all(|source| matches!(source, ResolvedSource::Env { .. }))
+}
+
 /// Detect custom modules in parallel with a timeout.
 ///
 /// Pre-allocates slots in definition order. Each module's detection runs in a
@@ -119,16 +127,28 @@ async fn detect_custom_modules(input: &DetectInput<'_>) -> Vec<CustomModuleInfo>
     }
 
     let slot_count = matching.len();
+    let mut slots: Vec<Option<CustomModuleInfo>> = vec![None; slot_count];
     let mut join_set = JoinSet::new();
+
+    let mut blocking = Vec::new();
+    for (slot, def) in matching {
+        if should_detect_inline(input.speed, def) {
+            slots[slot] = detect_module(def, input.cwd, input.env_vars, input.path_env);
+        } else {
+            blocking.push((slot, def.clone()));
+        }
+    }
+
+    if blocking.is_empty() {
+        return slots.into_iter().flatten().collect();
+    }
 
     // Share immutable data across tasks via Arc to avoid per-task cloning.
     let shared_cwd = Arc::new(input.cwd.to_path_buf());
     let shared_env_vars = Arc::new(input.env_vars.to_vec());
     let shared_path_env = Arc::new(input.path_env.map(ToOwned::to_owned));
 
-    for (slot, def) in &matching {
-        let slot = *slot;
-        let def = (*def).clone();
+    for (slot, def) in blocking {
         let cwd = Arc::clone(&shared_cwd);
         let env_vars = Arc::clone(&shared_env_vars);
         let path_env = Arc::clone(&shared_path_env);
@@ -140,7 +160,6 @@ async fn detect_custom_modules(input: &DetectInput<'_>) -> Vec<CustomModuleInfo>
         });
     }
 
-    let mut slots: Vec<Option<CustomModuleInfo>> = vec![None; slot_count];
     let deadline = tokio::time::Instant::now() + input.timeout;
 
     while !join_set.is_empty() {
@@ -328,7 +347,10 @@ mod tests {
     };
 
     use super::super::test_support::{MockGitProvider, TestHarness, make_request, test_sid};
-    use crate::module::GitStatus;
+    use crate::{
+        config::{Config, ModuleDef, ModuleWhen, SourceDef, TimeoutConfig},
+        module::GitStatus,
+    };
 
     const HOT_RELOAD_WAIT: Duration = Duration::from_millis(20);
 
@@ -360,6 +382,22 @@ mod tests {
 
         match reader.read_message().await? {
             Some(Message::RenderResult(rr)) => Ok(rr.left2),
+            other => Err(format!("expected RenderResult, got {other:?}").into()),
+        }
+    }
+
+    async fn request_left1(
+        reader: &mut MessageReader<OwnedReadHalf>,
+        writer: &mut MessageWriter<OwnedWriteHalf>,
+        generation: u64,
+        env_vars: Vec<(String, String)>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let mut req = make_request("/tmp", generation, 80);
+        req.env_vars = env_vars;
+        writer.write_message(&Message::Request(req)).await?;
+
+        match reader.read_message().await? {
+            Some(Message::RenderResult(rr)) => Ok(rr.left1),
             other => Err(format!("expected RenderResult, got {other:?}").into()),
         }
     }
@@ -532,6 +570,49 @@ mod tests {
             }
             other => return Err(format!("expected HelloAck, got {other:?}").into()),
         }
+
+        harness.shutdown().await
+    }
+
+    #[tokio::test]
+    async fn test_fast_env_module_renders_without_blocking_pool()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config = Config {
+            module: vec![ModuleDef {
+                name: "profile".to_owned(),
+                when: ModuleWhen::default(),
+                source: vec![SourceDef {
+                    env: Some("CAPSULE_PROFILE".to_owned()),
+                    file: None,
+                    command: None,
+                    regex: None,
+                }],
+                format: "{value}".to_owned(),
+                icon: None,
+                color: None,
+                connector: None,
+            }],
+            timeout: TimeoutConfig {
+                fast_ms: 0,
+                ..TimeoutConfig::default()
+            },
+            ..Config::default()
+        };
+        let harness =
+            TestHarness::start_with_config(MockGitProvider { status: None }, config).await?;
+        let (mut reader, mut writer) = harness.connect().await?;
+
+        let left1 = request_left1(
+            &mut reader,
+            &mut writer,
+            1,
+            vec![("CAPSULE_PROFILE".to_owned(), "dev".to_owned())],
+        )
+        .await?;
+        assert!(
+            left1.contains("dev"),
+            "env-only fast module should appear in RenderResult: {left1}"
+        );
 
         harness.shutdown().await
     }
