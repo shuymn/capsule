@@ -2,9 +2,10 @@
 
 `capsule` is a macOS-only prompt engine for `zsh`, implemented in Rust.
 
-The project ships a single `capsule` binary with three subcommands:
+The project ships a single `capsule` binary:
 
-- `capsule daemon` starts the prompt daemon over a Unix domain socket
+- `capsule daemon` starts the prompt daemon (auto-detects launchd socket activation)
+- `capsule daemon install` / `uninstall` manages the launchd service
 - `capsule connect` relays shell I/O to the daemon through a coprocess
 - `capsule init zsh` prints the shell integration script
 
@@ -16,7 +17,8 @@ This repository is no longer a template. It currently implements:
 
 - macOS + `zsh` support
 - a two-line prompt
-- daemon-backed rendering over `$TMPDIR/capsule.sock`
+- daemon-backed rendering over `~/.capsule/capsule.sock`
+- launchd socket activation with `capsule daemon install`
 - fast and slow prompt modules
 - async refresh for slow prompt data after the initial render
 
@@ -66,21 +68,38 @@ Or run directly during development:
 cargo run -p capsule-cli -- --help
 ```
 
-To install the binary into Cargo's bin directory:
+
+## Setup
+
+### 1. Install the binary
 
 ```bash
 cargo install --path crates/cli --locked
 ```
 
-## zsh Setup
+### 2. Register with launchd (recommended)
 
-Add this to `.zshrc`:
+```bash
+capsule daemon install
+```
+
+This writes a plist to `~/Library/LaunchAgents/` and loads the service. launchd creates `~/.capsule/capsule.sock` and launches the daemon on first connection.
+
+To remove:
+
+```bash
+capsule daemon uninstall
+```
+
+Without launchd, the daemon starts automatically when a shell opens (standalone mode).
+
+### 3. Add to `.zshrc`
 
 ```zsh
 eval "$(capsule init zsh)"
 ```
 
-What the generated script does:
+The generated script:
 
 - creates a random session ID per shell session
 - starts `capsule connect` as a coprocess relay
@@ -88,18 +107,17 @@ What the generated script does:
 - tracks command duration from `preexec`
 - falls back to `%~ %# ` if the coprocess is unavailable
 
-The daemon is expected to use `$TMPDIR/capsule.sock`. When `CAPSULE_LOG` is set, daemon logs are written to `$TMPDIR/capsule.log`.
+When `CAPSULE_LOG` is set, daemon logs are written to `$TMPDIR/capsule.log`.
 
 ## CLI
 
-```bash
-capsule --help
-capsule daemon
-capsule connect
-capsule init zsh
 ```
-
-`capsule init zsh` is the only shell integration exposed today.
+capsule daemon              Start the daemon (auto-detects launchd)
+capsule daemon install      Register launchd service
+capsule daemon uninstall    Remove launchd service
+capsule connect             Coprocess relay (used by init script)
+capsule init zsh            Print shell integration script
+```
 
 ## Development
 
@@ -140,6 +158,7 @@ lefthook install
 - `crates/cli`: CLI entrypoint and integration tests
 - `crates/core`: daemon, init script generation, prompt modules, rendering
 - `crates/protocol`: wire protocol, message codec, netstring framing
+- `crates/sys`: platform-specific FFI (launchd socket activation)
 - `docs/architecture.md`: architecture baseline and constraints
 - `docs/benchmarking.md`: prompt benchmark rules and usage
 - `docs/tooling.md`: build, lint, hook, and CI policy

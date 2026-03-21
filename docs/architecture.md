@@ -33,9 +33,9 @@ capsule-cli         CLI entry point (clap dispatch のみ)
 | IPC | Unix domain socket | macOS native、低遅延、zsh から coproc 経由で接続 |
 | Wire format | Netstring 列 + LF 終端 | zsh `read -r` で 1 message 読める。field 値に LF 不含 |
 | Git | `Command::new("git")` + GitProvider trait | v1 は CLI 呼び出し。trait で将来の gix 移行に備える |
-| Daemon 起動 | zsh glue から自動起動 | launchd は v2 |
+| Daemon 起動 | launchd socket activation (macOS), standalone fallback | `launch_activate_socket` FFI → fd → listener。standalone: flock + bind |
 | zsh 連携 | coproc relay (`capsule connect`) | zsocket 不要。stdin/stdout pipe で socket を抽象化 |
-| Socket path | `$TMPDIR/capsule.sock` | macOS $TMPDIR はユーザー別。UID 付加不要。sun_path 104 bytes 制限回避 |
+| Socket path | `~/.capsule/capsule.sock` | launchd plist で $HOME 展開可能。sun_path 104 bytes 制限回避。$TMPDIR は再起動ごとに変わるため不適 |
 | Session ID | 64-bit random hex (16 chars) | PID は再利用される。zsh 側で生成 |
 | Generation | u64 monotonic counter (per-session) | stale request 検出用 |
 | Module trait | sync (daemon が slow module を spawn_blocking で呼ぶ) | async trait object の制約を回避 |
@@ -49,5 +49,4 @@ capsule-cli         CLI entry point (clap dispatch のみ)
 
 - multi-user / multi-session を同一 daemon で扱う必要 → runtime を multi-thread に変更
 - gix が十分安定 → GitProvider 実装を差し替え
-- launchd 統合が必要 → daemon 起動方式を再検討
 - Linux を first-class support → socket path、zsh 前提の再検討
