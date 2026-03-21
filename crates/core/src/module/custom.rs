@@ -849,6 +849,31 @@ mod tests {
         assert_eq!(m.map(|m| m.speed), Some(ModuleSpeed::Slow));
     }
 
+    #[test]
+    fn test_resolve_modules_empty_command_args_filtered() {
+        let defs = resolve_modules(&[ModuleDef {
+            name: "empty_cmd".to_owned(),
+            when: ModuleWhen::default(),
+            source: vec![SourceDef {
+                env: None,
+                file: None,
+                command: Some(vec![]),
+                regex: None,
+            }],
+            format: "{value}".to_owned(),
+            icon: None,
+            color: None,
+            connector: None,
+            arbitration: None,
+        }]);
+
+        let m = defs.iter().find(|r| r.name == "empty_cmd");
+        assert!(
+            m.is_some_and(|m| m.sources.is_empty()),
+            "empty command args must be filtered during compilation"
+        );
+    }
+
     // -- detect_modules -------------------------------------------------------
 
     #[test]
@@ -1511,6 +1536,221 @@ mod tests {
                 tc.value
             );
             assert_eq!(tc.connector.as_deref(), Some("via"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_detect_empty_env_var_value() {
+        let defs = resolve_modules(&[ModuleDef {
+            name: "empty_env".to_owned(),
+            when: ModuleWhen {
+                files: vec![],
+                env: vec!["EMPTY_VAR".to_owned()],
+            },
+            source: vec![SourceDef {
+                env: Some("EMPTY_VAR".to_owned()),
+                file: None,
+                command: None,
+                regex: None,
+            }],
+            format: "{value}".to_owned(),
+            icon: None,
+            color: None,
+            connector: None,
+            arbitration: None,
+        }]);
+
+        let env_vars = vec![("EMPTY_VAR".to_owned(), String::new())];
+        let results = detect_modules(&defs, Path::new("/tmp"), &env_vars, None, ModuleSpeed::Fast);
+        let m = results.iter().find(|r| r.name == "empty_env");
+        assert!(
+            m.is_some(),
+            "empty env var value should still trigger detection"
+        );
+        assert_eq!(m.map(|m| m.value.as_str()), Some(""));
+    }
+
+    #[test]
+    fn test_detect_empty_file_content_filtered() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("marker"), "")?;
+        std::fs::write(dir.path().join(".version"), "")?;
+
+        let defs = resolve_modules(&[ModuleDef {
+            name: "empty_file".to_owned(),
+            when: ModuleWhen {
+                files: vec!["marker".to_owned()],
+                env: vec![],
+            },
+            source: vec![SourceDef {
+                env: None,
+                file: Some(".version".to_owned()),
+                command: None,
+                regex: None,
+            }],
+            format: "v{value}".to_owned(),
+            icon: None,
+            color: None,
+            connector: None,
+            arbitration: None,
+        }]);
+
+        let results = detect_modules(&defs, dir.path(), &[], None, ModuleSpeed::Fast);
+        assert!(
+            results.iter().all(|r| r.name != "empty_file"),
+            "empty file content must not produce a detection"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_detect_file_source_path_traversal_rejected() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub)?;
+        std::fs::write(sub.join("marker"), "")?;
+        std::fs::write(dir.path().join("evil"), "/bin/bad\n")?;
+
+        let defs = resolve_modules(&[ModuleDef {
+            name: "traversal".to_owned(),
+            when: ModuleWhen {
+                files: vec!["marker".to_owned()],
+                env: vec![],
+            },
+            source: vec![SourceDef {
+                env: None,
+                file: Some("../evil".to_owned()),
+                command: None,
+                regex: None,
+            }],
+            format: "{value}".to_owned(),
+            icon: None,
+            color: None,
+            connector: None,
+            arbitration: None,
+        }]);
+
+        let results = detect_modules(&defs, &sub, &[], None, ModuleSpeed::Fast);
+        assert!(
+            results.iter().all(|r| r.name != "traversal"),
+            "file source with path traversal ('..') must be rejected"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_detect_format_no_recursive_expansion() {
+        let defs = resolve_modules(&[ModuleDef {
+            name: "format_inject".to_owned(),
+            when: ModuleWhen::default(),
+            source: vec![SourceDef {
+                env: Some("INJECT_VAR".to_owned()),
+                file: None,
+                command: None,
+                regex: None,
+            }],
+            format: "prefix-{value}-suffix".to_owned(),
+            icon: None,
+            color: None,
+            connector: None,
+            arbitration: None,
+        }]);
+
+        let env_vars = vec![("INJECT_VAR".to_owned(), "{value}".to_owned())];
+        let results = detect_modules(&defs, Path::new("/tmp"), &env_vars, None, ModuleSpeed::Fast);
+        let m = results.iter().find(|r| r.name == "format_inject");
+        assert_eq!(
+            m.map(|m| m.value.as_str()),
+            Some("prefix-{value}-suffix"),
+            "{{value}} in raw value must not be recursively expanded"
+        );
+    }
+
+    #[test]
+    fn test_detect_command_no_shell_injection() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("marker"), "")?;
+        let sentinel = dir.path().join("pwned");
+
+        let defs = resolve_modules(&[ModuleDef {
+            name: "shell_inject".to_owned(),
+            when: ModuleWhen {
+                files: vec!["marker".to_owned()],
+                env: vec![],
+            },
+            source: vec![SourceDef {
+                env: None,
+                file: None,
+                command: Some(vec![
+                    "echo".to_owned(),
+                    format!("safe; touch {}", sentinel.display()),
+                ]),
+                regex: None,
+            }],
+            format: "{value}".to_owned(),
+            icon: None,
+            color: None,
+            connector: None,
+            arbitration: None,
+        }]);
+
+        let _results = detect_modules(&defs, dir.path(), &[], None, ModuleSpeed::Slow);
+        assert!(
+            !sentinel.exists(),
+            "shell metacharacters in command args must not be interpreted"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_detect_concurrent_no_corruption() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("marker"), "")?;
+        std::fs::write(dir.path().join(".version"), "1.0.0\n")?;
+
+        let defs = resolve_modules(&[ModuleDef {
+            name: "concurrent".to_owned(),
+            when: ModuleWhen {
+                files: vec!["marker".to_owned()],
+                env: vec![],
+            },
+            source: vec![SourceDef {
+                env: None,
+                file: Some(".version".to_owned()),
+                command: None,
+                regex: None,
+            }],
+            format: "v{value}".to_owned(),
+            icon: None,
+            color: None,
+            connector: None,
+            arbitration: None,
+        }]);
+
+        let defs = std::sync::Arc::new(defs);
+        let dir_path = dir.path().to_path_buf();
+        let mut handles = Vec::new();
+
+        for _ in 0..8 {
+            let defs = std::sync::Arc::clone(&defs);
+            let path = dir_path.clone();
+            handles.push(std::thread::spawn(move || {
+                detect_modules(&defs, &path, &[], None, ModuleSpeed::Fast)
+            }));
+        }
+
+        for handle in handles {
+            let results = handle
+                .join()
+                .map_err(|panic_payload| format!("thread panicked: {panic_payload:?}"))?;
+            let m = results.iter().find(|r| r.name == "concurrent");
+            assert!(m.is_some(), "each thread must detect the module");
+            assert_eq!(
+                m.map(|m| m.value.as_str()),
+                Some("v1.0.0"),
+                "value must be consistent across threads"
+            );
         }
         Ok(())
     }
