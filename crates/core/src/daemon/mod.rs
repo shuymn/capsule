@@ -460,7 +460,7 @@ fn compose_prompt(fast: &FastOutputs, slow: Option<&SlowOutput>, cols: usize) ->
         line1.push(Segment {
             content: git.to_owned(),
             connector: Some(connector("on")),
-            icon: Some(icon("\u{e0a0}", Style::new().fg(Color::Magenta))),
+            icon: Some(icon("\u{f418}", Style::new().fg(Color::Magenta))),
             content_style: None, // pre-styled
         });
     }
@@ -479,7 +479,7 @@ fn compose_prompt(fast: &FastOutputs, slow: Option<&SlowOutput>, cols: usize) ->
     if let Some(ref dur) = fast.cmd_duration {
         line1.push(Segment {
             content: dur.clone(),
-            connector: None,
+            connector: Some(connector("took")),
             icon: None,
             content_style: Some(Style::new().fg(Color::Yellow)),
         });
@@ -877,6 +877,42 @@ mod tests {
             contains_yellow_ansi(&lines.left2),
             "time content should use yellow styling: {}",
             lines.left2
+        );
+    }
+
+    // -- Theme 10: branch icon + cmd_duration connector tests ----------------
+
+    #[test]
+    fn test_daemon_compose_prompt_branch_icon_f418() {
+        let fast = make_fast_outputs();
+        let slow = SlowOutput {
+            git: Some("main".to_owned()),
+            ..make_slow_output()
+        };
+        let lines = compose_prompt(&fast, Some(&slow), 80);
+        assert!(
+            lines.left1.contains('\u{f418}'),
+            "branch icon should be \\u{{f418}}: {}",
+            lines.left1
+        );
+    }
+
+    #[test]
+    fn test_daemon_compose_prompt_cmd_duration_took_connector() {
+        let fast = FastOutputs {
+            cmd_duration: Some("3s".to_owned()),
+            ..make_fast_outputs()
+        };
+        let lines = compose_prompt(&fast, None, 80);
+        assert!(
+            lines.left1.contains("took"),
+            "cmd_duration should have 'took' connector: {}",
+            lines.left1
+        );
+        assert!(
+            lines.left1.contains("3s"),
+            "cmd_duration should contain duration: {}",
+            lines.left1
         );
     }
 
