@@ -27,6 +27,8 @@ pub struct Config {
     pub timeout: TimeoutConfig,
     /// Mapping from symbolic colors to concrete ANSI foreground codes.
     pub color_map: ColorMap,
+    /// Cache settings.
+    pub cache: CacheConfig,
     /// User-defined prompt modules (`[[module]]` array).
     #[serde(default)]
     pub module: Vec<ModuleDef>,
@@ -454,6 +456,25 @@ impl ConnectorConfig {
     pub fn prompt_style(&self) -> Style {
         self.style.resolve(Style::new())
     }
+}
+
+/// Caching strategy for slow module results (git, commands).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SlowCacheMode {
+    /// Do not cache slow module results; always compute fresh.
+    Off,
+    /// Cache slow module results but revalidate in background on every hit.
+    #[default]
+    Revalidate,
+}
+
+/// Cache settings.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(default)]
+pub struct CacheConfig {
+    /// Caching strategy for slow modules.
+    pub slow: SlowCacheMode,
 }
 
 /// Errors while reading or parsing a configuration file.
@@ -973,6 +994,44 @@ cmd_duration = ""
         assert_eq!(config.connectors.git, "");
         assert_eq!(config.connectors.time, "");
         assert_eq!(config.connectors.cmd_duration, "");
+        Ok(())
+    }
+
+    #[test]
+    fn test_config_cache_defaults_to_revalidate() {
+        let config = Config::default();
+        assert_eq!(config.cache.slow, SlowCacheMode::Revalidate);
+    }
+
+    #[test]
+    fn test_config_cache_slow_off() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[cache]
+slow = "off"
+"#,
+        )?;
+        let config = load_config(&path);
+        assert_eq!(config.cache.slow, SlowCacheMode::Off);
+        Ok(())
+    }
+
+    #[test]
+    fn test_config_cache_slow_revalidate() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[cache]
+slow = "revalidate"
+"#,
+        )?;
+        let config = load_config(&path);
+        assert_eq!(config.cache.slow, SlowCacheMode::Revalidate);
         Ok(())
     }
 }

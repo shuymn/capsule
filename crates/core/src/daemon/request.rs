@@ -123,6 +123,132 @@ fn cache_key_for_request(
     CacheKey::new(cwd.to_owned(), config_generation, dep_hash)
 }
 
+/// Run git status and slow custom modules concurrently, returning the combined
+/// result.  Both the cache-hit revalidation and cache-miss paths call this.
+async fn compute_slow_modules<G: GitProvider + Send + 'static>(
+    git_provider: G,
+    facts: &Arc<RequestFacts>,
+    modules: &[ResolvedModule],
+    config: &crate::config::Config,
+    daemon_stats: &Arc<DaemonStats>,
+) -> prompt::SlowOutput {
+    use std::sync::atomic::Ordering;
+
+    let slow_start = std::time::Instant::now();
+    let slow_timeout = Duration::from_millis(config.timeout.slow_ms);
+    let deadline = tokio::time::Instant::now() + slow_timeout;
+
+    let git_cwd = facts.cwd().to_path_buf();
+    let git_style = config.git.prompt_style();
+    let indicator_style = config.git.indicator_prompt_style();
+    let color_map = config.color_map;
+    let git_path_env = facts.command_path_env().map(ToOwned::to_owned);
+    let mut git_set = JoinSet::new();
+    git_set.spawn_blocking(move || {
+        let module = GitModule::with_styles(git_provider, git_style, indicator_style, color_map);
+        module
+            .render_for_cwd(&git_cwd, git_path_env.as_deref())
+            .map(|output| output.content)
+    });
+
+    let slow_detect_input = DetectInput {
+        modules,
+        facts: Arc::clone(facts),
+        speed: ModuleSpeed::Slow,
+        timeout: slow_timeout,
+        stats: Some(Arc::clone(daemon_stats)),
+    };
+    let custom_future = detect_custom_modules(&slow_detect_input);
+
+    let (git_result, custom_modules) = tokio::join!(
+        async {
+            match tokio::time::timeout_at(deadline, git_set.join_next()).await {
+                Ok(Some(Ok(git))) => git,
+                Err(_) => {
+                    daemon_stats.git_timeouts.fetch_add(1, Ordering::Relaxed);
+                    None
+                }
+                _ => None,
+            }
+        },
+        custom_future,
+    );
+
+    let elapsed_us = u64::try_from(slow_start.elapsed().as_micros()).unwrap_or(u64::MAX);
+    daemon_stats
+        .slow_compute_duration_us
+        .fetch_add(elapsed_us, Ordering::Relaxed);
+
+    prompt::SlowOutput {
+        git: git_result,
+        custom_modules,
+    }
+}
+
+/// Spawn a background task that re-runs all slow modules and, if the result
+/// differs from the cached version, sends an `Update` and refreshes the cache.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "all parameters are owned types forwarded into a spawned task"
+)]
+fn spawn_slow_revalidation<G: GitProvider + Send + 'static>(
+    cached: Arc<prompt::SlowOutput>,
+    git_provider: G,
+    facts: Arc<RequestFacts>,
+    modules: Arc<Vec<ResolvedModule>>,
+    config: Arc<crate::config::Config>,
+    shared_state: Arc<Mutex<SharedState>>,
+    writer: Arc<Mutex<MessageWriter<tokio::net::unix::OwnedWriteHalf>>>,
+    daemon_stats: Arc<DaemonStats>,
+    cache_key: CacheKey,
+    session_id: capsule_protocol::SessionId,
+    generation: u64,
+    fast: prompt::FastOutputs,
+    sent_left1: String,
+    sent_left2: String,
+    cols: u16,
+) {
+    use std::sync::atomic::Ordering;
+
+    daemon_stats
+        .slow_computes_started
+        .fetch_add(1, Ordering::Relaxed);
+
+    tokio::spawn(async move {
+        let updated_slow =
+            compute_slow_modules(git_provider, &facts, &modules, &config, &daemon_stats).await;
+
+        if updated_slow == *cached {
+            return;
+        }
+
+        let updated_slow = Arc::new(updated_slow);
+        {
+            let mut state_locked = shared_state.lock().await;
+            if state_locked
+                .cache
+                .insert(cache_key, Arc::clone(&updated_slow))
+            {
+                daemon_stats.cache_evictions.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        try_send_slow_update(
+            &shared_state,
+            &writer,
+            session_id,
+            generation,
+            &fast,
+            &updated_slow,
+            &sent_left1,
+            &sent_left2,
+            cols,
+            &config,
+        )
+        .await;
+    });
+}
+
 struct SlowUpdateTarget {
     state: Arc<Mutex<SharedState>>,
     writer: Arc<Mutex<MessageWriter<tokio::net::unix::OwnedWriteHalf>>>,
@@ -272,16 +398,19 @@ async fn handle_request<G: GitProvider + Send + 'static>(
 
     let fast = prompt::run_fast_modules(&render_ctx, &config, facts.read_only(), fast_custom);
 
-    let cached_slow = {
+    let cache_enabled = config.cache.slow != crate::config::SlowCacheMode::Off;
+    let cached_slow = if cache_enabled {
         let mut state = ctx.state.lock().await;
-        if let Some(v) = state.cache.get(&cache_key) {
+        state.cache.get(&cache_key).map(|v| {
             ctx.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
-            Some(v.clone())
-        } else {
-            ctx.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
-            None
-        }
+            v.clone()
+        })
+    } else {
+        None
     };
+    if cached_slow.is_none() {
+        ctx.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
+    }
 
     let lines = prompt::compose_prompt(&fast, cached_slow.as_deref(), usize::from(cols), &config);
     let result = RenderResult {
@@ -299,7 +428,28 @@ async fn handle_request<G: GitProvider + Send + 'static>(
     );
     write_message(&ctx.writer, &Message::RenderResult(result)).await?;
 
-    if cached_slow.is_some() {
+    if let Some(cached) = cached_slow {
+        // Cache hit: revalidate all slow modules in background.  If the fresh
+        // result differs from the cached version, send an Update and refresh
+        // the cache entry.
+        spawn_slow_revalidation(
+            cached,
+            ctx.git_provider,
+            Arc::clone(&facts),
+            Arc::clone(&modules),
+            Arc::clone(&config),
+            Arc::clone(&ctx.state),
+            Arc::clone(&ctx.writer),
+            Arc::clone(&ctx.stats),
+            cache_key,
+            session_id,
+            generation,
+            fast.clone(),
+            lines.left1,
+            lines.left2,
+            cols,
+        );
+
         return Ok(());
     }
 
@@ -347,65 +497,21 @@ async fn handle_request<G: GitProvider + Send + 'static>(
     slow_stats
         .slow_computes_started
         .fetch_add(1, Ordering::Relaxed);
-    let slow_start = std::time::Instant::now();
     tokio::spawn(async move {
-        let slow_timeout = Duration::from_millis(slow_config.timeout.slow_ms);
-        let deadline = tokio::time::Instant::now() + slow_timeout;
-
-        // Single PathBuf allocation shared by git and custom module tasks.
-        let git_cwd = facts.cwd().to_path_buf();
-        let git_style = slow_config.git.prompt_style();
-        let indicator_style = slow_config.git.indicator_prompt_style();
-        let color_map = slow_config.color_map;
-        let git_provider = ctx.git_provider;
-        let git_path_env = facts.command_path_env().map(ToOwned::to_owned);
-        let mut git_set = JoinSet::new();
-        git_set.spawn_blocking(move || {
-            let module =
-                GitModule::with_styles(git_provider, git_style, indicator_style, color_map);
-            module
-                .render_for_cwd(&git_cwd, git_path_env.as_deref())
-                .map(|output| output.content)
-        });
-        let slow_detect_input = DetectInput {
-            modules: &slow_modules,
-            facts: Arc::clone(&facts),
-            speed: ModuleSpeed::Slow,
-            timeout: slow_timeout,
-            stats: Some(Arc::clone(&slow_stats)),
-        };
-        let custom_future = detect_custom_modules(&slow_detect_input);
-
-        // Run git and custom detection concurrently with shared timeout
-        let (git_result, custom_modules) = tokio::join!(
-            async {
-                match tokio::time::timeout_at(deadline, git_set.join_next()).await {
-                    Ok(Some(Ok(git))) => git,
-                    Err(_) => {
-                        slow_stats.git_timeouts.fetch_add(1, Ordering::Relaxed);
-                        None
-                    }
-                    _ => None,
-                }
-            },
-            custom_future,
-        );
-
-        let elapsed_us = u64::try_from(slow_start.elapsed().as_micros()).unwrap_or(u64::MAX);
-        slow_stats
-            .slow_compute_duration_us
-            .fetch_add(elapsed_us, Ordering::Relaxed);
-
-        let slow = prompt::SlowOutput {
-            git: git_result,
-            custom_modules,
-        };
+        let slow = compute_slow_modules(
+            ctx.git_provider,
+            &facts,
+            &slow_modules,
+            &slow_config,
+            &slow_stats,
+        )
+        .await;
 
         let slow = Arc::new(slow);
         let sender = {
             let mut state = state.lock().await;
             let sender = state.inflight.remove(&cache_key);
-            if state.cache.insert(cache_key, Arc::clone(&slow)) {
+            if cache_enabled && state.cache.insert(cache_key, Arc::clone(&slow)) {
                 slow_stats.cache_evictions.fetch_add(1, Ordering::Relaxed);
             }
             drop(state);
@@ -530,7 +636,9 @@ mod tests {
         MockGitProvider, TestHarness, make_request, make_sleep_module, test_sid,
     };
     use crate::{
-        config::{Config, ModuleDef, ModuleWhen, SourceDef, TimeoutConfig},
+        config::{
+            CacheConfig, Config, ModuleDef, ModuleWhen, SlowCacheMode, SourceDef, TimeoutConfig,
+        },
         module::GitStatus,
         test_utils::contains_style_sequence,
     };
@@ -758,7 +866,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_daemon_skips_slow_recompute_on_fresh_cache_hit()
+    async fn test_daemon_revalidates_git_on_cache_hit_without_update_when_unchanged()
     -> Result<(), Box<dyn std::error::Error>> {
         let call_count = count_git_calls();
         let provider = MockGitProvider {
@@ -796,12 +904,12 @@ mod tests {
         let update = tokio::time::timeout(Duration::from_millis(200), reader.read_message()).await;
         assert!(
             update.is_err(),
-            "fresh cache hit should not trigger a second Update"
+            "unchanged git result should not trigger Update"
         );
         assert_eq!(
             call_count.load(Ordering::SeqCst),
-            1,
-            "fresh cache hit should not rerun git status"
+            2,
+            "cache hit should still revalidate git in background"
         );
 
         harness.shutdown().await
@@ -1006,8 +1114,8 @@ mod tests {
         );
         assert_eq!(
             call_count.load(Ordering::SeqCst),
-            1,
-            "same env dependency value should reuse cached slow result"
+            2,
+            "cache hit should still revalidate git in background"
         );
 
         harness.shutdown().await
@@ -1388,8 +1496,8 @@ mod tests {
         );
         assert_eq!(
             call_count.load(Ordering::SeqCst),
-            1,
-            "second session same cwd should reuse cache without extra git call"
+            2,
+            "cache hit should still revalidate git in background"
         );
 
         harness.shutdown().await
@@ -1560,8 +1668,8 @@ mod tests {
         );
         assert_eq!(
             call_count.load(Ordering::SeqCst),
-            1,
-            "file dependency with stable existence should reuse cached slow result"
+            2,
+            "cache hit should still revalidate git in background"
         );
 
         harness.shutdown().await
@@ -1610,6 +1718,51 @@ mod tests {
             }
             other => return Err(format!("expected StatusResponse, got {other:?}").into()),
         }
+
+        harness.shutdown().await
+    }
+
+    #[tokio::test]
+    async fn test_daemon_cache_off_always_recomputes_slow_modules()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let call_count = count_git_calls();
+        let provider = MockGitProvider {
+            status: Some(GitStatus {
+                branch: Some("main".to_owned()),
+                ..GitStatus::default()
+            }),
+            call_count: Some(Arc::clone(&call_count)),
+            ..MockGitProvider::default()
+        };
+        let config = Config {
+            cache: CacheConfig {
+                slow: SlowCacheMode::Off,
+            },
+            ..Config::default()
+        };
+        let harness = TestHarness::start_with_config(provider, config).await?;
+        let cwd = harness.cwd_str().ok_or("missing work dir")?.to_owned();
+        let (mut reader, mut writer) = harness.connect().await?;
+
+        // First request: cache miss, slow compute runs git.
+        writer
+            .write_message(&Message::Request(make_request(&cwd, 1, 80)))
+            .await?;
+        let _ = reader.read_message().await?;
+        let _ = tokio::time::timeout(Duration::from_secs(5), reader.read_message()).await??;
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        // Second request: with cache off, should recompute (not serve from cache).
+        writer
+            .write_message(&Message::Request(make_request(&cwd, 2, 80)))
+            .await?;
+        let _ = reader.read_message().await?;
+        let _ = tokio::time::timeout(Duration::from_secs(5), reader.read_message()).await??;
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            2,
+            "cache off should recompute slow modules every request"
+        );
 
         harness.shutdown().await
     }
