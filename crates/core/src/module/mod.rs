@@ -11,7 +11,6 @@ pub mod directory;
 pub mod git;
 pub mod status;
 pub mod time;
-pub mod toolchain;
 
 use std::path::Path;
 
@@ -24,7 +23,6 @@ pub use directory::DirectoryModule;
 pub use git::{CommandGitProvider, GitError, GitModule, GitProvider, GitStatus};
 pub use status::StatusModule;
 pub use time::TimeModule;
-pub use toolchain::ToolchainModule;
 
 /// Speed classification for prompt modules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
