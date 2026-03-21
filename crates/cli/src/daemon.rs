@@ -1,11 +1,9 @@
 //! `capsule daemon` — starts the prompt daemon server.
 
-use std::{
-    fs::File,
-    io::Write as _,
-    path::{Path, PathBuf},
-    time::Duration,
-};
+mod service;
+mod status;
+
+use std::{fs::File, io::Write as _, path::PathBuf};
 
 use anyhow::Context as _;
 use capsule_core::{
@@ -16,6 +14,10 @@ use capsule_core::{
     },
     module::CommandGitProvider,
 };
+#[cfg(target_os = "macos")]
+pub use service::Launchd;
+pub use service::{install, uninstall};
+pub use status::status;
 
 /// Initialize tracing subscriber if `CAPSULE_LOG` is set.
 ///
@@ -132,238 +134,6 @@ fn run_server(
 }
 
 // ---------------------------------------------------------------------------
-// install / uninstall
-// ---------------------------------------------------------------------------
-
-/// launchd service label.
-const LAUNCHD_LABEL: &str = "com.github.shuymn.capsule";
-
-/// Abstracts platform-specific service management operations.
-///
-/// Implementations handle loading, unloading, and restarting a daemon
-/// service. `Launchd` dispatches to real `launchctl` commands;
-/// `NoopServiceManager` (test-only) succeeds silently.
-pub trait ServiceManager {
-    /// Load and start the service from the given definition file.
-    fn load(&self, service_file: &Path) -> anyhow::Result<()>;
-
-    /// Stop and unload the service.
-    ///
-    /// Returns `Ok(true)` if the service was unloaded, `Ok(false)` if it
-    /// was not loaded.
-    fn unload(&self) -> anyhow::Result<bool>;
-
-    /// Restart a running service.
-    fn restart(&self) -> anyhow::Result<()>;
-}
-
-/// macOS launchd service manager.
-#[cfg(target_os = "macos")]
-pub struct Launchd {
-    uid: u32,
-}
-
-#[cfg(target_os = "macos")]
-impl Launchd {
-    pub fn new() -> anyhow::Result<Self> {
-        let output = std::process::Command::new("id")
-            .arg("-u")
-            .output()
-            .context("failed to run `id -u`")?;
-        let s = String::from_utf8_lossy(&output.stdout);
-        let uid = s
-            .trim()
-            .parse()
-            .with_context(|| format!("failed to parse uid from `id -u`: {s:?}"))?;
-        Ok(Self { uid })
-    }
-
-    /// `gui/{uid}/{label}` target used by bootout and kickstart.
-    fn service_target(&self) -> String {
-        format!("gui/{}/{LAUNCHD_LABEL}", self.uid)
-    }
-}
-
-#[cfg(target_os = "macos")]
-impl ServiceManager for Launchd {
-    fn load(&self, service_file: &Path) -> anyhow::Result<()> {
-        let status = std::process::Command::new("launchctl")
-            .args([
-                "bootstrap",
-                &format!("gui/{}", self.uid),
-                &service_file.to_string_lossy(),
-            ])
-            .status()
-            .context("failed to run launchctl bootstrap")?;
-        if status.success() {
-            Ok(())
-        } else {
-            anyhow::bail!("launchctl bootstrap failed with {status}");
-        }
-    }
-
-    fn unload(&self) -> anyhow::Result<bool> {
-        let status = std::process::Command::new("launchctl")
-            .args(["bootout", &self.service_target()])
-            .status()
-            .context("failed to run launchctl bootout")?;
-        Ok(status.success())
-    }
-
-    fn restart(&self) -> anyhow::Result<()> {
-        let status = std::process::Command::new("launchctl")
-            .args(["kickstart", "-k", &self.service_target()])
-            .status()
-            .context("failed to run launchctl kickstart")?;
-        if status.success() {
-            Ok(())
-        } else {
-            anyhow::bail!("launchctl kickstart failed with {status}");
-        }
-    }
-}
-
-/// Generate the launchd plist XML for the capsule daemon.
-///
-/// Uses socket activation: launchd creates the socket and launches
-/// the daemon on first connection. The daemon retrieves the socket fd
-/// via `launch_activate_socket`.
-fn generate_plist(capsule_bin: &Path, socket_path: &Path) -> String {
-    // SockPathMode 448 = 0o700 (owner read/write/execute)
-    format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>{LAUNCHD_LABEL}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{}</string>
-        <string>daemon</string>
-    </array>
-    <key>Sockets</key>
-    <dict>
-        <key>{LAUNCHD_SOCKET_NAME}</key>
-        <dict>
-            <key>SockPathName</key>
-            <string>{}</string>
-            <key>SockPathMode</key>
-            <integer>448</integer>
-        </dict>
-    </dict>
-</dict>
-</plist>
-"#,
-        capsule_bin.display(),
-        socket_path.display(),
-    )
-}
-
-/// Compute the plist path for a given home directory.
-fn plist_path_for(home: &Path) -> PathBuf {
-    home.join("Library/LaunchAgents")
-        .join(format!("{LAUNCHD_LABEL}.plist"))
-}
-
-/// Install the launchd plist and load the daemon service.
-///
-/// Idempotent: if the plist already exists with identical content and the
-/// running daemon's build ID matches the current binary, no reload occurs.
-/// If the plist content differs, the service is reloaded. If the plist is
-/// current but the binary has been updated, the daemon is restarted via
-/// `launchctl kickstart -k`.
-///
-/// # Errors
-///
-/// Returns an error if the plist cannot be written or the service manager
-/// operation fails.
-pub fn install(sm: &impl ServiceManager, home: &Path) -> anyhow::Result<()> {
-    let capsule_bin = std::env::current_exe().context("cannot find capsule binary")?;
-    // Use the canonical socket path (ignores $CAPSULE_SOCK_DIR) so the
-    // plist always references the production path.
-    let canonical_socket = home.join(".capsule/capsule.sock");
-    let plist_content = generate_plist(&capsule_bin, &canonical_socket);
-    let plist = plist_path_for(home);
-
-    // Check if plist already exists with same content.
-    if let Ok(existing) = std::fs::read_to_string(&plist) {
-        if existing == plist_content {
-            // Plist unchanged — check if binary was updated.
-            if daemon_needs_restart(&canonical_socket) {
-                sm.restart()?;
-                println!("daemon restarted (binary updated)");
-            } else {
-                println!("plist is already current, no reload needed");
-            }
-            return Ok(());
-        }
-        // Content differs — unload before loading new definition.
-        let _ = sm.unload();
-    }
-
-    // Ensure LaunchAgents directory exists.
-    if let Some(parent) = plist.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-
-    std::fs::write(&plist, &plist_content)
-        .with_context(|| format!("failed to write {}", plist.display()))?;
-
-    sm.load(&plist)?;
-    println!("capsule daemon installed and loaded");
-
-    Ok(())
-}
-
-/// Uninstall the launchd service and remove the plist.
-///
-/// # Errors
-///
-/// Returns an error if the service manager operation fails or the plist
-/// cannot be removed.
-pub fn uninstall(sm: &impl ServiceManager, home: &Path) -> anyhow::Result<()> {
-    let plist = plist_path_for(home);
-
-    // Unload the service (stops it if running).
-    if !sm.unload()? {
-        // Service may not be loaded — that's ok, continue to remove plist.
-        eprintln!("warning: service unload exited with non-zero status");
-    }
-
-    // Remove plist file.
-    match std::fs::remove_file(&plist) {
-        Ok(()) => println!("capsule daemon uninstalled"),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            println!("plist not found, nothing to remove");
-        }
-        Err(e) => {
-            return Err(e).with_context(|| format!("failed to remove {}", plist.display()));
-        }
-    }
-
-    Ok(())
-}
-
-/// Check if a running daemon needs to be restarted due to a binary update.
-///
-/// Returns `true` if the daemon is running and its build ID differs from
-/// the current binary. Returns `false` if build IDs match, the daemon is
-/// unreachable, or the local build ID cannot be computed.
-fn daemon_needs_restart(socket_path: &Path) -> bool {
-    // Only build_id_ok == false means IDs differ; true (match) and Err
-    // (unreachable) both mean no restart is needed.
-    matches!(
-        crate::connect::negotiate_build_id(socket_path),
-        Ok(crate::connect::NegotiationResult {
-            build_id_ok: false,
-            ..
-        })
-    )
-}
-
-// ---------------------------------------------------------------------------
 // flock
 // ---------------------------------------------------------------------------
 
@@ -444,145 +214,6 @@ pub fn home_dir() -> anyhow::Result<PathBuf> {
         .context("HOME environment variable not set")
 }
 
-/// Query daemon metrics and print them.
-///
-/// # Errors
-///
-/// Returns an error if the daemon is not running or the status exchange fails.
-pub fn status(json: bool) -> anyhow::Result<()> {
-    use std::io::BufRead as _;
-
-    use capsule_protocol::{Message, PROTOCOL_VERSION, StatusRequest};
-
-    let sock = socket_path()?;
-    let mut stream = std::os::unix::net::UnixStream::connect(&sock)
-        .context("daemon is not running (cannot connect to socket)")?;
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-
-    // Send StatusRequest
-    let req = Message::StatusRequest(StatusRequest {
-        version: PROTOCOL_VERSION,
-    });
-    let mut wire = req.to_wire();
-    wire.push(b'\n');
-    stream.write_all(&wire)?;
-
-    // Read response line
-    let mut reader = std::io::BufReader::new(&stream);
-    let mut buf = Vec::with_capacity(1024);
-    reader
-        .read_until(b'\n', &mut buf)
-        .context("failed to read status response")?;
-    if buf.last() == Some(&b'\n') {
-        buf.pop();
-    }
-
-    match Message::from_wire(&buf) {
-        Ok(Message::StatusResponse(resp)) => {
-            if json {
-                print_status_json(&resp);
-            } else {
-                print_status_human(&resp);
-            }
-        }
-        Ok(_) => anyhow::bail!("unexpected message type from daemon"),
-        Err(e) => anyhow::bail!("failed to parse status response: {e}"),
-    }
-    Ok(())
-}
-
-fn format_uptime(secs: u64) -> String {
-    let days = secs / 86400;
-    let hours = (secs % 86400) / 3600;
-    let mins = (secs % 3600) / 60;
-    let remain = secs % 60;
-    if days > 0 {
-        format!("{days}d {hours}h {mins}m {remain}s")
-    } else if hours > 0 {
-        format!("{hours}h {mins}m {remain}s")
-    } else if mins > 0 {
-        format!("{mins}m {remain}s")
-    } else {
-        format!("{remain}s")
-    }
-}
-
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "advisory metrics — precision loss in display percentages is acceptable"
-)]
-fn print_status_human(r: &capsule_protocol::StatusResponse) {
-    let total = r.cache_hits + r.cache_misses;
-    let hit_rate = if total > 0 {
-        format!("{:.1}%", r.cache_hits as f64 / total as f64 * 100.0)
-    } else {
-        "n/a".to_owned()
-    };
-    let avg_slow = if r.slow_computes_started > 0 {
-        format!(
-            "{:.1}ms",
-            r.slow_compute_duration_us as f64 / r.slow_computes_started as f64 / 1000.0
-        )
-    } else {
-        "n/a".to_owned()
-    };
-
-    println!(
-        "capsule daemon (pid {}) uptime {}\n",
-        r.pid,
-        format_uptime(r.uptime_secs)
-    );
-    println!("cache:");
-    println!(
-        "  hits: {}  misses: {}  hit_rate: {}",
-        r.cache_hits, r.cache_misses, hit_rate
-    );
-    println!(
-        "  evictions: {}  ttl_expirations: {}  entries: {}",
-        r.cache_evictions, r.cache_ttl_expirations, r.cache_entries
-    );
-    println!("  inflight_coalesces: {}", r.inflight_coalesces);
-    println!("\nrequests:");
-    println!(
-        "  total: {}  stale_discards: {}",
-        r.requests_total, r.stale_discards
-    );
-    println!("\nslow_compute:");
-    println!(
-        "  started: {}  avg_duration: {}",
-        r.slow_computes_started, avg_slow
-    );
-    println!(
-        "  git_timeouts: {}  custom_module_timeouts: {}",
-        r.git_timeouts, r.custom_module_timeouts
-    );
-    println!("\nsessions:");
-    println!(
-        "  active: {}  pruned: {}",
-        r.active_sessions, r.sessions_pruned
-    );
-    println!("\nconnections:");
-    println!(
-        "  total: {}  active: {}",
-        r.connections_total, r.connections_active
-    );
-    println!("\nconfig:");
-    println!(
-        "  generation: {}  reloads: {}  reload_errors: {}",
-        r.config_generation, r.config_reloads, r.config_reload_errors
-    );
-}
-
-fn print_status_json(r: &capsule_protocol::StatusResponse) {
-    // StatusResponse derives Serialize via the `serde` feature on capsule-protocol.
-    // serde_json::to_writer keeps fields in sync with the struct definition.
-    if let Err(e) = serde_json::to_writer(std::io::stdout(), r) {
-        eprintln!("failed to write JSON: {e}");
-    }
-    println!();
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -594,7 +225,12 @@ mod tests {
 
     use capsule_protocol::{BuildId, HelloAck, Message, PROTOCOL_VERSION};
 
-    use super::*;
+    use super::{
+        service::{
+            LAUNCHD_LABEL, ServiceManager, daemon_needs_restart, generate_plist, plist_path_for,
+        },
+        *,
+    };
 
     struct NoopServiceManager;
 
