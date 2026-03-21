@@ -104,14 +104,10 @@ fn cache_key_for_request(
     config_generation: u64,
     modules: &[ResolvedModule],
     facts: &RequestFacts,
-) -> Option<CacheKey> {
-    if facts
-        .matching_dependency_inputs(modules, ModuleSpeed::Slow)
-        .depends_on_env_or_files()
-    {
-        return None;
-    }
-    Some(CacheKey::new(cwd.to_owned(), config_generation))
+) -> CacheKey {
+    let deps = facts.matching_dependency_inputs(modules, ModuleSpeed::Slow);
+    let dep_hash = deps.compute_dep_hash(facts);
+    CacheKey::new(cwd.to_owned(), config_generation, dep_hash)
 }
 
 struct SlowUpdateTarget {
@@ -249,9 +245,7 @@ async fn handle_request<G: GitProvider + Send + 'static>(
 
     let cached_slow = {
         let mut state = ctx.state.lock().await;
-        cache_key
-            .as_ref()
-            .and_then(|key| state.cache.get(key).cloned())
+        state.cache.get(&cache_key).cloned()
     };
 
     let lines = prompt::compose_prompt(&fast, cached_slow.as_deref(), usize::from(cols), &config);
@@ -280,12 +274,12 @@ async fn handle_request<G: GitProvider + Send + 'static>(
     let slow_modules = Arc::clone(&modules);
     let state = Arc::clone(&ctx.state);
     let writer = Arc::clone(&ctx.writer);
-    let should_start_compute = if let Some(ref key) = cache_key {
+    let should_start_compute = {
         let mut shared_state = state.lock().await;
-        let (receiver, should_start) = shared_state.inflight.get(key).cloned().map_or_else(
+        let (receiver, should_start) = shared_state.inflight.get(&cache_key).cloned().map_or_else(
             || {
                 let (sender, receiver) = watch::channel(None);
-                shared_state.inflight.insert(key.clone(), sender);
+                shared_state.inflight.insert(cache_key.clone(), sender);
                 (receiver, true)
             },
             |sender| (sender.subscribe(), false),
@@ -304,8 +298,6 @@ async fn handle_request<G: GitProvider + Send + 'static>(
             config: Arc::clone(&slow_config),
         }));
         should_start
-    } else {
-        true
     };
 
     if !should_start_compute {
@@ -313,7 +305,6 @@ async fn handle_request<G: GitProvider + Send + 'static>(
     }
 
     let state = Arc::clone(&ctx.state);
-    let writer = Arc::clone(&ctx.writer);
     tokio::spawn(async move {
         let slow_timeout = Duration::from_millis(slow_config.timeout.slow_ms);
         let deadline = tokio::time::Instant::now() + slow_timeout;
@@ -357,31 +348,15 @@ async fn handle_request<G: GitProvider + Send + 'static>(
             custom_modules,
         };
 
-        if let Some(key) = cache_key {
-            let slow = Arc::new(slow);
-            let sender = {
-                let mut state = state.lock().await;
-                let sender = state.inflight.remove(&key);
-                state.cache.insert(key, Arc::clone(&slow));
-                sender
-            };
-            if let Some(sender) = sender {
-                let _ = sender.send(Some(slow));
-            }
-        } else {
-            try_send_slow_update(
-                &state,
-                &writer,
-                session_id,
-                generation,
-                &fast,
-                &slow,
-                &sent_left1,
-                &sent_left2,
-                cols,
-                &slow_config,
-            )
-            .await;
+        let slow = Arc::new(slow);
+        let sender = {
+            let mut state = state.lock().await;
+            let sender = state.inflight.remove(&cache_key);
+            state.cache.insert(cache_key, Arc::clone(&slow));
+            sender
+        };
+        if let Some(sender) = sender {
+            let _ = sender.send(Some(slow));
         }
     });
 
@@ -495,7 +470,9 @@ mod tests {
         time::sleep,
     };
 
-    use super::super::test_support::{MockGitProvider, TestHarness, make_request, test_sid};
+    use super::super::test_support::{
+        MockGitProvider, TestHarness, make_request, make_sleep_module, test_sid,
+    };
     use crate::{
         config::{Config, ModuleDef, ModuleWhen, SourceDef, TimeoutConfig},
         module::GitStatus,
@@ -903,7 +880,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_daemon_bypasses_cache_for_matching_slow_module_with_env_dependency()
+    async fn test_daemon_caches_slow_results_for_same_env_dependency_value()
     -> Result<(), Box<dyn std::error::Error>> {
         let config = Config {
             module: vec![ModuleDef {
@@ -953,13 +930,28 @@ mod tests {
         let mut second = make_request(&cwd, 2, 80);
         second.env_vars = vec![("CAPSULE_PROFILE".to_owned(), "dev".to_owned())];
         writer.write_message(&Message::Request(second)).await?;
-        let _ = reader.read_message().await?;
-        let _ = tokio::time::timeout(Duration::from_secs(5), reader.read_message()).await??;
-
+        let rr = reader.read_message().await?;
+        match &rr {
+            Some(Message::RenderResult(rr)) => {
+                assert!(
+                    rr.left1.contains("main"),
+                    "cache hit should include slow output: {}",
+                    rr.left1
+                );
+            }
+            other => {
+                return Err(format!("expected RenderResult with cache hit, got {other:?}").into());
+            }
+        }
+        let update = tokio::time::timeout(Duration::from_millis(200), reader.read_message()).await;
+        assert!(
+            update.is_err(),
+            "same env value should produce cache hit with no Update"
+        );
         assert_eq!(
             call_count.load(Ordering::SeqCst),
-            2,
-            "matching slow env dependency should bypass slow cache reuse"
+            1,
+            "same env dependency value should reuse cached slow result"
         );
 
         harness.shutdown().await
@@ -1456,7 +1448,64 @@ mod tests {
         assert_eq!(
             call_count.load(Ordering::SeqCst),
             2,
-            "env dependency should bypass cache: different env values must trigger separate slow computes"
+            "different env values should produce different cache keys"
+        );
+
+        harness.shutdown().await
+    }
+
+    #[tokio::test]
+    async fn test_daemon_caches_slow_results_with_file_dependency()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config = Config {
+            module: vec![make_sleep_module("file-dep", 50, "CACHED")],
+            ..Config::default()
+        };
+        let call_count = count_git_calls();
+        let provider = MockGitProvider {
+            status: Some(GitStatus {
+                branch: Some("main".to_owned()),
+                ..GitStatus::default()
+            }),
+            call_count: Some(Arc::clone(&call_count)),
+            ..MockGitProvider::default()
+        };
+        let harness = TestHarness::start_with_config(provider, config).await?;
+        let cwd = harness.cwd_str().ok_or("missing work dir")?.to_owned();
+        let (mut reader, mut writer) = harness.connect().await?;
+
+        writer
+            .write_message(&Message::Request(make_request(&cwd, 1, 80)))
+            .await?;
+        let _ = reader.read_message().await?;
+        let _ = tokio::time::timeout(Duration::from_secs(5), reader.read_message()).await??;
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        writer
+            .write_message(&Message::Request(make_request(&cwd, 2, 80)))
+            .await?;
+        let rr = reader.read_message().await?;
+        match &rr {
+            Some(Message::RenderResult(rr)) => {
+                assert!(
+                    rr.left1.contains("main"),
+                    "cache hit should include git branch: {}",
+                    rr.left1
+                );
+            }
+            other => {
+                return Err(format!("expected RenderResult with cache hit, got {other:?}").into());
+            }
+        }
+        let update = tokio::time::timeout(Duration::from_millis(200), reader.read_message()).await;
+        assert!(
+            update.is_err(),
+            "file-dep module with cache hit should not trigger Update"
+        );
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            1,
+            "file dependency with stable existence should reuse cached slow result"
         );
 
         harness.shutdown().await

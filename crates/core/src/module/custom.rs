@@ -115,17 +115,43 @@ pub(crate) struct ModuleDependencyInputs {
 }
 
 impl ModuleDependencyInputs {
-    #[must_use]
-    pub(crate) const fn depends_on_env_or_files(&self) -> bool {
-        !self.env_vars.is_empty() || !self.files.is_empty()
-    }
-
     fn push_env(&mut self, name: &str) {
         push_unique(&mut self.env_vars, name);
     }
 
     fn push_file(&mut self, path: &str) {
         push_unique(&mut self.files, path);
+    }
+
+    /// Env var values come from the request; file dependencies are resolved as
+    /// existence checks against the request's cwd.
+    #[must_use]
+    pub(crate) fn compute_dep_hash(&self, facts: &RequestFacts) -> u64 {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+
+        let mut env_sorted: Vec<&str> = self.env_vars.iter().map(String::as_str).collect();
+        env_sorted.sort_unstable();
+        for name in &env_sorted {
+            name.hash(&mut hasher);
+            match facts.env_value(name) {
+                Some(val) => {
+                    true.hash(&mut hasher);
+                    val.hash(&mut hasher);
+                }
+                None => false.hash(&mut hasher),
+            }
+        }
+
+        let mut files_sorted: Vec<&str> = self.files.iter().map(String::as_str).collect();
+        files_sorted.sort_unstable();
+        for file in &files_sorted {
+            file.hash(&mut hasher);
+            facts.cwd().join(file).is_file().hash(&mut hasher);
+        }
+
+        hasher.finish()
     }
 
     fn add_module(&mut self, module: &ResolvedModule) {
@@ -1401,7 +1427,6 @@ mod tests {
             inputs.files,
             vec!["package.json".to_owned(), ".node-version".to_owned()]
         );
-        assert!(inputs.depends_on_env_or_files());
         Ok(())
     }
 
@@ -1753,5 +1778,103 @@ mod tests {
             );
         }
         Ok(())
+    }
+
+    // -- compute_dep_hash -----------------------------------------------------
+
+    #[test]
+    fn test_dep_hash_empty_inputs_is_deterministic() {
+        let facts = RequestFacts::collect(PathBuf::from("/tmp"), vec![]);
+        let inputs = ModuleDependencyInputs::default();
+        let h1 = inputs.compute_dep_hash(&facts);
+        let h2 = inputs.compute_dep_hash(&facts);
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn test_dep_hash_same_env_values_produce_same_hash() {
+        let facts = RequestFacts::collect(
+            PathBuf::from("/tmp"),
+            vec![("MY_VAR".to_owned(), "val".to_owned())],
+        );
+        let mut inputs = ModuleDependencyInputs::default();
+        inputs.env_vars.push("MY_VAR".to_owned());
+        let h1 = inputs.compute_dep_hash(&facts);
+        let h2 = inputs.compute_dep_hash(&facts);
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn test_dep_hash_different_env_values_produce_different_hash() {
+        let facts_a = RequestFacts::collect(
+            PathBuf::from("/tmp"),
+            vec![("MY_VAR".to_owned(), "a".to_owned())],
+        );
+        let facts_b = RequestFacts::collect(
+            PathBuf::from("/tmp"),
+            vec![("MY_VAR".to_owned(), "b".to_owned())],
+        );
+        let mut inputs = ModuleDependencyInputs::default();
+        inputs.env_vars.push("MY_VAR".to_owned());
+        assert_ne!(
+            inputs.compute_dep_hash(&facts_a),
+            inputs.compute_dep_hash(&facts_b),
+        );
+    }
+
+    #[test]
+    fn test_dep_hash_env_present_vs_absent_produce_different_hash() {
+        let facts_present = RequestFacts::collect(
+            PathBuf::from("/tmp"),
+            vec![("MY_VAR".to_owned(), "x".to_owned())],
+        );
+        let facts_absent = RequestFacts::collect(PathBuf::from("/tmp"), vec![]);
+        let mut inputs = ModuleDependencyInputs::default();
+        inputs.env_vars.push("MY_VAR".to_owned());
+        assert_ne!(
+            inputs.compute_dep_hash(&facts_present),
+            inputs.compute_dep_hash(&facts_absent),
+        );
+    }
+
+    #[test]
+    fn test_dep_hash_file_existence_changes_hash() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let mut inputs = ModuleDependencyInputs::default();
+        inputs.files.push("marker".to_owned());
+
+        let facts_no_file = RequestFacts::collect(dir.path().to_path_buf(), vec![]);
+        let h_without = inputs.compute_dep_hash(&facts_no_file);
+
+        std::fs::write(dir.path().join("marker"), "")?;
+        let facts_with_file = RequestFacts::collect(dir.path().to_path_buf(), vec![]);
+        let h_with = inputs.compute_dep_hash(&facts_with_file);
+
+        assert_ne!(h_without, h_with);
+        Ok(())
+    }
+
+    #[test]
+    fn test_dep_hash_insertion_order_does_not_affect_result() {
+        let facts = RequestFacts::collect(
+            PathBuf::from("/tmp"),
+            vec![
+                ("A".to_owned(), "1".to_owned()),
+                ("B".to_owned(), "2".to_owned()),
+            ],
+        );
+
+        let mut inputs_ab = ModuleDependencyInputs::default();
+        inputs_ab.env_vars.push("A".to_owned());
+        inputs_ab.env_vars.push("B".to_owned());
+
+        let mut inputs_ba = ModuleDependencyInputs::default();
+        inputs_ba.env_vars.push("B".to_owned());
+        inputs_ba.env_vars.push("A".to_owned());
+
+        assert_eq!(
+            inputs_ab.compute_dep_hash(&facts),
+            inputs_ba.compute_dep_hash(&facts),
+        );
     }
 }

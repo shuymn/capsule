@@ -62,13 +62,15 @@ pub enum DaemonError {
 pub(super) struct CacheKey {
     cwd: String,
     config_generation: u64,
+    dep_hash: u64,
 }
 
 impl CacheKey {
-    const fn new(cwd: String, config_generation: u64) -> Self {
+    const fn new(cwd: String, config_generation: u64, dep_hash: u64) -> Self {
         Self {
             cwd,
             config_generation,
+            dep_hash,
         }
     }
 }
