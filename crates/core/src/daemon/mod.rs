@@ -17,8 +17,8 @@ use std::{
 
 use cache::BoundedCache;
 use capsule_protocol::{
-    HelloAck, Message, MessageReader, MessageWriter, PROTOCOL_VERSION, RenderResult, Request,
-    Update,
+    BuildId, HelloAck, Message, MessageReader, MessageWriter, PROTOCOL_VERSION, RenderResult,
+    Request, Update,
 };
 use listener::ListenerMode;
 use session::SessionMap;
@@ -30,8 +30,9 @@ use tokio::{
 use crate::{
     config::Config,
     module::{
-        CmdDurationModule, DirectoryModule, GitModule, GitProvider, Module, RenderContext,
-        ResolvedToolchain, TimeModule, ToolchainInfo, detect_toolchains, resolve_toolchains,
+        CmdDurationModule, CustomModuleInfo, DirectoryModule, GitModule, GitProvider, Module,
+        ModuleSpeed, RenderContext, ResolvedModule, TimeModule, detect_modules,
+        required_env_var_names, resolve_modules,
     },
     render::{
         PromptLines, compose_segments,
@@ -76,12 +77,15 @@ struct FastOutputs {
     last_exit_code: i32,
     /// Whether the current working directory is read-only (no write permission bits).
     read_only: bool,
+    /// Fast custom module outputs (env/file sources only).
+    custom_modules: Vec<CustomModuleInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SlowOutput {
     git: Option<String>,
-    toolchains: Vec<ToolchainInfo>,
+    /// Slow custom module outputs (modules with command sources, including toolchains).
+    custom_modules: Vec<CustomModuleInfo>,
 }
 
 struct SharedState {
@@ -108,10 +112,10 @@ impl SharedState {
 pub struct Server<G> {
     home_dir: PathBuf,
     git_provider: G,
-    build_id: String,
+    build_id: Option<BuildId>,
     listener_mode: ListenerMode,
     config: Arc<Config>,
-    toolchains: Arc<Vec<ResolvedToolchain>>,
+    modules: Arc<Vec<ResolvedModule>>,
 }
 
 impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
@@ -128,18 +132,18 @@ impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
     pub fn new(
         home_dir: PathBuf,
         git_provider: G,
-        build_id: String,
+        build_id: Option<BuildId>,
         listener_mode: ListenerMode,
         config: Arc<Config>,
     ) -> Self {
-        let toolchains = Arc::new(resolve_toolchains(&config.toolchain));
+        let modules = Arc::new(resolve_modules(&config.module));
         Self {
             home_dir,
             git_provider,
             build_id,
             listener_mode,
             config,
-            toolchains,
+            modules,
         }
     }
 
@@ -175,7 +179,7 @@ impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
             build_id: Arc::new(self.build_id),
             state: Arc::new(Mutex::new(SharedState::new())),
             config: self.config,
-            toolchains: self.toolchains,
+            modules: self.modules,
         };
 
         match self.listener_mode {
@@ -191,10 +195,10 @@ impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
 struct AcceptCtx<G> {
     home_dir: Arc<PathBuf>,
     git_provider: G,
-    build_id: Arc<String>,
+    build_id: Arc<Option<BuildId>>,
     state: Arc<Mutex<SharedState>>,
     config: Arc<Config>,
-    toolchains: Arc<Vec<ResolvedToolchain>>,
+    modules: Arc<Vec<ResolvedModule>>,
 }
 
 impl<G> AcceptCtx<G> {
@@ -208,7 +212,7 @@ impl<G> AcceptCtx<G> {
             git_provider: self.git_provider.clone(),
             build_id: Arc::clone(&self.build_id),
             config: Arc::clone(&self.config),
-            toolchains: Arc::clone(&self.toolchains),
+            modules: Arc::clone(&self.modules),
         };
         tokio::spawn(async move {
             if let Err(e) = handle_connection(stream, ctx).await {
@@ -223,9 +227,9 @@ struct ConnectionCtx<G> {
     state: Arc<Mutex<SharedState>>,
     home_dir: Arc<PathBuf>,
     git_provider: G,
-    build_id: Arc<String>,
+    build_id: Arc<Option<BuildId>>,
     config: Arc<Config>,
-    toolchains: Arc<Vec<ResolvedToolchain>>,
+    modules: Arc<Vec<ResolvedModule>>,
 }
 
 impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
@@ -275,7 +279,8 @@ impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
 
         tracing::info!("daemon shutting down");
         if !inode_mismatch {
-            let _ = std::fs::remove_file(&*socket_path);
+            let path = Arc::clone(&socket_path);
+            let _ = tokio::task::spawn_blocking(move || std::fs::remove_file(&*path)).await;
         }
         Ok(())
     }
@@ -326,7 +331,7 @@ async fn handle_connection<G: GitProvider + Clone + Send + 'static>(
                     &ctx.home_dir,
                     ctx.git_provider.clone(),
                     Arc::clone(&ctx.config),
-                    Arc::clone(&ctx.toolchains),
+                    Arc::clone(&ctx.modules),
                 )
                 .await?;
             }
@@ -334,7 +339,9 @@ async fn handle_connection<G: GitProvider + Clone + Send + 'static>(
                 let ack = HelloAck {
                     version: PROTOCOL_VERSION,
                     build_id: (*ctx.build_id).clone(),
+                    env_var_names: required_env_var_names(&ctx.modules),
                 };
+
                 let mut w = msg_writer.lock().await;
                 w.write_message(&Message::HelloAck(ack)).await?;
                 drop(w);
@@ -363,7 +370,7 @@ async fn handle_request<G: GitProvider + Send + 'static>(
     home_dir: &Path,
     git_provider: G,
     config: Arc<Config>,
-    toolchains: Arc<Vec<ResolvedToolchain>>,
+    modules: Arc<Vec<ResolvedModule>>,
 ) -> Result<(), DaemonError> {
     let session_id = req.session_id;
     let generation = req.generation;
@@ -382,6 +389,7 @@ async fn handle_request<G: GitProvider + Send + 'static>(
 
     // Run fast modules
     let cwd_path = PathBuf::from(&cwd);
+    let env_vars = req.env_vars;
     let ctx = RenderContext {
         cwd: &cwd_path,
         home_dir,
@@ -390,7 +398,7 @@ async fn handle_request<G: GitProvider + Send + 'static>(
         keymap: &req.keymap,
         cols,
     };
-    let fast = run_fast_modules(&ctx, &config);
+    let fast = run_fast_modules(&ctx, &config, &modules, &env_vars);
 
     // Cache lookup for slow results
     let cached_slow = {
@@ -417,17 +425,16 @@ async fn handle_request<G: GitProvider + Send + 'static>(
     w.write_message(&Message::RenderResult(result)).await?;
     drop(w);
 
-    let path_env: Option<String> = req
-        .env_vars
-        .into_iter()
+    let path_env: Option<String> = env_vars
+        .iter()
         .find(|(k, _)| k == "PATH")
-        .map(|(_, v)| v);
+        .map(|(_, v)| v.clone());
 
     // Spawn slow module recomputation in background
     let sent_left1 = lines.left1;
     let sent_left2 = lines.left2;
     let slow_config = Arc::clone(&config);
-    let slow_toolchains = Arc::clone(&toolchains);
+    let slow_modules = Arc::clone(&modules);
     tokio::spawn(async move {
         let cwd_for_slow = PathBuf::from(&cwd);
         let indicator_color = slow_config.git.indicator_color;
@@ -437,7 +444,8 @@ async fn handle_request<G: GitProvider + Send + 'static>(
                 git_provider,
                 indicator_color,
                 path_env.as_deref(),
-                &slow_toolchains,
+                &slow_modules,
+                &env_vars,
             )
         })
         .await
@@ -471,7 +479,9 @@ async fn handle_request<G: GitProvider + Send + 'static>(
                 left2: new_lines.left2,
             };
             let mut w = writer.lock().await;
-            let _ = w.write_message(&Message::Update(update)).await;
+            if let Err(e) = w.write_message(&Message::Update(update)).await {
+                tracing::debug!(session_id = %session_id, error = %e, "failed to send update");
+            }
             drop(w);
         }
     });
@@ -483,7 +493,12 @@ async fn handle_request<G: GitProvider + Send + 'static>(
 // Module execution
 // ---------------------------------------------------------------------------
 
-fn run_fast_modules(ctx: &RenderContext<'_>, config: &Config) -> FastOutputs {
+fn run_fast_modules(
+    ctx: &RenderContext<'_>,
+    config: &Config,
+    modules: &[ResolvedModule],
+    env_vars: &[(String, String)],
+) -> FastOutputs {
     let read_only = std::fs::metadata(ctx.cwd).is_ok_and(|m| m.permissions().readonly());
     let time = if config.time.enabled {
         TimeModule::with_show_seconds(config.time.show_seconds())
@@ -492,6 +507,7 @@ fn run_fast_modules(ctx: &RenderContext<'_>, config: &Config) -> FastOutputs {
     } else {
         None
     };
+    let custom_modules = detect_modules(modules, ctx.cwd, env_vars, None, ModuleSpeed::Fast);
     FastOutputs {
         directory: DirectoryModule::new().render(ctx).map(|o| o.content),
         cmd_duration: CmdDurationModule::with_threshold(config.cmd_duration.threshold_ms)
@@ -501,20 +517,24 @@ fn run_fast_modules(ctx: &RenderContext<'_>, config: &Config) -> FastOutputs {
         character: Some(config.character.glyph.clone()),
         last_exit_code: ctx.last_exit_code,
         read_only,
+        custom_modules,
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_slow_modules<G: GitProvider>(
     cwd: &Path,
     provider: G,
     indicator_color: Color,
     path_env: Option<&str>,
-    toolchain_defs: &[ResolvedToolchain],
+    modules: &[ResolvedModule],
+    env_vars: &[(String, String)],
 ) -> SlowOutput {
     let git_module = GitModule::with_indicator_color(provider, indicator_color);
+    let custom_modules = detect_modules(modules, cwd, env_vars, path_env, ModuleSpeed::Slow);
     SlowOutput {
         git: git_module.render_for_cwd(cwd, path_env).map(|o| o.content),
-        toolchains: detect_toolchains(toolchain_defs, cwd, path_env),
+        custom_modules,
     }
 }
 
@@ -536,6 +556,17 @@ fn make_icon(glyph: &str, style: Style) -> Icon {
         glyph: glyph.to_owned(),
         style,
     }
+}
+
+fn push_custom_module_segment(segments: &mut Vec<Segment>, cm: &CustomModuleInfo) {
+    let connector = cm.connector.as_deref().map(make_connector);
+    let icon = cm.icon.as_deref().map(|g| make_icon(g, cm.style));
+    segments.push(Segment {
+        content: cm.value.clone(),
+        connector,
+        icon,
+        content_style: Some(cm.style),
+    });
 }
 
 /// Prompt layout (Starship-compatible):
@@ -583,15 +614,13 @@ fn compose_prompt(
         });
     }
 
-    if let Some(tcs) = slow.map(|s| &s.toolchains) {
-        for tc in tcs {
-            let tc_icon = tc.icon.as_deref().map(|glyph| make_icon(glyph, tc.style));
-            line1.push(Segment {
-                content: tc.version.clone(),
-                connector: Some(make_connector(&config.connectors.toolchain)),
-                icon: tc_icon,
-                content_style: Some(tc.style),
-            });
+    // Custom modules: fast modules from fast phase, slow modules from slow phase (incl. toolchains)
+    for cm in &fast.custom_modules {
+        push_custom_module_segment(&mut line1, cm);
+    }
+    if let Some(slow_cms) = slow.map(|s| &s.custom_modules) {
+        for cm in slow_cms {
+            push_custom_module_segment(&mut line1, cm);
         }
     }
 
@@ -681,25 +710,27 @@ mod tests {
             character: Some("\u{276f}".to_owned()),
             last_exit_code: 0,
             read_only: false,
+            custom_modules: vec![],
         }
     }
 
     fn make_slow_output() -> SlowOutput {
         SlowOutput {
             git: None,
-            toolchains: vec![],
+            custom_modules: vec![],
         }
     }
 
-    fn make_toolchain_info(name: &str, version: &str) -> ToolchainInfo {
-        // Resolve from built-in defs to get correct icon and style
-        let defs = resolve_toolchains(&[]);
+    fn make_toolchain_module(name: &str, version: &str) -> CustomModuleInfo {
+        // Resolve from built-in module defs to get correct icon and style
+        let defs = resolve_modules(&[]);
         let resolved = defs.iter().find(|d| d.name == name);
-        ToolchainInfo {
+        CustomModuleInfo {
             name: name.to_owned(),
-            version: version.to_owned(),
+            value: version.to_owned(),
             icon: resolved.and_then(|d| d.icon.clone()),
             style: resolved.map_or(Style::new().fg(Color::BrightBlack), |d| d.style),
+            connector: Some("via".to_owned()),
         }
     }
 
@@ -730,12 +761,13 @@ mod tests {
 
     impl TestHarness {
         async fn start(provider: MockGitProvider) -> Result<Self, Box<dyn std::error::Error>> {
-            Self::start_with_build_id(provider, "test-build-id").await
+            Self::start_with_build_id(provider, Some(BuildId::new("test-build-id".to_owned())))
+                .await
         }
 
         async fn start_with_build_id(
             provider: MockGitProvider,
-            build_id: &str,
+            build_id: Option<BuildId>,
         ) -> Result<Self, Box<dyn std::error::Error>> {
             let dir = tempfile::tempdir()?;
             let socket_path = dir.path().join("test.sock");
@@ -747,7 +779,7 @@ mod tests {
             let server = Server::new(
                 home,
                 provider,
-                build_id.to_owned(),
+                build_id,
                 ListenerMode::Bound(socket_path.clone()),
                 Arc::new(Config::default()),
             );
@@ -894,7 +926,7 @@ mod tests {
     fn test_daemon_compose_prompt_with_toolchain_version() {
         let fast = make_fast_outputs();
         let slow = SlowOutput {
-            toolchains: vec![make_toolchain_info("rust", "v1.82.0")],
+            custom_modules: vec![make_toolchain_module("rust", "v1.82.0")],
             ..make_slow_output()
         };
         let lines = compose_prompt(&fast, Some(&slow), 80, &default_config());
@@ -919,7 +951,7 @@ mod tests {
     fn test_daemon_compose_prompt_toolchain_uses_theme_color() {
         let fast = make_fast_outputs();
         let slow = SlowOutput {
-            toolchains: vec![make_toolchain_info("rust", "v1.82.0")],
+            custom_modules: vec![make_toolchain_module("rust", "v1.82.0")],
             ..make_slow_output()
         };
         let lines = compose_prompt(&fast, Some(&slow), 80, &default_config());
@@ -945,9 +977,9 @@ mod tests {
     fn test_daemon_compose_prompt_multiple_toolchains() {
         let fast = make_fast_outputs();
         let slow = SlowOutput {
-            toolchains: vec![
-                make_toolchain_info("rust", "v1.82.0"),
-                make_toolchain_info("node", "v22.0.0"),
+            custom_modules: vec![
+                make_toolchain_module("rust", "v1.82.0"),
+                make_toolchain_module("node", "v22.0.0"),
             ],
             ..make_slow_output()
         };
@@ -981,16 +1013,16 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_compose_prompt_empty_toolchains_vec() {
+    fn test_daemon_compose_prompt_empty_custom_modules() {
         let fast = make_fast_outputs();
         let slow = SlowOutput {
-            toolchains: vec![],
+            custom_modules: vec![],
             ..make_slow_output()
         };
         let lines = compose_prompt(&fast, Some(&slow), 80, &default_config());
         assert!(
             !lines.left1.contains("via"),
-            "no 'via' connector with empty toolchains: {}",
+            "no 'via' connector with empty custom modules: {}",
             lines.left1
         );
     }
@@ -1029,7 +1061,7 @@ mod tests {
         };
         let slow = SlowOutput {
             git: Some("main".to_owned()),
-            toolchains: vec![make_toolchain_info("rust", "v1.82.0")],
+            custom_modules: vec![make_toolchain_module("rust", "v1.82.0")],
         };
         let lines = compose_prompt(&fast, Some(&slow), 80, &default_config());
         assert!(
@@ -1370,7 +1402,7 @@ mod tests {
         let server = Server::new(
             home,
             MockGitProvider { status: None },
-            "test-build-id".to_owned(),
+            Some(BuildId::new("test-build-id".to_owned())),
             ListenerMode::Bound(socket_path.clone()),
             Arc::new(Config::default()),
         );
@@ -1502,7 +1534,7 @@ mod tests {
         let server = Server::new(
             home,
             MockGitProvider { status: None },
-            "test-build-id".to_owned(),
+            Some(BuildId::new("test-build-id".to_owned())),
             ListenerMode::Bound(socket_path.clone()),
             Arc::new(Config::default()),
         );
@@ -1536,14 +1568,17 @@ mod tests {
     #[tokio::test]
     async fn test_daemon_responds_to_hello_with_hello_ack() -> Result<(), Box<dyn std::error::Error>>
     {
-        let build_id = "12345:1700000000000000000";
-        let harness =
-            TestHarness::start_with_build_id(MockGitProvider { status: None }, build_id).await?;
+        let build_id = BuildId::new("12345:1700000000000000000".to_owned());
+        let harness = TestHarness::start_with_build_id(
+            MockGitProvider { status: None },
+            Some(build_id.clone()),
+        )
+        .await?;
         let (mut reader, mut writer) = harness.connect().await?;
 
         let hello = capsule_protocol::Hello {
             version: PROTOCOL_VERSION,
-            build_id: "other-build-id".to_owned(),
+            build_id: Some(BuildId::new("other-build-id".to_owned())),
         };
         writer.write_message(&Message::Hello(hello)).await?;
 
@@ -1551,7 +1586,7 @@ mod tests {
         match resp {
             Some(Message::HelloAck(ack)) => {
                 assert_eq!(ack.version, PROTOCOL_VERSION);
-                assert_eq!(ack.build_id, build_id);
+                assert_eq!(ack.build_id, Some(build_id));
             }
             other => return Err(format!("expected HelloAck, got {other:?}").into()),
         }
