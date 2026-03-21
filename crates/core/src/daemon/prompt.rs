@@ -1,10 +1,7 @@
-use std::path::Path;
-
 use crate::{
     config::Config,
     module::{
-        CmdDurationModule, CustomModuleInfo, DirectoryModule, GitModule, GitProvider, Module,
-        ModuleSpeed, RenderContext, ResolvedModule, TimeModule, detect_modules,
+        CmdDurationModule, CustomModuleInfo, DirectoryModule, Module, RenderContext, TimeModule,
     },
     render::{
         PromptLines, compose_segments,
@@ -30,20 +27,13 @@ pub(super) struct SlowOutput {
     pub(super) custom_modules: Vec<CustomModuleInfo>,
 }
 
-pub(super) struct SlowModulesInput<'a, G> {
-    pub(super) cwd: &'a Path,
-    pub(super) provider: G,
-    pub(super) indicator_color: Color,
-    pub(super) path_env: Option<&'a str>,
-    pub(super) modules: &'a [ResolvedModule],
-    pub(super) env_vars: &'a [(String, String)],
-}
-
+/// Compute built-in fast modules and combine with pre-detected custom modules.
+///
+/// Custom module detection is done by the caller (potentially in parallel).
 pub(super) fn run_fast_modules(
     ctx: &RenderContext<'_>,
     config: &Config,
-    modules: &[ResolvedModule],
-    env_vars: &[(String, String)],
+    custom_modules: Vec<CustomModuleInfo>,
 ) -> FastOutputs {
     let read_only = std::fs::metadata(ctx.cwd).is_ok_and(|m| m.permissions().readonly());
     let time = if config.time.enabled {
@@ -53,7 +43,6 @@ pub(super) fn run_fast_modules(
     } else {
         None
     };
-    let custom_modules = detect_modules(modules, ctx.cwd, env_vars, None, ModuleSpeed::Fast);
     FastOutputs {
         directory: DirectoryModule::new()
             .render(ctx)
@@ -65,23 +54,6 @@ pub(super) fn run_fast_modules(
         character: Some(config.character.glyph.clone()),
         last_exit_code: ctx.last_exit_code,
         read_only,
-        custom_modules,
-    }
-}
-
-pub(super) fn run_slow_modules<G: GitProvider>(input: SlowModulesInput<'_, G>) -> SlowOutput {
-    let git_module = GitModule::with_indicator_color(input.provider, input.indicator_color);
-    let custom_modules = detect_modules(
-        input.modules,
-        input.cwd,
-        input.env_vars,
-        input.path_env,
-        ModuleSpeed::Slow,
-    );
-    SlowOutput {
-        git: git_module
-            .render_for_cwd(input.cwd, input.path_env)
-            .map(|output| output.content),
         custom_modules,
     }
 }
