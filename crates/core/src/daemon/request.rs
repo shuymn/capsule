@@ -12,8 +12,9 @@ use tokio::{net::UnixStream, sync::Mutex, task::JoinSet};
 
 use super::{DaemonError, ReloadableConfig, SESSION_TTL, SharedState, prompt};
 use crate::module::{
-    CustomModuleInfo, GitModule, GitProvider, ModuleSpeed, ResolvedModule, check_when,
-    custom::ResolvedSource, detect_module, required_env_var_names,
+    CustomModuleInfo, DetectedModuleCandidate, GitModule, GitProvider, ModuleSpeed, ResolvedModule,
+    arbitrate_detected_modules, check_when, custom::ResolvedSource, detect_module,
+    required_env_var_names,
 };
 
 /// Per-connection context, cloned from the accept loop for each spawned handler.
@@ -131,7 +132,7 @@ async fn detect_custom_modules(input: &DetectInput<'_>) -> Vec<CustomModuleInfo>
     let mut join_set = JoinSet::new();
 
     let mut blocking = Vec::new();
-    for (slot, def) in matching {
+    for (slot, def) in matching.iter().copied() {
         if should_detect_inline(input.speed, def) {
             slots[slot] = detect_module(def, input.cwd, input.env_vars, input.path_env);
         } else {
@@ -139,45 +140,55 @@ async fn detect_custom_modules(input: &DetectInput<'_>) -> Vec<CustomModuleInfo>
         }
     }
 
-    if blocking.is_empty() {
-        return slots.into_iter().flatten().collect();
-    }
+    if !blocking.is_empty() {
+        // Share immutable data across tasks via Arc to avoid per-task cloning.
+        let shared_cwd = Arc::new(input.cwd.to_path_buf());
+        let shared_env_vars = Arc::new(input.env_vars.to_vec());
+        let shared_path_env = Arc::new(input.path_env.map(ToOwned::to_owned));
 
-    // Share immutable data across tasks via Arc to avoid per-task cloning.
-    let shared_cwd = Arc::new(input.cwd.to_path_buf());
-    let shared_env_vars = Arc::new(input.env_vars.to_vec());
-    let shared_path_env = Arc::new(input.path_env.map(ToOwned::to_owned));
+        for (slot, def) in blocking {
+            let cwd = Arc::clone(&shared_cwd);
+            let env_vars = Arc::clone(&shared_env_vars);
+            let path_env = Arc::clone(&shared_path_env);
+            join_set.spawn_blocking(move || {
+                (
+                    slot,
+                    detect_module(&def, &cwd, &env_vars, path_env.as_deref()),
+                )
+            });
+        }
 
-    for (slot, def) in blocking {
-        let cwd = Arc::clone(&shared_cwd);
-        let env_vars = Arc::clone(&shared_env_vars);
-        let path_env = Arc::clone(&shared_path_env);
-        join_set.spawn_blocking(move || {
-            (
-                slot,
-                detect_module(&def, &cwd, &env_vars, path_env.as_deref()),
-            )
-        });
-    }
+        let deadline = tokio::time::Instant::now() + input.timeout;
 
-    let deadline = tokio::time::Instant::now() + input.timeout;
-
-    while !join_set.is_empty() {
-        match tokio::time::timeout_at(deadline, join_set.join_next()).await {
-            Ok(Some(Ok((slot, info)))) => {
-                slots[slot] = info;
-            }
-            Ok(Some(Err(_))) => {} // task panicked
-            Ok(None) => break,     // all done
-            Err(_) => {
-                // Timeout — abort remaining tasks, omit their segments
-                join_set.abort_all();
-                break;
+        while !join_set.is_empty() {
+            match tokio::time::timeout_at(deadline, join_set.join_next()).await {
+                Ok(Some(Ok((slot, info)))) => {
+                    slots[slot] = info;
+                }
+                Ok(Some(Err(_))) => {} // task panicked
+                Ok(None) => break,     // all done
+                Err(_) => {
+                    // Timeout — abort remaining tasks, omit their segments
+                    join_set.abort_all();
+                    break;
+                }
             }
         }
     }
 
-    slots.into_iter().flatten().collect()
+    let detected = matching_modules_to_candidates(&matching, slots);
+    arbitrate_detected_modules(detected)
+}
+
+fn matching_modules_to_candidates(
+    matching: &[(usize, &ResolvedModule)],
+    slots: Vec<Option<CustomModuleInfo>>,
+) -> Vec<DetectedModuleCandidate> {
+    matching
+        .iter()
+        .zip(slots)
+        .filter_map(|((_, def), info)| info.map(|info| DetectedModuleCandidate::new(def, info)))
+        .collect()
 }
 
 async fn handle_request<G: GitProvider + Send + 'static>(
@@ -591,6 +602,7 @@ mod tests {
                 icon: None,
                 color: None,
                 connector: None,
+                arbitration: None,
             }],
             timeout: TimeoutConfig {
                 fast_ms: 0,

@@ -71,6 +71,7 @@ pub(super) fn make_sleep_module(name: &str, sleep_ms: u32, output: &str) -> Modu
         icon: None,
         color: None,
         connector: Some("via".to_owned()),
+        arbitration: None,
     }
 }
 

@@ -4,13 +4,17 @@
 //! display metadata. Sources are tried in order: fast sources (env, file)
 //! first, then slow sources (command) if fast sources all fail.
 
-use std::{collections::HashSet, path::Path, process::Command};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+    process::Command,
+};
 
 use regex_lite::Regex;
 
 use super::ModuleSpeed;
 use crate::{
-    config::{ModuleDef, ModuleWhen, SourceDef},
+    config::{Arbitration, ModuleDef, ModuleWhen, SourceDef},
     render::style::{Color, Style},
 };
 
@@ -37,6 +41,8 @@ pub struct ResolvedModule {
     pub connector: Option<String>,
     /// Computed speed: fast if all sources are env/file, slow if any command.
     pub speed: ModuleSpeed,
+    /// Optional arbitration rule for collapsing competing detected modules.
+    pub arbitration: Option<Arbitration>,
 }
 
 /// A compiled value source.
@@ -73,6 +79,28 @@ pub struct CustomModuleInfo {
     /// Connector word.
     pub connector: Option<String>,
 }
+
+/// Candidate for arbitration, in definition order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DetectedModuleCandidate {
+    /// Optional arbitration rule for this detected module.
+    pub(crate) arbitration: Option<Arbitration>,
+    /// Detected module info.
+    pub(crate) info: CustomModuleInfo,
+}
+
+impl DetectedModuleCandidate {
+    pub(crate) fn new(module: &ResolvedModule, info: CustomModuleInfo) -> Self {
+        Self {
+            arbitration: module.arbitration.clone(),
+            info,
+        }
+    }
+}
+
+const JS_RUNTIME_ARBITRATION_GROUP: &str = "node.js";
+const BUN_ARBITRATION_PRIORITY: u32 = 10;
+const NODE_ARBITRATION_PRIORITY: u32 = 20;
 
 // ---------------------------------------------------------------------------
 // Built-in toolchains as module definitions
@@ -124,6 +152,7 @@ pub fn builtin_module_defs() -> Vec<ModuleDef> {
             icon: Some("\u{f1617}".to_owned()),
             color: Some(Color::Red),
             connector: Some("via".to_owned()),
+            arbitration: None,
         },
         ModuleDef {
             name: "bun".to_owned(),
@@ -153,6 +182,10 @@ pub fn builtin_module_defs() -> Vec<ModuleDef> {
             icon: Some("\u{e76f}".to_owned()),
             color: Some(Color::Red),
             connector: Some("via".to_owned()),
+            arbitration: Some(Arbitration {
+                group: JS_RUNTIME_ARBITRATION_GROUP.to_owned(),
+                priority: BUN_ARBITRATION_PRIORITY,
+            }),
         },
         ModuleDef {
             name: "node".to_owned(),
@@ -178,6 +211,10 @@ pub fn builtin_module_defs() -> Vec<ModuleDef> {
             icon: Some("\u{e718}".to_owned()),
             color: Some(Color::Green),
             connector: Some("via".to_owned()),
+            arbitration: Some(Arbitration {
+                group: JS_RUNTIME_ARBITRATION_GROUP.to_owned(),
+                priority: NODE_ARBITRATION_PRIORITY,
+            }),
         },
         ModuleDef {
             name: "go".to_owned(),
@@ -195,6 +232,7 @@ pub fn builtin_module_defs() -> Vec<ModuleDef> {
             icon: Some("\u{e627}".to_owned()),
             color: Some(Color::Cyan),
             connector: Some("via".to_owned()),
+            arbitration: None,
         },
         ModuleDef {
             name: "python".to_owned(),
@@ -212,6 +250,7 @@ pub fn builtin_module_defs() -> Vec<ModuleDef> {
             icon: Some("\u{e235}".to_owned()),
             color: Some(Color::Yellow),
             connector: Some("via".to_owned()),
+            arbitration: None,
         },
         ModuleDef {
             name: "ruby".to_owned(),
@@ -231,6 +270,7 @@ pub fn builtin_module_defs() -> Vec<ModuleDef> {
             icon: Some("\u{e791}".to_owned()),
             color: Some(Color::Red),
             connector: Some("via".to_owned()),
+            arbitration: None,
         },
     ]
 }
@@ -280,6 +320,7 @@ fn compile_module_def(def: ModuleDef) -> ResolvedModule {
         style,
         connector: def.connector,
         speed,
+        arbitration: def.arbitration,
     }
 }
 
@@ -329,10 +370,50 @@ pub fn detect_modules(
     path_env: Option<&str>,
     only_speed: ModuleSpeed,
 ) -> Vec<CustomModuleInfo> {
-    defs.iter()
-        .filter(|d| d.speed == only_speed)
-        .filter(|d| check_when(&d.when, cwd, env_vars))
-        .filter_map(|d| detect_module(d, cwd, env_vars, path_env))
+    let detected = defs
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| d.speed == only_speed)
+        .filter(|(_, d)| check_when(&d.when, cwd, env_vars))
+        .filter_map(|(_, d)| {
+            detect_module(d, cwd, env_vars, path_env)
+                .map(|info| DetectedModuleCandidate::new(d, info))
+        })
+        .collect();
+    arbitrate_detected_modules(detected)
+}
+
+/// Collapse competing detected modules while preserving definition order.
+#[must_use]
+pub(crate) fn arbitrate_detected_modules(
+    detected: Vec<DetectedModuleCandidate>,
+) -> Vec<CustomModuleInfo> {
+    let mut winners = HashMap::<String, (usize, u32)>::new();
+
+    for (idx, candidate) in detected.iter().enumerate() {
+        let Some(arbitration) = &candidate.arbitration else {
+            continue;
+        };
+        winners
+            .entry(arbitration.group.clone())
+            .and_modify(|winner| {
+                if arbitration.priority < winner.1 {
+                    *winner = (idx, arbitration.priority);
+                }
+            })
+            .or_insert((idx, arbitration.priority));
+    }
+
+    detected
+        .into_iter()
+        .enumerate()
+        .filter_map(|(idx, candidate)| match &candidate.arbitration {
+            None => Some(candidate.info),
+            Some(arbitration) => winners
+                .get(&arbitration.group)
+                .is_some_and(|winner| winner.0 == idx)
+                .then_some(candidate.info),
+        })
         .collect()
 }
 
@@ -445,6 +526,17 @@ mod tests {
     use super::*;
     use crate::config::RegexPattern;
 
+    fn arbitration(group: &str, priority: u32) -> Arbitration {
+        Arbitration {
+            group: group.to_owned(),
+            priority,
+        }
+    }
+
+    fn js_runtime_arbitration(priority: u32) -> Arbitration {
+        arbitration(JS_RUNTIME_ARBITRATION_GROUP, priority)
+    }
+
     // -- resolve_modules ------------------------------------------------------
 
     #[test]
@@ -454,6 +546,22 @@ mod tests {
         assert_eq!(resolved[0].name, "rust");
         // Built-in toolchains are slow (they have command sources)
         assert_eq!(resolved[0].speed, ModuleSpeed::Slow);
+    }
+
+    #[test]
+    fn test_resolve_modules_builtin_arbitration_for_js_runtimes() {
+        let resolved = resolve_modules(&[]);
+        let bun = resolved.iter().find(|module| module.name == "bun");
+        let node = resolved.iter().find(|module| module.name == "node");
+
+        assert_eq!(
+            bun.and_then(|module| module.arbitration.as_ref()),
+            Some(&js_runtime_arbitration(BUN_ARBITRATION_PRIORITY))
+        );
+        assert_eq!(
+            node.and_then(|module| module.arbitration.as_ref()),
+            Some(&js_runtime_arbitration(NODE_ARBITRATION_PRIORITY))
+        );
     }
 
     #[test]
@@ -474,11 +582,13 @@ mod tests {
             icon: None,
             color: Some(Color::Yellow),
             connector: None,
+            arbitration: None,
         }];
         let resolved = resolve_modules(&user);
         assert_eq!(resolved.len(), 7);
         assert_eq!(resolved[6].name, "aws");
         assert_eq!(resolved[6].speed, ModuleSpeed::Fast);
+        assert_eq!(resolved[6].arbitration, None);
     }
 
     #[test]
@@ -499,12 +609,14 @@ mod tests {
             icon: Some("R".to_owned()),
             color: Some(Color::Blue),
             connector: None,
+            arbitration: None,
         }];
         let resolved = resolve_modules(&user);
         assert_eq!(resolved.len(), 6, "count unchanged");
         assert_eq!(resolved[0].name, "rust", "still first");
         assert_eq!(resolved[0].icon.as_deref(), Some("R"));
         assert_eq!(resolved[0].speed, ModuleSpeed::Fast);
+        assert_eq!(resolved[0].arbitration, None);
     }
 
     #[test]
@@ -525,6 +637,7 @@ mod tests {
             icon: Some("Z".to_owned()),
             color: Some(Color::Yellow),
             connector: Some("via".to_owned()),
+            arbitration: None,
         }];
         let resolved = resolve_modules(&user);
         assert_eq!(resolved.len(), 7);
@@ -532,6 +645,32 @@ mod tests {
         assert_eq!(resolved[6].connector.as_deref(), Some("via"));
         assert_eq!(resolved[6].format, "v{value}");
         assert_eq!(resolved[6].speed, ModuleSpeed::Slow);
+    }
+
+    #[test]
+    fn test_resolve_modules_user_module_keeps_arbitration() {
+        let user = vec![ModuleDef {
+            name: "deno".to_owned(),
+            when: ModuleWhen::default(),
+            source: vec![SourceDef {
+                env: Some("DENO_VERSION".to_owned()),
+                file: None,
+                command: None,
+                regex: None,
+            }],
+            format: "{value}".to_owned(),
+            icon: None,
+            color: None,
+            connector: None,
+            arbitration: Some(arbitration("javascript", 30)),
+        }];
+
+        let resolved = resolve_modules(&user);
+        let deno = resolved.iter().find(|module| module.name == "deno");
+        assert_eq!(
+            deno.and_then(|module| module.arbitration.as_ref()),
+            Some(&arbitration("javascript", 30))
+        );
     }
 
     #[test]
@@ -549,6 +688,7 @@ mod tests {
             icon: None,
             color: None,
             connector: None,
+            arbitration: None,
         }];
         let resolved = resolve_modules(&user);
         let m = resolved.iter().find(|r| r.name == "env_only");
@@ -578,6 +718,7 @@ mod tests {
             icon: None,
             color: None,
             connector: None,
+            arbitration: None,
         }];
         let resolved = resolve_modules(&user);
         let m = resolved.iter().find(|r| r.name == "mixed");
@@ -604,6 +745,7 @@ mod tests {
             icon: None,
             color: Some(Color::Yellow),
             connector: None,
+            arbitration: None,
         }]);
 
         let env_vars = vec![("AWS_PROFILE".to_owned(), "production".to_owned())];
@@ -632,6 +774,7 @@ mod tests {
             icon: None,
             color: None,
             connector: None,
+            arbitration: None,
         }]);
 
         let results = detect_modules(&defs, Path::new("/tmp"), &[], None, ModuleSpeed::Fast);
@@ -663,6 +806,7 @@ mod tests {
             icon: None,
             color: None,
             connector: Some("via".to_owned()),
+            arbitration: None,
         }]);
 
         let results = detect_modules(&defs, dir.path(), &[], None, ModuleSpeed::Fast);
@@ -693,6 +837,7 @@ mod tests {
             icon: None,
             color: None,
             connector: None,
+            arbitration: None,
         }]);
 
         let results = detect_modules(&defs, dir.path(), &[], None, ModuleSpeed::Slow);
@@ -731,6 +876,7 @@ mod tests {
             icon: None,
             color: None,
             connector: None,
+            arbitration: None,
         }]);
 
         let env_vars = vec![("MY_VERSION".to_owned(), "from-env".to_owned())];
@@ -763,6 +909,7 @@ mod tests {
             icon: None,
             color: None,
             connector: None,
+            arbitration: None,
         }]);
 
         let env_vars = vec![("FOO".to_owned(), "1.0".to_owned())];
@@ -789,6 +936,7 @@ mod tests {
             icon: None,
             color: None,
             connector: None,
+            arbitration: None,
         }]);
 
         let env_vars = vec![("VERSION_STR".to_owned(), "v1.23.456-beta".to_owned())];
@@ -817,6 +965,7 @@ mod tests {
             icon: None,
             color: None,
             connector: None,
+            arbitration: None,
         }]);
 
         let env_vars = vec![("FOO".to_owned(), "bar".to_owned())];
@@ -843,6 +992,7 @@ mod tests {
             icon: None,
             color: None,
             connector: None,
+            arbitration: None,
         }]);
 
         let env_vars = vec![("FOO".to_owned(), "bar".to_owned())];
@@ -871,6 +1021,7 @@ mod tests {
             icon: None,
             color: None,
             connector: None,
+            arbitration: None,
         }]);
 
         let results = detect_modules(&defs, dir.path(), &[], None, ModuleSpeed::Slow);
@@ -879,6 +1030,184 @@ mod tests {
             "failing command should produce no output"
         );
         Ok(())
+    }
+
+    #[test]
+    fn test_detect_modules_builtin_node_when_package_json_only()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("package.json"), "{}")?;
+        std::fs::write(dir.path().join(".node-version"), "22.0.0\n")?;
+
+        let defs = resolve_modules(&[]);
+        let results = detect_modules(&defs, dir.path(), &[], None, ModuleSpeed::Slow);
+
+        assert_eq!(results.len(), 1, "only node should be detected");
+        assert_eq!(results[0].name, "node");
+        assert_eq!(results[0].value, "v22.0.0");
+        Ok(())
+    }
+
+    #[test]
+    fn test_detect_modules_builtin_bun_wins_over_node_in_same_group()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("package.json"), "{}")?;
+        std::fs::write(dir.path().join(".node-version"), "22.0.0\n")?;
+        std::fs::write(dir.path().join("bun.lock"), "")?;
+        std::fs::write(dir.path().join(".bun-version"), "1.2.3\n")?;
+
+        let defs = resolve_modules(&[]);
+        let results = detect_modules(&defs, dir.path(), &[], None, ModuleSpeed::Slow);
+
+        assert_eq!(results.len(), 1, "bun should win arbitration over node");
+        assert_eq!(results[0].name, "bun");
+        assert_eq!(results[0].value, "v1.2.3");
+        Ok(())
+    }
+
+    #[test]
+    fn test_detect_modules_same_group_keeps_lower_priority_user_module() {
+        let defs = resolve_modules(&[
+            ModuleDef {
+                name: "alpha".to_owned(),
+                when: ModuleWhen::default(),
+                source: vec![SourceDef {
+                    env: Some("ALPHA_VERSION".to_owned()),
+                    file: None,
+                    command: None,
+                    regex: None,
+                }],
+                format: "{value}".to_owned(),
+                icon: None,
+                color: None,
+                connector: None,
+                arbitration: Some(arbitration("runtime", 20)),
+            },
+            ModuleDef {
+                name: "beta".to_owned(),
+                when: ModuleWhen::default(),
+                source: vec![SourceDef {
+                    env: Some("BETA_VERSION".to_owned()),
+                    file: None,
+                    command: None,
+                    regex: None,
+                }],
+                format: "{value}".to_owned(),
+                icon: None,
+                color: None,
+                connector: None,
+                arbitration: Some(arbitration("runtime", 10)),
+            },
+        ]);
+
+        let env_vars = vec![
+            ("ALPHA_VERSION".to_owned(), "1.0.0".to_owned()),
+            ("BETA_VERSION".to_owned(), "2.0.0".to_owned()),
+        ];
+        let results = detect_modules(&defs, Path::new("/tmp"), &env_vars, None, ModuleSpeed::Fast);
+
+        assert_eq!(
+            results.len(),
+            1,
+            "only the lower-priority module should remain"
+        );
+        assert_eq!(results[0].name, "beta");
+    }
+
+    #[test]
+    fn test_detect_modules_same_group_equal_priority_keeps_earlier_definition() {
+        let defs = resolve_modules(&[
+            ModuleDef {
+                name: "first".to_owned(),
+                when: ModuleWhen::default(),
+                source: vec![SourceDef {
+                    env: Some("FIRST_VERSION".to_owned()),
+                    file: None,
+                    command: None,
+                    regex: None,
+                }],
+                format: "{value}".to_owned(),
+                icon: None,
+                color: None,
+                connector: None,
+                arbitration: Some(arbitration("runtime", 10)),
+            },
+            ModuleDef {
+                name: "second".to_owned(),
+                when: ModuleWhen::default(),
+                source: vec![SourceDef {
+                    env: Some("SECOND_VERSION".to_owned()),
+                    file: None,
+                    command: None,
+                    regex: None,
+                }],
+                format: "{value}".to_owned(),
+                icon: None,
+                color: None,
+                connector: None,
+                arbitration: Some(arbitration("runtime", 10)),
+            },
+        ]);
+
+        let env_vars = vec![
+            ("FIRST_VERSION".to_owned(), "1.0.0".to_owned()),
+            ("SECOND_VERSION".to_owned(), "2.0.0".to_owned()),
+        ];
+        let results = detect_modules(&defs, Path::new("/tmp"), &env_vars, None, ModuleSpeed::Fast);
+
+        assert_eq!(
+            results.len(),
+            1,
+            "equal priority should keep the earlier module"
+        );
+        assert_eq!(results[0].name, "first");
+    }
+
+    #[test]
+    fn test_detect_modules_without_arbitration_are_unaffected() {
+        let defs = resolve_modules(&[
+            ModuleDef {
+                name: "winner".to_owned(),
+                when: ModuleWhen::default(),
+                source: vec![SourceDef {
+                    env: Some("WINNER_VERSION".to_owned()),
+                    file: None,
+                    command: None,
+                    regex: None,
+                }],
+                format: "{value}".to_owned(),
+                icon: None,
+                color: None,
+                connector: None,
+                arbitration: Some(arbitration("runtime", 10)),
+            },
+            ModuleDef {
+                name: "plain".to_owned(),
+                when: ModuleWhen::default(),
+                source: vec![SourceDef {
+                    env: Some("PLAIN_VERSION".to_owned()),
+                    file: None,
+                    command: None,
+                    regex: None,
+                }],
+                format: "{value}".to_owned(),
+                icon: None,
+                color: None,
+                connector: None,
+                arbitration: None,
+            },
+        ]);
+
+        let env_vars = vec![
+            ("WINNER_VERSION".to_owned(), "1.0.0".to_owned()),
+            ("PLAIN_VERSION".to_owned(), "2.0.0".to_owned()),
+        ];
+        let results = detect_modules(&defs, Path::new("/tmp"), &env_vars, None, ModuleSpeed::Fast);
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].name, "winner");
+        assert_eq!(results[1].name, "plain");
     }
 
     #[test]

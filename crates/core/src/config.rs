@@ -232,10 +232,22 @@ pub struct ModuleDef {
     /// Connector word before this segment.
     #[serde(default)]
     pub connector: Option<String>,
+    /// Optional arbitration metadata for collapsing competing modules.
+    #[serde(default)]
+    pub arbitration: Option<Arbitration>,
 }
 
 fn default_module_format() -> String {
     "{value}".to_owned()
+}
+
+/// Arbitration rule for collapsing competing modules into a single winner.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct Arbitration {
+    /// Group identifier used to decide which modules compete.
+    pub group: String,
+    /// Lower numbers win within the same group.
+    pub priority: u32,
 }
 
 /// Conditions that trigger a module.
@@ -651,6 +663,7 @@ env = "AWS_PROFILE"
         assert_eq!(config.module[0].when.env, ["AWS_PROFILE"]);
         assert_eq!(config.module[0].format, "{value}");
         assert_eq!(config.module[0].source.len(), 1);
+        assert_eq!(config.module[0].arbitration, None);
         assert_eq!(
             config.module[0].source[0].env.as_deref(),
             Some("AWS_PROFILE")
@@ -739,6 +752,35 @@ regex = 'v?(\d[\d.]*)'
         assert_eq!(config.module[0].source.len(), 2);
         assert!(config.module[0].source[0].file.is_some());
         assert!(config.module[0].source[1].command.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn test_config_module_parse_arbitration() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[module]]
+name = "node"
+
+[module.arbitration]
+group = "node.js"
+priority = 20
+
+[[module.source]]
+env = "NODE_VERSION"
+"#,
+        )?;
+        let config = load_config(&path);
+        assert_eq!(
+            config.module[0].arbitration,
+            Some(Arbitration {
+                group: "node.js".to_owned(),
+                priority: 20,
+            })
+        );
         Ok(())
     }
 }
