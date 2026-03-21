@@ -24,7 +24,7 @@ from pathlib import Path
 
 MARKER_PREFIX = "__PROMPT_BENCH_READY__"
 DEFAULT_COLUMNS = 120
-DEFAULT_ITERATIONS = 30
+DEFAULT_ITERATIONS = 1
 DEFAULT_IDLE_WINDOW_SECONDS = 0.05
 DEFAULT_ASYNC_WINDOW_SECONDS = 1.0
 READ_CHUNK_SIZE = 4096
@@ -879,55 +879,6 @@ def measure_cd_change(
     return samples
 
 
-def measure_sleep_duration(
-    *,
-    tool: str,
-    workload: Workload,
-    root: Path,
-    zsh_bin: str,
-    capsule_bin: str,
-    starship_bin: str,
-    git_bin: str,
-    iterations: int,
-    columns: int,
-    idle_window_seconds: float,
-    async_window_seconds: float,
-    term: str,
-) -> list[Sample]:
-    """Measure prompt latency after a slow command."""
-
-    env = create_isolated_env(
-        root=root,
-        tool=tool,
-        zsh_bin=zsh_bin,
-        capsule_bin=capsule_bin,
-        starship_bin=starship_bin,
-        git_bin=git_bin,
-        columns=columns,
-        term=term,
-    )
-    samples: list[Sample] = []
-    with ZshSession(
-        zsh_bin=zsh_bin,
-        cwd=workload.path,
-        env=env,
-        columns=columns,
-        idle_window_seconds=idle_window_seconds,
-        async_window_seconds=async_window_seconds,
-    ) as session:
-        session.wait_for_next_prompt()
-        for _ in range(iterations):
-            event = session.run_and_measure("sleep 3")
-            samples.append(
-                Sample(
-                    latency_ms=event.stable_ms,
-                    marker_ms=event.marker_ms,
-                    async_update_ms=event.async_update_ms,
-                )
-            )
-    return samples
-
-
 def measure_git_change(
     *,
     tool: str,
@@ -1018,13 +969,18 @@ def benchmark(
             plans.append((tool, "cold_start", workload_name, workloads[workload_name].description))
             plans.append((tool, "warm_steady_state", workload_name, workloads[workload_name].description))
             plans.append((tool, "context_change_cd", workload_name, workloads[workload_name].description))
-            plans.append((tool, "cmd_duration_sleep", workload_name, workloads[workload_name].description))
         plans.append((tool, "git_state_untracked", "repo-small", "Small repo after creating an untracked file"))
         plans.append((tool, "git_state_dirty", "repo-small", "Small repo after modifying a tracked file"))
     randomizer.shuffle(plans)
 
+    total = len(plans)
     results: list[ScenarioResult] = []
-    for tool, scenario, workload_name, description in plans:
+    for index, (tool, scenario, workload_name, description) in enumerate(plans, 1):
+        print(
+            f"[{index}/{total}] {tool} {scenario} {workload_name}",
+            file=sys.stderr,
+            flush=True,
+        )
         workload = workloads[workload_name]
         if scenario == "cold_start":
             samples = measure_cold_start(
@@ -1062,21 +1018,6 @@ def benchmark(
                 workload=workload,
                 root=root,
                 workspace_root=workspace_root,
-                zsh_bin=zsh_bin,
-                capsule_bin=capsule_bin,
-                starship_bin=starship_bin,
-                git_bin=git_bin,
-                iterations=iterations,
-                columns=columns,
-                idle_window_seconds=idle_window_seconds,
-                async_window_seconds=async_window_seconds,
-                term=term,
-            )
-        elif scenario == "cmd_duration_sleep":
-            samples = measure_sleep_duration(
-                tool=tool,
-                workload=workload,
-                root=root,
                 zsh_bin=zsh_bin,
                 capsule_bin=capsule_bin,
                 starship_bin=starship_bin,

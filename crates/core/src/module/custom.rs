@@ -324,7 +324,7 @@ pub fn detect_modules(
         .collect()
 }
 
-fn check_when(when: &ModuleWhen, cwd: &Path, env_vars: &[(String, String)]) -> bool {
+pub(crate) fn check_when(when: &ModuleWhen, cwd: &Path, env_vars: &[(String, String)]) -> bool {
     let files_ok = when.files.is_empty() || when.files.iter().any(|f| cwd.join(f).is_file());
     let env_ok = when.env.is_empty()
         || when
@@ -334,7 +334,7 @@ fn check_when(when: &ModuleWhen, cwd: &Path, env_vars: &[(String, String)]) -> b
     files_ok && env_ok
 }
 
-fn detect_module(
+pub(crate) fn detect_module(
     def: &ResolvedModule,
     cwd: &Path,
     env_vars: &[(String, String)],
