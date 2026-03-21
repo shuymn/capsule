@@ -10,13 +10,10 @@ use capsule_protocol::{
 };
 use tokio::{net::UnixStream, sync::Mutex, task::JoinSet};
 
-use super::{DaemonError, SESSION_TTL, SharedState, prompt};
-use crate::{
-    config::Config,
-    module::{
-        CustomModuleInfo, GitModule, GitProvider, ModuleSpeed, ResolvedModule, check_when,
-        detect_module, required_env_var_names,
-    },
+use super::{DaemonError, ReloadableConfig, SESSION_TTL, SharedState, prompt};
+use crate::module::{
+    CustomModuleInfo, GitModule, GitProvider, ModuleSpeed, ResolvedModule, check_when,
+    detect_module, required_env_var_names,
 };
 
 /// Per-connection context, cloned from the accept loop for each spawned handler.
@@ -25,8 +22,7 @@ pub(super) struct ConnectionCtx<G> {
     pub(super) home_dir: Arc<PathBuf>,
     pub(super) git_provider: G,
     pub(super) build_id: Arc<Option<BuildId>>,
-    pub(super) config: Arc<Config>,
-    pub(super) modules: Arc<Vec<ResolvedModule>>,
+    pub(super) config: Arc<Mutex<ReloadableConfig>>,
 }
 
 struct RequestCtx<G> {
@@ -34,8 +30,7 @@ struct RequestCtx<G> {
     writer: Arc<Mutex<MessageWriter<tokio::net::unix::OwnedWriteHalf>>>,
     home_dir: Arc<PathBuf>,
     git_provider: G,
-    config: Arc<Config>,
-    modules: Arc<Vec<ResolvedModule>>,
+    config: Arc<Mutex<ReloadableConfig>>,
 }
 
 async fn write_message(
@@ -65,15 +60,20 @@ pub(super) async fn handle_connection<G: GitProvider + Clone + Send + 'static>(
                     home_dir: Arc::clone(&ctx.home_dir),
                     git_provider: ctx.git_provider.clone(),
                     config: Arc::clone(&ctx.config),
-                    modules: Arc::clone(&ctx.modules),
                 };
                 handle_request(req, req_ctx).await?;
             }
             Ok(Some(Message::Hello(_))) => {
+                let modules = {
+                    let mut config = ctx.config.lock().await;
+                    let (_, modules) = config.snapshot(&ctx.state).await;
+                    drop(config);
+                    modules
+                };
                 let ack = HelloAck {
                     version: PROTOCOL_VERSION,
                     build_id: (*ctx.build_id).clone(),
-                    env_var_names: required_env_var_names(&ctx.modules),
+                    env_var_names: required_env_var_names(&modules),
                 };
                 write_message(&msg_writer, &Message::HelloAck(ack)).await?;
             }
@@ -169,6 +169,10 @@ async fn handle_request<G: GitProvider + Send + 'static>(
     let generation = req.generation;
     let cwd = req.cwd.clone();
     let cols = req.cols;
+    let (config, modules) = {
+        let mut reloadable = ctx.config.lock().await;
+        reloadable.snapshot(&ctx.state).await
+    };
 
     {
         let mut state = ctx.state.lock().await;
@@ -193,23 +197,23 @@ async fn handle_request<G: GitProvider + Send + 'static>(
     // Parallel fast custom module detection (runs concurrently with built-in
     // fast modules which are computed synchronously below).
     let fast_custom = detect_custom_modules(&DetectInput {
-        modules: &ctx.modules,
+        modules: &modules,
         cwd: &cwd_path,
         env_vars: &env_vars,
         path_env: None,
         speed: ModuleSpeed::Fast,
-        timeout: Duration::from_millis(ctx.config.timeout.fast_ms),
+        timeout: Duration::from_millis(config.timeout.fast_ms),
     })
     .await;
 
-    let fast = prompt::run_fast_modules(&render_ctx, &ctx.config, fast_custom);
+    let fast = prompt::run_fast_modules(&render_ctx, &config, fast_custom);
 
     let cached_slow = {
         let mut state = ctx.state.lock().await;
         state.cache.get(&cwd).cloned()
     };
 
-    let lines = prompt::compose_prompt(&fast, cached_slow.as_ref(), usize::from(cols), &ctx.config);
+    let lines = prompt::compose_prompt(&fast, cached_slow.as_ref(), usize::from(cols), &config);
     let result = RenderResult {
         version: PROTOCOL_VERSION,
         session_id,
@@ -232,8 +236,8 @@ async fn handle_request<G: GitProvider + Send + 'static>(
 
     let sent_left1 = lines.left1;
     let sent_left2 = lines.left2;
-    let slow_config = Arc::clone(&ctx.config);
-    let slow_modules = Arc::clone(&ctx.modules);
+    let slow_config = Arc::clone(&config);
+    let slow_modules = Arc::clone(&modules);
     let state = Arc::clone(&ctx.state);
     let writer = Arc::clone(&ctx.writer);
     tokio::spawn(async move {
@@ -315,12 +319,50 @@ async fn handle_request<G: GitProvider + Send + 'static>(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{path::Path, time::Duration};
 
-    use capsule_protocol::{BuildId, Message, PROTOCOL_VERSION};
+    use capsule_protocol::{BuildId, Message, MessageReader, MessageWriter, PROTOCOL_VERSION};
+    use tokio::{
+        net::unix::{OwnedReadHalf, OwnedWriteHalf},
+        time::sleep,
+    };
 
     use super::super::test_support::{MockGitProvider, TestHarness, make_request, test_sid};
     use crate::module::GitStatus;
+
+    const HOT_RELOAD_WAIT: Duration = Duration::from_millis(20);
+
+    fn write_config(path: &Path, content: &str) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, content)?;
+        Ok(())
+    }
+
+    async fn rewrite_config(path: &Path, content: &str) -> Result<(), Box<dyn std::error::Error>> {
+        sleep(HOT_RELOAD_WAIT).await;
+        write_config(path, content)
+    }
+
+    fn character_config(glyph: &str) -> String {
+        format!("[character]\nglyph = \"{glyph}\"\n")
+    }
+
+    async fn request_left2(
+        reader: &mut MessageReader<OwnedReadHalf>,
+        writer: &mut MessageWriter<OwnedWriteHalf>,
+        generation: u64,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        writer
+            .write_message(&Message::Request(make_request("/tmp", generation, 80)))
+            .await?;
+
+        match reader.read_message().await? {
+            Some(Message::RenderResult(rr)) => Ok(rr.left2),
+            other => Err(format!("expected RenderResult, got {other:?}").into()),
+        }
+    }
 
     #[tokio::test]
     async fn test_daemon_responds_with_render_result() -> Result<(), Box<dyn std::error::Error>> {
@@ -490,6 +532,101 @@ mod tests {
             }
             other => return Err(format!("expected HelloAck, got {other:?}").into()),
         }
+
+        harness.shutdown().await
+    }
+
+    #[tokio::test]
+    async fn test_hot_reload_uses_updated_config_on_next_request()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let config_path = dir.path().join("config.toml");
+        write_config(&config_path, &character_config("$"))?;
+
+        let harness = TestHarness::start_with_config_path(
+            MockGitProvider { status: None },
+            crate::config::load_config(&config_path),
+            config_path.clone(),
+        )
+        .await?;
+        let (mut reader, mut writer) = harness.connect().await?;
+
+        let first = request_left2(&mut reader, &mut writer, 1).await?;
+        assert!(
+            first.contains('$'),
+            "left2 should use initial glyph: {first}"
+        );
+
+        rewrite_config(&config_path, &character_config(">")).await?;
+
+        let second = request_left2(&mut reader, &mut writer, 2).await?;
+        assert!(
+            second.contains('>'),
+            "left2 should use reloaded glyph: {second}"
+        );
+
+        harness.shutdown().await
+    }
+
+    #[tokio::test]
+    async fn test_hot_reload_parse_error_keeps_previous_valid_config()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let config_path = dir.path().join("config.toml");
+        write_config(&config_path, &character_config("$"))?;
+
+        let harness = TestHarness::start_with_config_path(
+            MockGitProvider { status: None },
+            crate::config::load_config(&config_path),
+            config_path.clone(),
+        )
+        .await?;
+        let (mut reader, mut writer) = harness.connect().await?;
+
+        let first = request_left2(&mut reader, &mut writer, 1).await?;
+        assert!(
+            first.contains('$'),
+            "left2 should use initial glyph: {first}"
+        );
+
+        rewrite_config(&config_path, "[character]\nglyph = [\n").await?;
+
+        let second = request_left2(&mut reader, &mut writer, 2).await?;
+        assert!(
+            second.contains('$'),
+            "parse error should keep previous glyph: {second}"
+        );
+
+        harness.shutdown().await
+    }
+
+    #[tokio::test]
+    async fn test_hot_reload_loads_config_created_after_start()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let config_path = dir.path().join("config.toml");
+
+        let harness = TestHarness::start_with_config_path(
+            MockGitProvider { status: None },
+            crate::config::Config::default(),
+            config_path.clone(),
+        )
+        .await?;
+        let (mut reader, mut writer) = harness.connect().await?;
+
+        let first = request_left2(&mut reader, &mut writer, 1).await?;
+        assert!(
+            first.contains('\u{276f}'),
+            "left2 should use default glyph before config exists: {first}"
+        );
+
+        rewrite_config(&config_path, &character_config(">")).await?;
+
+        let second = request_left2(&mut reader, &mut writer, 2).await?;
+        assert!(
+            second.contains('>'),
+            "created config should be loaded: {second}"
+        );
 
         harness.shutdown().await
     }

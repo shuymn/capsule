@@ -10,7 +10,7 @@ use capsule_protocol::{
 use tokio::net::UnixStream;
 
 use super::{
-    DaemonError, Server,
+    ConfigSource, DaemonError, Server,
     listener::{self, ListenerMode},
 };
 use crate::{
@@ -112,11 +112,36 @@ impl TestHarness {
         .await
     }
 
+    pub(super) async fn start_with_config_path(
+        provider: MockGitProvider,
+        config: Config,
+        config_path: PathBuf,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::start_impl_with_config_path(
+            provider,
+            Some(BuildId::new("test-build-id".to_owned())),
+            config,
+            true,
+            Some(config_path),
+        )
+        .await
+    }
+
     async fn start_impl(
         provider: MockGitProvider,
         build_id: Option<BuildId>,
         config: Config,
         create_work_dir: bool,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::start_impl_with_config_path(provider, build_id, config, create_work_dir, None).await
+    }
+
+    async fn start_impl_with_config_path(
+        provider: MockGitProvider,
+        build_id: Option<BuildId>,
+        config: Config,
+        create_work_dir: bool,
+        config_path: Option<PathBuf>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let socket_path = dir.path().join("test.sock");
@@ -139,7 +164,7 @@ impl TestHarness {
             provider,
             build_id,
             ListenerMode::Bound(socket_path.clone()),
-            Arc::new(config),
+            ConfigSource::new(Arc::new(config), config_path),
         );
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 

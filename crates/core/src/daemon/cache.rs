@@ -59,6 +59,10 @@ impl<V> BoundedCache<V> {
         );
     }
 
+    pub(super) fn clear(&mut self) {
+        self.entries.clear();
+    }
+
     fn evict_oldest(&mut self) {
         if let Some(oldest_key) = self
             .entries

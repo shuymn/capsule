@@ -16,7 +16,11 @@ mod parallel_tests;
 #[cfg(test)]
 mod test_support;
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
 use cache::BoundedCache;
 use capsule_protocol::BuildId;
@@ -25,7 +29,7 @@ use session::SessionMap;
 use tokio::{net::UnixListener, sync::Mutex};
 
 use crate::{
-    config::Config,
+    config::{Config, ConfigLoadError},
     module::{GitProvider, ResolvedModule, resolve_modules},
 };
 
@@ -64,6 +68,98 @@ impl SharedState {
     }
 }
 
+pub(super) struct ReloadableConfig {
+    path: Option<PathBuf>,
+    modified_at: Option<SystemTime>,
+    config: Arc<Config>,
+    modules: Arc<Vec<ResolvedModule>>,
+}
+
+impl ReloadableConfig {
+    fn new(config: Arc<Config>, path: Option<PathBuf>) -> Self {
+        let modules = Arc::new(resolve_modules(&config.module));
+        let modified_at = path
+            .as_ref()
+            .and_then(|config_path| std::fs::metadata(config_path).ok())
+            .and_then(|metadata| metadata.modified().ok());
+        Self {
+            path,
+            modified_at,
+            config,
+            modules,
+        }
+    }
+
+    async fn snapshot(
+        &mut self,
+        state: &Arc<Mutex<SharedState>>,
+    ) -> (Arc<Config>, Arc<Vec<ResolvedModule>>) {
+        if let Err(error) = self.reload_if_needed(state).await {
+            tracing::error!(error = %error, "config hot-reload check failed");
+        }
+        (Arc::clone(&self.config), Arc::clone(&self.modules))
+    }
+
+    async fn reload_if_needed(
+        &mut self,
+        state: &Arc<Mutex<SharedState>>,
+    ) -> Result<(), ConfigLoadError> {
+        let Some(path) = self.path.clone() else {
+            return Ok(());
+        };
+
+        let observed_mtime =
+            load_modified_time(&path)
+                .await
+                .map_err(|source| ConfigLoadError::Read {
+                    path: path.clone(),
+                    source,
+                })?;
+        if observed_mtime == self.modified_at {
+            return Ok(());
+        }
+
+        match read_config_async(&path).await? {
+            Some(config) => {
+                tracing::debug!(path = %path.display(), "reloaded config");
+                self.config = Arc::new(config);
+                self.modules = Arc::new(resolve_modules(&self.config.module));
+                self.modified_at = observed_mtime;
+
+                let mut shared = state.lock().await;
+                shared.cache.clear();
+            }
+            None => {
+                self.modified_at = None;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+async fn load_modified_time(path: &Path) -> std::io::Result<Option<SystemTime>> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || match std::fs::metadata(&path) {
+        Ok(metadata) => metadata.modified().map(Some),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    })
+    .await
+    .map_err(|error| std::io::Error::other(format!("join error: {error}")))?
+}
+
+async fn read_config_async(path: &Path) -> Result<Option<Config>, ConfigLoadError> {
+    let path = path.to_path_buf();
+    let path_for_read = path.clone();
+    tokio::task::spawn_blocking(move || crate::config::read_config(&path_for_read))
+        .await
+        .map_err(|source| ConfigLoadError::Read {
+            path: path.clone(),
+            source: std::io::Error::other(format!("join error: {source}")),
+        })?
+}
+
 /// Daemon server that listens on a Unix domain socket.
 ///
 /// Generic over `G` to allow injecting a mock [`GitProvider`] in tests.
@@ -72,8 +168,19 @@ pub struct Server<G> {
     git_provider: G,
     build_id: Option<BuildId>,
     listener_mode: ListenerMode,
+    config_source: ConfigSource,
+}
+
+pub struct ConfigSource {
     config: Arc<Config>,
-    modules: Arc<Vec<ResolvedModule>>,
+    path: Option<PathBuf>,
+}
+
+impl ConfigSource {
+    #[must_use]
+    pub const fn new(config: Arc<Config>, path: Option<PathBuf>) -> Self {
+        Self { config, path }
+    }
 }
 
 impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
@@ -86,22 +193,20 @@ impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
     /// * `build_id` — binary fingerprint for Hello/HelloAck negotiation
     /// * `listener_mode` — how the listener was obtained (carries socket
     ///   path for [`ListenerMode::Bound`])
-    /// * `config` — prompt configuration
-    pub fn new(
+    /// * `config_source` — initial prompt configuration and its source path
+    pub const fn new(
         home_dir: PathBuf,
         git_provider: G,
         build_id: Option<BuildId>,
         listener_mode: ListenerMode,
-        config: Arc<Config>,
+        config_source: ConfigSource,
     ) -> Self {
-        let modules = Arc::new(resolve_modules(&config.module));
         Self {
             home_dir,
             git_provider,
             build_id,
             listener_mode,
-            config,
-            modules,
+            config_source,
         }
     }
 
@@ -136,8 +241,10 @@ impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
             git_provider: self.git_provider,
             build_id: Arc::new(self.build_id),
             state: Arc::new(Mutex::new(SharedState::new())),
-            config: self.config,
-            modules: self.modules,
+            config: Arc::new(Mutex::new(ReloadableConfig::new(
+                self.config_source.config,
+                self.config_source.path,
+            ))),
         };
 
         match self.listener_mode {

@@ -6,11 +6,8 @@ use tokio::{
     sync::Mutex,
 };
 
-use super::{DaemonError, INODE_CHECK_INTERVAL, SharedState, request};
-use crate::{
-    config::Config,
-    module::{GitProvider, ResolvedModule},
-};
+use super::{DaemonError, INODE_CHECK_INTERVAL, ReloadableConfig, SharedState, request};
+use crate::module::GitProvider;
 
 /// Shared state for the accept loops (avoids passing many args).
 pub(super) struct AcceptCtx<G> {
@@ -18,8 +15,7 @@ pub(super) struct AcceptCtx<G> {
     pub(super) git_provider: G,
     pub(super) build_id: Arc<Option<BuildId>>,
     pub(super) state: Arc<Mutex<SharedState>>,
-    pub(super) config: Arc<Config>,
-    pub(super) modules: Arc<Vec<ResolvedModule>>,
+    pub(super) config: Arc<Mutex<ReloadableConfig>>,
 }
 
 impl<G> AcceptCtx<G> {
@@ -33,7 +29,6 @@ impl<G> AcceptCtx<G> {
             git_provider: self.git_provider.clone(),
             build_id: Arc::clone(&self.build_id),
             config: Arc::clone(&self.config),
-            modules: Arc::clone(&self.modules),
         };
         tokio::spawn(async move {
             if let Err(e) = request::handle_connection(stream, ctx).await {
@@ -125,7 +120,7 @@ mod tests {
 
     use super::super::test_support::{MockGitProvider, TestHarness};
     use crate::daemon::{
-        Server,
+        ConfigSource, Server,
         listener::{self, ListenerMode},
     };
 
@@ -149,7 +144,7 @@ mod tests {
             MockGitProvider { status: None },
             Some(BuildId::new("test-build-id".to_owned())),
             ListenerMode::Bound(socket_path.clone()),
-            Arc::new(crate::config::Config::default()),
+            ConfigSource::new(Arc::new(crate::config::Config::default()), None),
         );
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -199,7 +194,7 @@ mod tests {
             MockGitProvider { status: None },
             Some(BuildId::new("test-build-id".to_owned())),
             ListenerMode::Bound(socket_path.clone()),
-            Arc::new(crate::config::Config::default()),
+            ConfigSource::new(Arc::new(crate::config::Config::default()), None),
         );
 
         let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();

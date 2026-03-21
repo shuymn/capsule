@@ -10,7 +10,7 @@ use anyhow::Context as _;
 use capsule_core::{
     config,
     daemon::{
-        Server,
+        ConfigSource, Server,
         listener::{ListenerMode, ListenerSource, acquire_listener},
     },
     module::CommandGitProvider,
@@ -95,14 +95,25 @@ fn run_server(
     let home_dir = home_dir()?;
     let git_provider = CommandGitProvider;
     let build_id = crate::build_id::compute();
-    let cfg = std::sync::Arc::new(config::load_default_config());
+    let config_path = config::resolve_config_path();
+    let cfg = std::sync::Arc::new(
+        config_path
+            .as_deref()
+            .map_or_else(config::Config::default, config::load_config),
+    );
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
 
     rt.block_on(async {
-        let server = Server::new(home_dir, git_provider, build_id, mode, cfg);
+        let server = Server::new(
+            home_dir,
+            git_provider,
+            build_id,
+            mode,
+            ConfigSource::new(cfg, config_path),
+        );
 
         let mut sigterm =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
