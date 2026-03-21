@@ -49,15 +49,12 @@ impl DaemonProcess {
 
         let child = cmd.spawn()?;
 
-        for _ in 0..200 {
-            if std::os::unix::net::UnixStream::connect(&socket_path).is_ok() {
-                return Ok(Self {
-                    child: Some(child),
-                    socket_path,
-                    tmpdir,
-                });
-            }
-            std::thread::sleep(Duration::from_millis(10));
+        if wait_for_socket_accept(&socket_path, 200, Duration::from_millis(10)) {
+            return Ok(Self {
+                child: Some(child),
+                socket_path,
+                tmpdir,
+            });
         }
 
         Err("daemon did not start within 2s".into())
@@ -73,6 +70,16 @@ impl DaemonProcess {
         }
         Ok(())
     }
+}
+
+pub(crate) fn wait_for_socket_accept(socket_path: &Path, attempts: usize, delay: Duration) -> bool {
+    for _ in 0..attempts {
+        if std::os::unix::net::UnixStream::connect(socket_path).is_ok() {
+            return true;
+        }
+        std::thread::sleep(delay);
+    }
+    false
 }
 
 impl Drop for DaemonProcess {

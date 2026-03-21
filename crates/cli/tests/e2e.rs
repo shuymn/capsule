@@ -11,7 +11,7 @@ use std::{
 };
 
 use capsule_protocol::{Hello, Message, MessageReader, MessageWriter, PROTOCOL_VERSION};
-use common::{DaemonProcess, make_request, test_session_id};
+use common::{DaemonProcess, make_request, test_session_id, wait_for_socket_accept};
 
 // ---------------------------------------------------------------------------
 // E2E Tests
@@ -103,8 +103,10 @@ async fn test_e2e_stale_socket_recovery() -> Result<(), Box<dyn std::error::Erro
     let mut daemon = DaemonProcess::start_in(tmpdir)?;
 
     // Verify daemon accepts connections
-    let stream = tokio::net::UnixStream::connect(&daemon.socket_path).await?;
-    drop(stream);
+    assert!(
+        wait_for_socket_accept(&daemon.socket_path, 200, Duration::from_millis(10)),
+        "daemon should accept connections after stale socket recovery",
+    );
 
     daemon.stop()?;
     Ok(())
