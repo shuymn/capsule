@@ -8,11 +8,62 @@ use crate::{ProtocolError, netstring};
 /// Protocol version for v1.
 pub const PROTOCOL_VERSION: u8 = 1;
 
-const TYPE_REQUEST: &[u8] = b"Q";
-const TYPE_RENDER_RESULT: &[u8] = b"R";
-const TYPE_UPDATE: &[u8] = b"U";
-const TYPE_HELLO: &[u8] = b"H";
-const TYPE_HELLO_ACK: &[u8] = b"A";
+/// Wire type discriminator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MessageType {
+    Request,
+    RenderResult,
+    Update,
+    Hello,
+    HelloAck,
+}
+
+impl MessageType {
+    pub(crate) const fn as_bytes(self) -> &'static [u8] {
+        match self {
+            Self::Request => b"Q",
+            Self::RenderResult => b"R",
+            Self::Update => b"U",
+            Self::Hello => b"H",
+            Self::HelloAck => b"A",
+        }
+    }
+
+    pub(crate) fn from_bytes(b: &[u8]) -> Option<Self> {
+        match b {
+            b"Q" => Some(Self::Request),
+            b"R" => Some(Self::RenderResult),
+            b"U" => Some(Self::Update),
+            b"H" => Some(Self::Hello),
+            b"A" => Some(Self::HelloAck),
+            _ => None,
+        }
+    }
+}
+
+/// Binary fingerprint in `"size:mtime_nanos"` format.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildId(String);
+
+impl BuildId {
+    /// Create a `BuildId` from a fingerprint string.
+    #[must_use]
+    pub const fn new(s: String) -> Self {
+        Self(s)
+    }
+
+    /// Return the underlying string.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for BuildId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
 
 /// An 8-byte session identifier, displayed as 16 hex characters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -143,19 +194,24 @@ pub struct Update {
 pub struct Hello {
     /// Protocol version.
     pub version: u8,
-    /// Binary fingerprint of the sender.
-    pub build_id: String,
+    /// Binary fingerprint of the sender. `None` = cannot compute, skip negotiation.
+    pub build_id: Option<BuildId>,
 }
 
 /// Build ID handshake: daemon → client.
 ///
-/// Wire type: `A` (3 fields).
+/// Wire type: `A` (4 fields).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HelloAck {
     /// Protocol version.
     pub version: u8,
-    /// Binary fingerprint of the daemon.
-    pub build_id: String,
+    /// Binary fingerprint of the daemon. `None` = cannot compute.
+    pub build_id: Option<BuildId>,
+    /// Environment variable names the daemon needs from the shell.
+    ///
+    /// The client should include these in subsequent [`Request::env_vars`].
+    /// Empty means no extra env vars are needed (backward compatible).
+    pub env_var_names: Vec<String>,
 }
 
 /// Any message on the wire.
@@ -179,9 +235,15 @@ pub enum Message {
 // ---------------------------------------------------------------------------
 
 /// Write the common header fields (version, type, `session_id`, generation) into `buf`.
-fn encode_header(buf: &mut Vec<u8>, version: u8, type_tag: &[u8], sid: SessionId, generation: u64) {
+fn encode_header(
+    buf: &mut Vec<u8>,
+    version: u8,
+    type_tag: MessageType,
+    sid: SessionId,
+    generation: u64,
+) {
     netstring::encode_into(buf, version.to_string().as_bytes());
-    netstring::encode_into(buf, type_tag);
+    netstring::encode_into(buf, type_tag.as_bytes());
     netstring::encode_into(buf, sid.to_string().as_bytes());
     netstring::encode_into(buf, generation.to_string().as_bytes());
 }
@@ -194,7 +256,7 @@ impl Request {
         encode_header(
             &mut buf,
             self.version,
-            TYPE_REQUEST,
+            MessageType::Request,
             self.session_id,
             self.generation,
         );
@@ -220,7 +282,7 @@ impl RenderResult {
         encode_header(
             &mut buf,
             self.version,
-            TYPE_RENDER_RESULT,
+            MessageType::RenderResult,
             self.session_id,
             self.generation,
         );
@@ -240,7 +302,7 @@ impl Update {
         encode_header(
             &mut buf,
             self.version,
-            TYPE_UPDATE,
+            MessageType::Update,
             self.session_id,
             self.generation,
         );
@@ -252,15 +314,21 @@ impl Update {
     }
 }
 
+/// Encode a Hello/HelloAck message (version + type + optional build id).
+fn encode_hello_wire(version: u8, type_tag: MessageType, build_id: Option<&BuildId>) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(64);
+    netstring::encode_into(&mut buf, version.to_string().as_bytes());
+    netstring::encode_into(&mut buf, type_tag.as_bytes());
+    let id_bytes = build_id.map_or("", BuildId::as_str);
+    netstring::encode_into(&mut buf, id_bytes.as_bytes());
+    buf
+}
+
 impl Hello {
     /// Serialize to wire format (without trailing LF).
     #[must_use]
     pub fn to_wire(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(64);
-        netstring::encode_into(&mut buf, self.version.to_string().as_bytes());
-        netstring::encode_into(&mut buf, TYPE_HELLO);
-        netstring::encode_into(&mut buf, self.build_id.as_bytes());
-        buf
+        encode_hello_wire(self.version, MessageType::Hello, self.build_id.as_ref())
     }
 }
 
@@ -268,10 +336,14 @@ impl HelloAck {
     /// Serialize to wire format (without trailing LF).
     #[must_use]
     pub fn to_wire(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(64);
+        let mut buf = Vec::with_capacity(128);
         netstring::encode_into(&mut buf, self.version.to_string().as_bytes());
-        netstring::encode_into(&mut buf, TYPE_HELLO_ACK);
-        netstring::encode_into(&mut buf, self.build_id.as_bytes());
+        netstring::encode_into(&mut buf, MessageType::HelloAck.as_bytes());
+        let id_bytes = self.build_id.as_ref().map_or("", BuildId::as_str);
+        netstring::encode_into(&mut buf, id_bytes.as_bytes());
+        // env_var_names: comma-separated list (empty string = no extra vars)
+        let names = self.env_var_names.join(",");
+        netstring::encode_into(&mut buf, names.as_bytes());
         buf
     }
 }
@@ -312,15 +384,19 @@ impl Message {
             });
         }
 
-        match fields[1] {
-            TYPE_REQUEST => Ok(Self::Request(Request::from_fields(version, &fields)?)),
-            TYPE_RENDER_RESULT => Ok(Self::RenderResult(RenderResult::from_fields(
+        match MessageType::from_bytes(fields[1]) {
+            Some(MessageType::Request) => {
+                Ok(Self::Request(Request::from_fields(version, &fields)?))
+            }
+            Some(MessageType::RenderResult) => Ok(Self::RenderResult(RenderResult::from_fields(
                 version, &fields,
             )?)),
-            TYPE_UPDATE => Ok(Self::Update(Update::from_fields(version, &fields)?)),
-            TYPE_HELLO => Ok(Self::Hello(Hello::from_fields(version, &fields)?)),
-            TYPE_HELLO_ACK => Ok(Self::HelloAck(HelloAck::from_fields(version, &fields)?)),
-            _ => Err(ProtocolError::UnknownMessageType),
+            Some(MessageType::Update) => Ok(Self::Update(Update::from_fields(version, &fields)?)),
+            Some(MessageType::Hello) => Ok(Self::Hello(Hello::from_fields(version, &fields)?)),
+            Some(MessageType::HelloAck) => {
+                Ok(Self::HelloAck(HelloAck::from_fields(version, &fields)?))
+            }
+            None => Err(ProtocolError::UnknownMessageType),
         }
     }
 }
@@ -390,6 +466,17 @@ fn decode_env_vars(field: &[u8]) -> Vec<(String, String)> {
         }
     }
     vars
+}
+
+/// Parse a comma-separated list of names. Empty input returns empty vec.
+fn parse_comma_list(field: &[u8]) -> Vec<String> {
+    let Ok(s) = std::str::from_utf8(field) else {
+        return vec![];
+    };
+    if s.is_empty() {
+        return vec![];
+    }
+    s.split(',').map(ToOwned::to_owned).collect()
 }
 
 fn parse_opt_u64(field: &[u8], name: &'static str) -> Result<Option<u64>, ProtocolError> {
@@ -476,36 +563,47 @@ impl Update {
     }
 }
 
-impl Hello {
-    const FIELD_COUNT: usize = 3;
+/// Parse an optional `BuildId` from a wire field (empty = `None`).
+fn parse_opt_build_id(field: &[u8]) -> Result<Option<BuildId>, ProtocolError> {
+    if field.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(BuildId::new(field_to_string(field, "build_id")?)))
+    }
+}
 
+/// Validate field count for a Hello/HelloAck message (3 fields).
+const HELLO_FIELD_COUNT: usize = 3;
+
+impl Hello {
     fn from_fields(version: u8, fields: &[&[u8]]) -> Result<Self, ProtocolError> {
-        if fields.len() != Self::FIELD_COUNT {
+        if fields.len() != HELLO_FIELD_COUNT {
             return Err(ProtocolError::WrongFieldCount {
-                expected: Self::FIELD_COUNT,
+                expected: HELLO_FIELD_COUNT,
                 got: fields.len(),
             });
         }
         Ok(Self {
             version,
-            build_id: field_to_string(fields[2], "build_id")?,
+            build_id: parse_opt_build_id(fields[2])?,
         })
     }
 }
 
-impl HelloAck {
-    const FIELD_COUNT: usize = 3;
+const HELLO_ACK_FIELD_COUNT: usize = 4;
 
+impl HelloAck {
     fn from_fields(version: u8, fields: &[&[u8]]) -> Result<Self, ProtocolError> {
-        if fields.len() != Self::FIELD_COUNT {
+        if fields.len() != HELLO_ACK_FIELD_COUNT {
             return Err(ProtocolError::WrongFieldCount {
-                expected: Self::FIELD_COUNT,
+                expected: HELLO_ACK_FIELD_COUNT,
                 got: fields.len(),
             });
         }
         Ok(Self {
             version,
-            build_id: field_to_string(fields[2], "build_id")?,
+            build_id: parse_opt_build_id(fields[2])?,
+            env_var_names: parse_comma_list(fields[3]),
         })
     }
 }
@@ -555,14 +653,15 @@ mod tests {
     fn sample_hello() -> Hello {
         Hello {
             version: PROTOCOL_VERSION,
-            build_id: "12345:1700000000000000000".to_owned(),
+            build_id: Some(BuildId::new("12345:1700000000000000000".to_owned())),
         }
     }
 
     fn sample_hello_ack() -> HelloAck {
         HelloAck {
             version: PROTOCOL_VERSION,
-            build_id: "12345:1700000000000000000".to_owned(),
+            build_id: Some(BuildId::new("12345:1700000000000000000".to_owned())),
+            env_var_names: vec![],
         }
     }
 
@@ -721,10 +820,10 @@ mod tests {
     }
 
     #[test]
-    fn test_hello_empty_build_id() -> Result<(), ProtocolError> {
+    fn test_hello_none_build_id() -> Result<(), ProtocolError> {
         let hello = Hello {
             version: PROTOCOL_VERSION,
-            build_id: String::new(),
+            build_id: None,
         };
         let wire = hello.to_wire();
         let parsed = Message::from_wire(&wire)?;
@@ -737,6 +836,19 @@ mod tests {
     #[test]
     fn test_hello_ack_round_trip() -> Result<(), ProtocolError> {
         let ack = sample_hello_ack();
+        let wire = ack.to_wire();
+        let parsed = Message::from_wire(&wire)?;
+        assert_eq!(parsed, Message::HelloAck(ack));
+        Ok(())
+    }
+
+    #[test]
+    fn test_hello_ack_with_env_var_names_round_trip() -> Result<(), ProtocolError> {
+        let ack = HelloAck {
+            version: PROTOCOL_VERSION,
+            build_id: Some(BuildId::new("test:123".to_owned())),
+            env_var_names: vec!["AWS_PROFILE".to_owned(), "TERRAFORM_WORKSPACE".to_owned()],
+        };
         let wire = ack.to_wire();
         let parsed = Message::from_wire(&wire)?;
         assert_eq!(parsed, Message::HelloAck(ack));

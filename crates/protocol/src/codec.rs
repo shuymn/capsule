@@ -192,14 +192,15 @@ mod tests {
     fn sample_hello() -> Hello {
         Hello {
             version: 1,
-            build_id: "12345:1700000000000000000".to_owned(),
+            build_id: Some(crate::BuildId::new("12345:1700000000000000000".to_owned())),
         }
     }
 
     fn sample_hello_ack() -> HelloAck {
         HelloAck {
             version: 1,
-            build_id: "12345:1700000000000000000".to_owned(),
+            build_id: Some(crate::BuildId::new("12345:1700000000000000000".to_owned())),
+            env_var_names: vec![],
         }
     }
 

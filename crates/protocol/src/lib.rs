@@ -11,7 +11,7 @@ pub mod netstring;
 
 pub use codec::{MessageReader, MessageWriter};
 pub use message::{
-    Hello, HelloAck, Message, PROTOCOL_VERSION, RenderResult, Request, SessionId, Update,
+    BuildId, Hello, HelloAck, Message, PROTOCOL_VERSION, RenderResult, Request, SessionId, Update,
 };
 
 /// Errors that can occur during protocol operations.
