@@ -28,8 +28,23 @@ pub fn run() -> anyhow::Result<()> {
 
     ensure_daemon(&socket_path)?;
 
-    if !negotiate_build_id(&socket_path).unwrap_or(false) {
+    let negotiation = negotiate_build_id(&socket_path).unwrap_or(NegotiationResult {
+        build_id_ok: false,
+        env_var_names: vec![],
+    });
+
+    if !negotiation.build_id_ok {
         restart_daemon(&socket_path, &lock_path()?)?;
+    }
+
+    // Emit env var metadata to stdout so the zsh glue knows which
+    // env vars to include in requests. Format: `E:<comma-separated names>\n`
+    // The shell reads this one-time line before entering the relay loop.
+    {
+        let names = negotiation.env_var_names.join(",");
+        let mut stdout = std::io::stdout().lock();
+        let _ = writeln!(stdout, "E:{names}");
+        let _ = stdout.flush();
     }
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -76,13 +91,24 @@ fn ensure_daemon(socket_path: &Path) -> anyhow::Result<()> {
     anyhow::bail!("daemon failed to start within 1s")
 }
 
-/// Negotiate build ID with the daemon.
+/// Result of build ID negotiation.
+pub struct NegotiationResult {
+    /// Whether build IDs match (true = compatible, false = stale daemon).
+    pub build_id_ok: bool,
+    /// Environment variable names the daemon requested from the shell.
+    pub env_var_names: Vec<String>,
+}
+
+/// Negotiate build ID with the daemon and retrieve env var requirements.
 ///
-/// Returns `Ok(true)` if build IDs match (or negotiation is skipped),
-/// `Ok(false)` if they differ, or an error on I/O failure.
-pub fn negotiate_build_id(socket_path: &Path) -> anyhow::Result<bool> {
+/// Returns negotiation result including build ID check and env var names,
+/// or an error on I/O failure.
+pub fn negotiate_build_id(socket_path: &Path) -> anyhow::Result<NegotiationResult> {
     let Some(my_build_id) = crate::build_id::compute() else {
-        return Ok(true); // skip if we can't compute
+        return Ok(NegotiationResult {
+            build_id_ok: true,
+            env_var_names: vec![],
+        });
     };
 
     let mut stream = std::os::unix::net::UnixStream::connect(socket_path)
@@ -93,7 +119,7 @@ pub fn negotiate_build_id(socket_path: &Path) -> anyhow::Result<bool> {
     // Send Hello
     let hello = Message::Hello(Hello {
         version: PROTOCOL_VERSION,
-        build_id: my_build_id.clone(),
+        build_id: Some(my_build_id.clone()),
     });
     let mut wire = hello.to_wire();
     wire.push(b'\n');
@@ -108,15 +134,24 @@ pub fn negotiate_build_id(socket_path: &Path) -> anyhow::Result<bool> {
         buf.pop();
     }
     if buf.is_empty() {
-        return Ok(false); // EOF — old daemon closed connection
+        return Ok(NegotiationResult {
+            build_id_ok: false,
+            env_var_names: vec![],
+        });
     }
 
     match Message::from_wire(&buf) {
         Ok(Message::HelloAck(ack)) => {
-            // Empty build_id means daemon couldn't compute — skip negotiation
-            Ok(ack.build_id.is_empty() || ack.build_id == my_build_id)
+            let build_id_ok = ack.build_id.is_none_or(|id| id == my_build_id);
+            Ok(NegotiationResult {
+                build_id_ok,
+                env_var_names: ack.env_var_names,
+            })
         }
-        _ => Ok(false),
+        _ => Ok(NegotiationResult {
+            build_id_ok: false,
+            env_var_names: vec![],
+        }),
     }
 }
 

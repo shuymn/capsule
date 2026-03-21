@@ -289,11 +289,16 @@ async fn test_e2e_connect_relay() -> Result<(), Box<dyn std::error::Error>> {
 
     // Read response from child's stdout (LF-delimited)
     let mut reader = std::io::BufReader::new(child_stdout);
-    let mut resp_buf = Vec::new();
 
-    // Use a timeout thread to avoid hanging forever
+    // Use a timeout thread to avoid hanging forever.
+    // First line is env var metadata ("E:..."), second line is wire response.
     let (tx, rx) = std::sync::mpsc::channel();
     let handle = std::thread::spawn(move || {
+        // Skip env var metadata line
+        let mut meta_buf = Vec::new();
+        let _ = reader.read_until(b'\n', &mut meta_buf);
+        // Read actual wire response
+        let mut resp_buf = Vec::new();
         let n = reader.read_until(b'\n', &mut resp_buf);
         let _ = tx.send((resp_buf, n));
     });
@@ -351,7 +356,8 @@ async fn test_e2e_connect_reconnects_after_daemon_restart() -> Result<(), Box<dy
     let mut child_stdin = connect.stdin.take().ok_or("no stdin")?;
     let child_stdout = connect.stdout.take().ok_or("no stdout")?;
 
-    // Background reader: collects line-delimited messages from connect stdout
+    // Background reader: collects line-delimited messages from connect stdout.
+    // Skips the initial env var metadata line ("E:...").
     let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
     std::thread::spawn(move || {
         let mut reader = std::io::BufReader::new(child_stdout);
@@ -360,6 +366,10 @@ async fn test_e2e_connect_reconnects_after_daemon_restart() -> Result<(), Box<dy
             match reader.read_until(b'\n', &mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(_) => {
+                    // Skip env var metadata lines
+                    if buf.starts_with(b"E:") {
+                        continue;
+                    }
                     if tx.send(buf).is_err() {
                         break;
                     }
@@ -460,7 +470,7 @@ async fn test_e2e_hello_handshake() -> Result<(), Box<dyn std::error::Error>> {
 
     let hello = Hello {
         version: PROTOCOL_VERSION,
-        build_id: "test:123".to_owned(),
+        build_id: Some(capsule_protocol::BuildId::new("test:123".to_owned())),
     };
     writer.write_message(&Message::Hello(hello)).await?;
 
@@ -468,10 +478,7 @@ async fn test_e2e_hello_handshake() -> Result<(), Box<dyn std::error::Error>> {
     match resp {
         Some(Message::HelloAck(ack)) => {
             assert_eq!(ack.version, PROTOCOL_VERSION);
-            assert!(
-                !ack.build_id.is_empty(),
-                "daemon should return its build_id"
-            );
+            assert!(ack.build_id.is_some(), "daemon should return its build_id");
         }
         other => return Err(format!("expected HelloAck, got {other:?}").into()),
     }

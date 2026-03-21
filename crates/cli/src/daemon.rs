@@ -94,7 +94,7 @@ fn run_server(
 ) -> anyhow::Result<()> {
     let home_dir = home_dir()?;
     let git_provider = CommandGitProvider;
-    let build_id = crate::build_id::compute().unwrap_or_default();
+    let build_id = crate::build_id::compute();
     let cfg = std::sync::Arc::new(config::load_default_config());
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -340,9 +340,15 @@ pub fn uninstall(sm: &impl ServiceManager, home: &Path) -> anyhow::Result<()> {
 /// the current binary. Returns `false` if build IDs match, the daemon is
 /// unreachable, or the local build ID cannot be computed.
 fn daemon_needs_restart(socket_path: &Path) -> bool {
-    // Only Ok(false) means IDs differ; Ok(true) (match) and Err (unreachable)
-    // both mean no restart is needed.
-    matches!(crate::connect::negotiate_build_id(socket_path), Ok(false))
+    // Only build_id_ok == false means IDs differ; true (match) and Err
+    // (unreachable) both mean no restart is needed.
+    matches!(
+        crate::connect::negotiate_build_id(socket_path),
+        Ok(crate::connect::NegotiationResult {
+            build_id_ok: false,
+            ..
+        })
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -435,7 +441,7 @@ mod tests {
         time::Duration,
     };
 
-    use capsule_protocol::{HelloAck, Message, PROTOCOL_VERSION};
+    use capsule_protocol::{BuildId, HelloAck, Message, PROTOCOL_VERSION};
 
     use super::*;
 
@@ -461,7 +467,7 @@ mod tests {
     /// connects.
     fn start_mock_daemon(
         socket_path: &Path,
-        respond_build_id: String,
+        respond_build_id: Option<BuildId>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let listener = std::os::unix::net::UnixListener::bind(socket_path)?;
         listener.set_nonblocking(true)?;
@@ -500,6 +506,7 @@ mod tests {
             let ack = Message::HelloAck(HelloAck {
                 version: PROTOCOL_VERSION,
                 build_id: respond_build_id,
+                env_var_names: vec![],
             });
             let mut wire = ack.to_wire();
             wire.push(b'\n');
@@ -595,7 +602,7 @@ mod tests {
         let socket = dir.path().join("test.sock");
 
         // Mock daemon echoes back the same build_id as the current binary.
-        let my_id = crate::build_id::compute().unwrap_or_default();
+        let my_id = crate::build_id::compute();
         start_mock_daemon(&socket, my_id)?;
 
         assert!(
@@ -612,7 +619,7 @@ mod tests {
         let socket = dir.path().join("test.sock");
 
         // Mock daemon returns a different build_id.
-        start_mock_daemon(&socket, "different:12345".to_owned())?;
+        start_mock_daemon(&socket, Some(BuildId::new("different:12345".to_owned())))?;
 
         assert!(
             daemon_needs_restart(&socket),
@@ -687,7 +694,7 @@ mod tests {
         let capsule_dir = home.path().join(".capsule");
         std::fs::create_dir_all(&capsule_dir)?;
         let socket = capsule_dir.join("capsule.sock");
-        start_mock_daemon(&socket, "different:99999".to_owned())?;
+        start_mock_daemon(&socket, Some(BuildId::new("different:99999".to_owned())))?;
         std::thread::sleep(Duration::from_millis(50));
 
         // Second install detects mismatch → kickstart via Noop succeeds.
