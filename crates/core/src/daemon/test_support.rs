@@ -14,7 +14,7 @@ use super::{
     listener::{self, ListenerMode},
 };
 use crate::{
-    config::Config,
+    config::{Config, ModuleDef, ModuleWhen, SourceDef},
     module::{GitError, GitProvider, GitStatus},
 };
 
@@ -47,9 +47,38 @@ pub(super) fn make_request(cwd: &str, generation: u64, cols: u16) -> Request {
     }
 }
 
+/// Create a slow module definition that sleeps for `sleep_ms` milliseconds
+/// then outputs `output`. Requires a "marker" file in cwd to trigger.
+pub(super) fn make_sleep_module(name: &str, sleep_ms: u32, output: &str) -> ModuleDef {
+    let sleep_secs = f64::from(sleep_ms) / 1000.0;
+    ModuleDef {
+        name: name.to_owned(),
+        when: ModuleWhen {
+            files: vec!["marker".to_owned()],
+            env: vec![],
+        },
+        source: vec![SourceDef {
+            env: None,
+            file: None,
+            command: Some(vec![
+                "sh".to_owned(),
+                "-c".to_owned(),
+                format!("sleep {sleep_secs}; echo {output}"),
+            ]),
+            regex: None,
+        }],
+        format: "{value}".to_owned(),
+        icon: None,
+        color: None,
+        connector: Some("via".to_owned()),
+    }
+}
+
 pub(super) struct TestHarness {
     pub(super) socket_path: PathBuf,
+    pub(super) work_dir: Option<PathBuf>,
     _dir: tempfile::TempDir,
+    _work_dir: Option<tempfile::TempDir>,
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
     server_handle: tokio::task::JoinHandle<Result<(), DaemonError>>,
 }
@@ -65,10 +94,43 @@ impl TestHarness {
         provider: MockGitProvider,
         build_id: Option<BuildId>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::start_impl(provider, build_id, Config::default(), false).await
+    }
+
+    /// Start a daemon with a custom config and a work directory containing a
+    /// "marker" file (needed for modules with `when.files = ["marker"]`).
+    pub(super) async fn start_with_config(
+        provider: MockGitProvider,
+        config: Config,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::start_impl(
+            provider,
+            Some(BuildId::new("test-build-id".to_owned())),
+            config,
+            true,
+        )
+        .await
+    }
+
+    async fn start_impl(
+        provider: MockGitProvider,
+        build_id: Option<BuildId>,
+        config: Config,
+        create_work_dir: bool,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let socket_path = dir.path().join("test.sock");
         let home = dir.path().join("home");
         std::fs::create_dir_all(&home)?;
+
+        let (work_dir_td, work_dir_path) = if create_work_dir {
+            let wd = tempfile::tempdir()?;
+            std::fs::write(wd.path().join("marker"), "")?;
+            let path = wd.path().to_path_buf();
+            (Some(wd), Some(path))
+        } else {
+            (None, None)
+        };
 
         let listener =
             listener::acquire_listener(&listener::ListenerSource::Bind(socket_path.clone()))?;
@@ -77,7 +139,7 @@ impl TestHarness {
             provider,
             build_id,
             ListenerMode::Bound(socket_path.clone()),
-            Arc::new(Config::default()),
+            Arc::new(config),
         );
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
@@ -93,10 +155,17 @@ impl TestHarness {
 
         Ok(Self {
             socket_path,
+            work_dir: work_dir_path,
             _dir: dir,
+            _work_dir: work_dir_td,
             shutdown_tx: Some(shutdown_tx),
             server_handle,
         })
+    }
+
+    /// Returns the work directory path as a string, if available.
+    pub(super) fn cwd_str(&self) -> Option<&str> {
+        self.work_dir.as_ref().and_then(|p| p.to_str())
     }
 
     pub(super) async fn connect(
