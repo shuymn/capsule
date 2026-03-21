@@ -325,6 +325,123 @@ async fn test_e2e_connect_relay() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// When daemon is killed during an active relay, capsule connect shall
+/// reconnect (via `ensure_daemon`) and resume relaying.
+#[tokio::test]
+async fn test_e2e_connect_reconnects_after_daemon_restart() -> Result<(), Box<dyn std::error::Error>>
+{
+    let mut daemon = DaemonProcess::start()?;
+    let capsule_bin = env!("CARGO_BIN_EXE_capsule");
+
+    // Start capsule connect
+    let mut connect = Command::new(capsule_bin)
+        .arg("connect")
+        .env("TMPDIR", daemon.tmpdir_path())
+        .env("HOME", daemon.tmpdir_path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    let mut child_stdin = connect.stdin.take().ok_or("no stdin")?;
+    let child_stdout = connect.stdout.take().ok_or("no stdout")?;
+
+    // Background reader: collects line-delimited messages from connect stdout
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(child_stdout);
+        loop {
+            let mut buf = Vec::new();
+            match reader.read_until(b'\n', &mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    if tx.send(buf).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    // Phase 1: Verify relay works
+    let req1 = Message::Request(make_request(&daemon.tmpdir_path().to_string_lossy(), 1));
+    let mut wire1 = req1.to_wire();
+    wire1.push(b'\n');
+    child_stdin.write_all(&wire1)?;
+    child_stdin.flush()?;
+
+    let resp_buf = rx.recv_timeout(Duration::from_secs(5))?;
+    let resp_wire = if resp_buf.last() == Some(&b'\n') {
+        &resp_buf[..resp_buf.len() - 1]
+    } else {
+        &resp_buf
+    };
+    match Message::from_wire(resp_wire)? {
+        Message::RenderResult(rr) => assert_eq!(rr.generation, 1),
+        other => return Err(format!("expected RenderResult gen 1, got {other:?}").into()),
+    }
+
+    // Phase 2: Kill daemon, let connect's relay reconnect via ensure_daemon
+    daemon.stop()?;
+
+    // Wait for relay to detect disconnect and auto-start a new daemon
+    std::thread::sleep(Duration::from_secs(2));
+
+    // Connect should still be running (reconnected)
+    assert!(
+        connect.try_wait()?.is_none(),
+        "connect should still be running after daemon restart"
+    );
+
+    // Phase 3: Send request through reconnected relay
+    let req2 = Message::Request(make_request(&daemon.tmpdir_path().to_string_lossy(), 2));
+    let mut wire2 = req2.to_wire();
+    wire2.push(b'\n');
+    child_stdin.write_all(&wire2)?;
+    child_stdin.flush()?;
+
+    // Read until we get RenderResult with generation 2
+    let mut got_gen2 = false;
+    for _ in 0..10 {
+        match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(buf) => {
+                let w = if buf.last() == Some(&b'\n') {
+                    &buf[..buf.len() - 1]
+                } else {
+                    &buf
+                };
+                if let Ok(Message::RenderResult(rr)) = Message::from_wire(w)
+                    && rr.generation == 2
+                {
+                    got_gen2 = true;
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    assert!(
+        got_gen2,
+        "should receive RenderResult with generation 2 after reconnection"
+    );
+
+    // Cleanup: close stdin to let connect exit
+    drop(child_stdin);
+    let status = connect.wait()?;
+    assert!(status.success(), "connect should exit cleanly");
+
+    // Kill daemon started by ensure_daemon (not tracked by DaemonProcess)
+    let lock_path = daemon.tmpdir_path().join("capsule.lock");
+    if let Ok(pid_str) = std::fs::read_to_string(&lock_path) {
+        let pid_str = pid_str.trim();
+        if !pid_str.is_empty() {
+            let _ = Command::new("kill").args(["-TERM", pid_str]).status();
+        }
+    }
+
+    Ok(())
+}
+
 /// Daemon shall respond to a Hello message with a HelloAck containing
 /// its build ID.
 #[tokio::test]
