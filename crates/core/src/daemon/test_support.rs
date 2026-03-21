@@ -1,6 +1,9 @@
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -18,13 +21,21 @@ use crate::{
     module::{GitError, GitProvider, GitStatus},
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(super) struct MockGitProvider {
     pub(super) status: Option<GitStatus>,
+    pub(super) delay: Duration,
+    pub(super) call_count: Option<Arc<AtomicUsize>>,
 }
 
 impl GitProvider for MockGitProvider {
     fn status(&self, _cwd: &Path, _path_env: Option<&str>) -> Result<Option<GitStatus>, GitError> {
+        if let Some(call_count) = &self.call_count {
+            call_count.fetch_add(1, Ordering::SeqCst);
+        }
+        if !self.delay.is_zero() {
+            std::thread::sleep(self.delay);
+        }
         Ok(self.status.clone())
     }
 }

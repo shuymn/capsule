@@ -17,7 +17,8 @@ use std::path::Path;
 pub use character::CharacterModule;
 pub use cmd_duration::CmdDurationModule;
 pub use custom::{
-    CustomModuleInfo, ResolvedModule, detect_modules, required_env_var_names, resolve_modules,
+    CustomModuleInfo, ResolvedModule, ResolvedSource, detect_modules, required_env_var_names,
+    resolve_modules,
 };
 pub(crate) use custom::{
     DetectedModuleCandidate, arbitrate_detected_modules, check_when, detect_module,

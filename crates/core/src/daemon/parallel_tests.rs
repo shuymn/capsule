@@ -26,7 +26,7 @@ async fn test_parallel_slow_modules_execute_concurrently() -> Result<(), Box<dyn
         ..Config::default()
     };
 
-    let harness = TestHarness::start_with_config(MockGitProvider { status: None }, config).await?;
+    let harness = TestHarness::start_with_config(MockGitProvider::default(), config).await?;
     let cwd = harness.cwd_str().ok_or("work_dir missing")?;
     let (mut reader, mut writer) = harness.connect().await?;
 
@@ -86,7 +86,7 @@ async fn test_parallel_timeout_omits_slow_module() -> Result<(), Box<dyn std::er
         ..Config::default()
     };
 
-    let harness = TestHarness::start_with_config(MockGitProvider { status: None }, config).await?;
+    let harness = TestHarness::start_with_config(MockGitProvider::default(), config).await?;
     let cwd = harness.cwd_str().ok_or("work_dir missing")?;
     let (mut reader, mut writer) = harness.connect().await?;
 
@@ -139,7 +139,7 @@ async fn test_parallel_preserves_definition_order() -> Result<(), Box<dyn std::e
         ..Config::default()
     };
 
-    let harness = TestHarness::start_with_config(MockGitProvider { status: None }, config).await?;
+    let harness = TestHarness::start_with_config(MockGitProvider::default(), config).await?;
     let cwd = harness.cwd_str().ok_or("work_dir missing")?;
     let (mut reader, mut writer) = harness.connect().await?;
 
@@ -182,7 +182,7 @@ async fn test_parallel_early_completion_does_not_wait() -> Result<(), Box<dyn st
         ..Config::default()
     };
 
-    let harness = TestHarness::start_with_config(MockGitProvider { status: None }, config).await?;
+    let harness = TestHarness::start_with_config(MockGitProvider::default(), config).await?;
     let cwd = harness.cwd_str().ok_or("work_dir missing")?;
     let (mut reader, mut writer) = harness.connect().await?;
 

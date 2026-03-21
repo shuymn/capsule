@@ -44,6 +44,11 @@ impl SessionMap {
         self.sessions.entry(id).or_insert_with(Session::new)
     }
 
+    /// Returns the session for the given ID, if it exists.
+    pub(super) fn get(&self, id: SessionId) -> Option<&Session> {
+        self.sessions.get(&id)
+    }
+
     /// Checks if a request's generation is newer than the session's last.
     ///
     /// Updates the session's generation and `last_seen` timestamp if so.

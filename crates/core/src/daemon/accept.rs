@@ -141,7 +141,7 @@ mod tests {
             listener::acquire_listener(&listener::ListenerSource::Bind(socket_path.clone()))?;
         let server = Server::new(
             home,
-            MockGitProvider { status: None },
+            MockGitProvider::default(),
             Some(BuildId::new("test-build-id".to_owned())),
             ListenerMode::Bound(socket_path.clone()),
             ConfigSource::new(Arc::new(crate::config::Config::default()), None),
@@ -168,7 +168,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_daemon_removes_socket_on_shutdown() -> Result<(), Box<dyn std::error::Error>> {
-        let harness = TestHarness::start(MockGitProvider { status: None }).await?;
+        let harness = TestHarness::start(MockGitProvider::default()).await?;
         let socket_path = harness.socket_path.clone();
         assert!(socket_path.exists(), "socket should exist while running");
 
@@ -191,7 +191,7 @@ mod tests {
             listener::acquire_listener(&listener::ListenerSource::Bind(socket_path.clone()))?;
         let server = Server::new(
             home,
-            MockGitProvider { status: None },
+            MockGitProvider::default(),
             Some(BuildId::new("test-build-id".to_owned())),
             ListenerMode::Bound(socket_path.clone()),
             ConfigSource::new(Arc::new(crate::config::Config::default()), None),

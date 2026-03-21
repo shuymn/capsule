@@ -17,6 +17,7 @@ mod parallel_tests;
 mod test_support;
 
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, SystemTime},
@@ -26,7 +27,10 @@ use cache::BoundedCache;
 use capsule_protocol::BuildId;
 use listener::ListenerMode;
 use session::SessionMap;
-use tokio::{net::UnixListener, sync::Mutex};
+use tokio::{
+    net::UnixListener,
+    sync::{Mutex, watch},
+};
 
 use crate::{
     config::{Config, ConfigLoadError},
@@ -54,9 +58,25 @@ pub enum DaemonError {
     Protocol(#[from] capsule_protocol::ProtocolError),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(super) struct CacheKey {
+    cwd: String,
+    config_generation: u64,
+}
+
+impl CacheKey {
+    const fn new(cwd: String, config_generation: u64) -> Self {
+        Self {
+            cwd,
+            config_generation,
+        }
+    }
+}
+
 pub(super) struct SharedState {
     sessions: SessionMap,
-    cache: BoundedCache<prompt::SlowOutput>,
+    cache: BoundedCache<CacheKey, Arc<prompt::SlowOutput>>,
+    inflight: HashMap<CacheKey, watch::Sender<Option<Arc<prompt::SlowOutput>>>>,
 }
 
 impl SharedState {
@@ -64,6 +84,7 @@ impl SharedState {
         Self {
             sessions: SessionMap::new(),
             cache: BoundedCache::new(CACHE_MAX_SIZE, CACHE_TTL),
+            inflight: HashMap::new(),
         }
     }
 }
@@ -71,6 +92,7 @@ impl SharedState {
 pub(super) struct ReloadableConfig {
     path: Option<PathBuf>,
     modified_at: Option<SystemTime>,
+    generation: u64,
     config: Arc<Config>,
     modules: Arc<Vec<ResolvedModule>>,
 }
@@ -85,6 +107,7 @@ impl ReloadableConfig {
         Self {
             path,
             modified_at,
+            generation: 0,
             config,
             modules,
         }
@@ -93,11 +116,15 @@ impl ReloadableConfig {
     async fn snapshot(
         &mut self,
         state: &Arc<Mutex<SharedState>>,
-    ) -> (Arc<Config>, Arc<Vec<ResolvedModule>>) {
+    ) -> (Arc<Config>, Arc<Vec<ResolvedModule>>, u64) {
         if let Err(error) = self.reload_if_needed(state).await {
             tracing::error!(error = %error, "config hot-reload check failed");
         }
-        (Arc::clone(&self.config), Arc::clone(&self.modules))
+        (
+            Arc::clone(&self.config),
+            Arc::clone(&self.modules),
+            self.generation,
+        )
     }
 
     async fn reload_if_needed(
@@ -125,6 +152,7 @@ impl ReloadableConfig {
                 self.config = Arc::new(config);
                 self.modules = Arc::new(resolve_modules(&self.config.module));
                 self.modified_at = observed_mtime;
+                self.generation = self.generation.saturating_add(1);
 
                 let mut shared = state.lock().await;
                 shared.cache.clear();
