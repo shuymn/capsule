@@ -129,7 +129,7 @@ _capsule_send_request() {
     _capsule_ns "$_CAPSULE_LAST_EXIT"; msg+=$REPLY
     _capsule_ns "${_CAPSULE_DURATION_MS:-}"; msg+=$REPLY
     _capsule_ns "${KEYMAP:-main}"; msg+=$REPLY
-    msg+="0:,"
+    _capsule_ns "PATH=${PATH}"; msg+=$REPLY
 
     print -nu $_CAPSULE_FD_IN "${msg}"$'\n'
 }
