@@ -230,7 +230,7 @@ pub struct StatusRequest {
 
 /// Status response: daemon → client.
 ///
-/// Wire type: `T` (24 fields).
+/// Wire type: `T` (23 fields).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct StatusResponse {
@@ -241,7 +241,6 @@ pub struct StatusResponse {
     pub cache_hits: u64,
     pub cache_misses: u64,
     pub cache_evictions: u64,
-    pub cache_ttl_expirations: u64,
     pub cache_entries: u64,
     pub inflight_coalesces: u64,
     // Request
@@ -414,7 +413,7 @@ impl StatusRequest {
 }
 
 impl StatusResponse {
-    const FIELD_COUNT: usize = 24;
+    const FIELD_COUNT: usize = 23;
 
     /// Serialize to wire format (without trailing LF).
     #[must_use]
@@ -428,7 +427,6 @@ impl StatusResponse {
             self.cache_hits,
             self.cache_misses,
             self.cache_evictions,
-            self.cache_ttl_expirations,
             self.cache_entries,
             self.inflight_coalesces,
             self.requests_total,
@@ -734,23 +732,22 @@ impl StatusResponse {
             cache_hits: parse_field(fields[4], "cache_hits")?,
             cache_misses: parse_field(fields[5], "cache_misses")?,
             cache_evictions: parse_field(fields[6], "cache_evictions")?,
-            cache_ttl_expirations: parse_field(fields[7], "cache_ttl_expirations")?,
-            cache_entries: parse_field(fields[8], "cache_entries")?,
-            inflight_coalesces: parse_field(fields[9], "inflight_coalesces")?,
-            requests_total: parse_field(fields[10], "requests_total")?,
-            stale_discards: parse_field(fields[11], "stale_discards")?,
-            slow_computes_started: parse_field(fields[12], "slow_computes_started")?,
-            slow_compute_duration_us: parse_field(fields[13], "slow_compute_duration_us")?,
-            git_timeouts: parse_field(fields[14], "git_timeouts")?,
-            custom_module_timeouts: parse_field(fields[15], "custom_module_timeouts")?,
-            active_sessions: parse_field(fields[16], "active_sessions")?,
-            sessions_pruned: parse_field(fields[17], "sessions_pruned")?,
-            connections_total: parse_field(fields[18], "connections_total")?,
-            connections_active: parse_field(fields[19], "connections_active")?,
-            config_generation: parse_field(fields[20], "config_generation")?,
-            config_reloads: parse_field(fields[21], "config_reloads")?,
-            config_reload_errors: parse_field(fields[22], "config_reload_errors")?,
-            // fields[23] = reserved
+            cache_entries: parse_field(fields[7], "cache_entries")?,
+            inflight_coalesces: parse_field(fields[8], "inflight_coalesces")?,
+            requests_total: parse_field(fields[9], "requests_total")?,
+            stale_discards: parse_field(fields[10], "stale_discards")?,
+            slow_computes_started: parse_field(fields[11], "slow_computes_started")?,
+            slow_compute_duration_us: parse_field(fields[12], "slow_compute_duration_us")?,
+            git_timeouts: parse_field(fields[13], "git_timeouts")?,
+            custom_module_timeouts: parse_field(fields[14], "custom_module_timeouts")?,
+            active_sessions: parse_field(fields[15], "active_sessions")?,
+            sessions_pruned: parse_field(fields[16], "sessions_pruned")?,
+            connections_total: parse_field(fields[17], "connections_total")?,
+            connections_active: parse_field(fields[18], "connections_active")?,
+            config_generation: parse_field(fields[19], "config_generation")?,
+            config_reloads: parse_field(fields[20], "config_reloads")?,
+            config_reload_errors: parse_field(fields[21], "config_reload_errors")?,
+            // fields[22] = reserved
         })
     }
 }
@@ -1218,7 +1215,6 @@ mod tests {
             cache_hits: 100,
             cache_misses: 10,
             cache_evictions: 2,
-            cache_ttl_expirations: 1,
             cache_entries: 42,
             inflight_coalesces: 5,
             requests_total: 110,

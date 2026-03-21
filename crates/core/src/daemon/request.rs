@@ -11,8 +11,8 @@ use tokio::{
 };
 
 use super::{
-    CacheKey, DaemonError, ReloadableConfig, SESSION_TTL, SharedState, cache, prompt,
-    session::Session, stats::DaemonStats,
+    CacheKey, DaemonError, ReloadableConfig, SESSION_TTL, SharedState, prompt, session::Session,
+    stats::DaemonStats,
 };
 use crate::module::{
     CustomModuleInfo, DetectedModuleCandidate, GitModule, GitProvider, ModuleSpeed, RequestFacts,
@@ -274,22 +274,12 @@ async fn handle_request<G: GitProvider + Send + 'static>(
 
     let cached_slow = {
         let mut state = ctx.state.lock().await;
-        match state.cache.get(&cache_key) {
-            cache::CacheGetResult::Hit(v) => {
-                ctx.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
-                Some(v.clone())
-            }
-            cache::CacheGetResult::Expired => {
-                ctx.stats
-                    .cache_ttl_expirations
-                    .fetch_add(1, Ordering::Relaxed);
-                ctx.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
-                None
-            }
-            cache::CacheGetResult::Miss => {
-                ctx.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
-                None
-            }
+        if let Some(v) = state.cache.get(&cache_key) {
+            ctx.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
+            Some(v.clone())
+        } else {
+            ctx.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
+            None
         }
     };
 

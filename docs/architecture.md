@@ -181,7 +181,7 @@ Line 2 (input):  at [time] [character]
 | Generation | u64 monotonic counter (per-session) | stale request 検出 + slow update 破棄 |
 | Module trait | sync (daemon が slow module を spawn_blocking) | async trait object の制約を回避 |
 | Config | TOML, mtime-based hot-reload | daemon 再起動不要。parse error 時は defaults fallback |
-| Cache | LRU (64 entries, 30s TTL, key = cwd + config_generation) | slow module 結果の再利用。env/file 依存モジュールは cache bypass |
+| Cache | LRU (1024 entries, key = cwd + config_generation + dep_hash) | slow module 結果の再利用。dep_hash が env/file 依存を反映するため TTL 不要 |
 | Slow coalescing | watch channel per cache key | 同一 cwd への concurrent request で重複 spawn を防止 |
 
 ## Revisit Trigger

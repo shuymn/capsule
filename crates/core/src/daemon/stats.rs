@@ -18,7 +18,6 @@ pub(super) struct DaemonStats {
     pub(super) cache_hits: AtomicU64,
     pub(super) cache_misses: AtomicU64,
     pub(super) cache_evictions: AtomicU64,
-    pub(super) cache_ttl_expirations: AtomicU64,
     pub(super) inflight_coalesces: AtomicU64,
 
     // Request
@@ -53,7 +52,6 @@ impl DaemonStats {
             cache_hits: AtomicU64::new(0),
             cache_misses: AtomicU64::new(0),
             cache_evictions: AtomicU64::new(0),
-            cache_ttl_expirations: AtomicU64::new(0),
             inflight_coalesces: AtomicU64::new(0),
             requests_total: AtomicU64::new(0),
             stale_discards: AtomicU64::new(0),
@@ -84,7 +82,6 @@ impl DaemonStats {
             cache_hits: self.cache_hits.load(Ordering::Relaxed),
             cache_misses: self.cache_misses.load(Ordering::Relaxed),
             cache_evictions: self.cache_evictions.load(Ordering::Relaxed),
-            cache_ttl_expirations: self.cache_ttl_expirations.load(Ordering::Relaxed),
             cache_entries: state.cache_len() as u64,
             inflight_coalesces: self.inflight_coalesces.load(Ordering::Relaxed),
             requests_total: self.requests_total.load(Ordering::Relaxed),

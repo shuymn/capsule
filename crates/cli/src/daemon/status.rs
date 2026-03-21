@@ -97,8 +97,8 @@ fn print_status_human(r: &capsule_protocol::StatusResponse) {
         r.cache_hits, r.cache_misses, hit_rate
     );
     println!(
-        "  evictions: {}  ttl_expirations: {}  entries: {}",
-        r.cache_evictions, r.cache_ttl_expirations, r.cache_entries
+        "  evictions: {}  entries: {}",
+        r.cache_evictions, r.cache_entries
     );
     println!("  inflight_coalesces: {}", r.inflight_coalesces);
     println!("\nrequests:");

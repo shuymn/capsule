@@ -38,8 +38,7 @@ use crate::{
     module::{GitProvider, ResolvedModule, resolve_modules},
 };
 
-const CACHE_MAX_SIZE: usize = 64;
-const CACHE_TTL: Duration = Duration::from_secs(30);
+const CACHE_MAX_SIZE: usize = 1024;
 const SESSION_TTL: Duration = Duration::from_mins(30);
 
 #[cfg(not(test))]
@@ -86,7 +85,7 @@ impl SharedState {
     fn new() -> Self {
         Self {
             sessions: SessionMap::new(),
-            cache: BoundedCache::new(CACHE_MAX_SIZE, CACHE_TTL),
+            cache: BoundedCache::new(CACHE_MAX_SIZE),
             inflight: HashMap::new(),
         }
     }
