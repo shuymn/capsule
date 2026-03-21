@@ -57,14 +57,28 @@ impl Module for CmdDurationModule {
 }
 
 fn format_duration(ms: u64) -> String {
+    use std::fmt::Write;
+
     let total_secs = ms / 1000;
-    let minutes = total_secs / 60;
+    let days = total_secs / 86400;
+    let hours = (total_secs % 86400) / 3600;
+    let minutes = (total_secs % 3600) / 60;
     let secs = total_secs % 60;
-    if minutes > 0 {
-        format!("{minutes}m {secs}s")
-    } else {
-        format!("{secs}s")
+
+    let mut buf = String::new();
+    if days > 0 {
+        let _ = write!(buf, "{days}d");
     }
+    if hours > 0 {
+        let _ = write!(buf, "{hours}h");
+    }
+    if minutes > 0 {
+        let _ = write!(buf, "{minutes}m");
+    }
+    if buf.is_empty() || secs > 0 {
+        let _ = write!(buf, "{secs}s");
+    }
+    buf
 }
 
 #[cfg(test)]
@@ -114,13 +128,41 @@ mod tests {
     fn test_module_minutes_and_seconds() {
         let ctx = make_ctx(Some(65_000));
         let output = CmdDurationModule::new().render(&ctx);
-        assert_eq!(output.map(|o| o.content), Some("1m 5s".to_owned()));
+        assert_eq!(output.map(|o| o.content), Some("1m5s".to_owned()));
     }
 
     #[test]
     fn test_module_exact_minute() {
         let ctx = make_ctx(Some(120_000));
         let output = CmdDurationModule::new().render(&ctx);
-        assert_eq!(output.map(|o| o.content), Some("2m 0s".to_owned()));
+        assert_eq!(output.map(|o| o.content), Some("2m".to_owned()));
+    }
+
+    #[test]
+    fn test_module_hours_and_minutes() {
+        let ctx = make_ctx(Some(3_661_000)); // 1h 1m 1s
+        let output = CmdDurationModule::new().render(&ctx);
+        assert_eq!(output.map(|o| o.content), Some("1h1m1s".to_owned()));
+    }
+
+    #[test]
+    fn test_module_exact_hour() {
+        let ctx = make_ctx(Some(3_600_000)); // 1h
+        let output = CmdDurationModule::new().render(&ctx);
+        assert_eq!(output.map(|o| o.content), Some("1h".to_owned()));
+    }
+
+    #[test]
+    fn test_module_days() {
+        let ctx = make_ctx(Some(90_061_000)); // 1d 1h 1m 1s
+        let output = CmdDurationModule::new().render(&ctx);
+        assert_eq!(output.map(|o| o.content), Some("1d1h1m1s".to_owned()));
+    }
+
+    #[test]
+    fn test_module_exact_day() {
+        let ctx = make_ctx(Some(86_400_000)); // 1d
+        let output = CmdDurationModule::new().render(&ctx);
+        assert_eq!(output.map(|o| o.content), Some("1d".to_owned()));
     }
 }
