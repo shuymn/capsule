@@ -71,6 +71,8 @@ struct FastOutputs {
     /// Carried forward for `compose_prompt()` to style the character module
     /// output (green on success, red on error).
     last_exit_code: i32,
+    /// Whether the current working directory is read-only (no write permission bits).
+    read_only: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -380,12 +382,14 @@ async fn handle_request<G: GitProvider + Send + 'static>(
 // ---------------------------------------------------------------------------
 
 fn run_fast_modules(ctx: &RenderContext<'_>) -> FastOutputs {
+    let read_only = std::fs::metadata(ctx.cwd).is_ok_and(|m| m.permissions().readonly());
     FastOutputs {
         directory: DirectoryModule::new().render(ctx).map(|o| o.content),
         cmd_duration: CmdDurationModule::new().render(ctx).map(|o| o.content),
         time: TimeModule::new().render(ctx).map(|o| o.content),
         character: CharacterModule::new().render(ctx).map(|o| o.content),
         last_exit_code: ctx.last_exit_code,
+        read_only,
     }
 }
 
@@ -426,6 +430,7 @@ fn toolchain_style(name: &str) -> Style {
 }
 
 const CONNECTOR_STYLE: Style = Style::new();
+const DIR_STYLE: Style = Style::new().fg(Color::Cyan).bold();
 const TIME_STYLE: Style = Style::new().fg(Color::Yellow);
 
 const fn connector(word: &'static str) -> Connector {
@@ -447,12 +452,24 @@ fn compose_prompt(fast: &FastOutputs, slow: Option<&SlowOutput>, cols: usize) ->
     let mut line1: Vec<Segment> = Vec::with_capacity(4);
 
     if let Some(ref dir) = fast.directory {
-        line1.push(Segment {
-            content: dir.clone(),
-            connector: None,
-            icon: None,
-            content_style: Some(Style::new().fg(Color::Cyan).bold()),
-        });
+        if fast.read_only {
+            // Pre-style: path in bold cyan + lock icon in red
+            let lock_style = Style::new().fg(Color::Red);
+            let content = format!("{} {}", DIR_STYLE.paint(dir), lock_style.paint("\u{f023}"));
+            line1.push(Segment {
+                content,
+                connector: None,
+                icon: None,
+                content_style: None, // pre-styled
+            });
+        } else {
+            line1.push(Segment {
+                content: dir.clone(),
+                connector: None,
+                icon: None,
+                content_style: Some(DIR_STYLE),
+            });
+        }
     }
 
     // Git output is already styled internally by the git module.
@@ -553,6 +570,7 @@ mod tests {
             time: None,
             character: Some("\u{276f}".to_owned()),
             last_exit_code: 0,
+            read_only: false,
         }
     }
 
@@ -912,6 +930,50 @@ mod tests {
         assert!(
             lines.left1.contains("3s"),
             "cmd_duration should contain duration: {}",
+            lines.left1
+        );
+    }
+
+    #[test]
+    fn test_daemon_compose_prompt_readonly_shows_lock_icon() {
+        let fast = FastOutputs {
+            read_only: true,
+            ..make_fast_outputs()
+        };
+        let lines = compose_prompt(&fast, None, 80);
+        assert!(
+            lines.left1.contains('\u{f023}'),
+            "readonly dir should show lock icon: {}",
+            lines.left1
+        );
+    }
+
+    #[test]
+    fn test_daemon_compose_prompt_readonly_lock_styled_red() {
+        let fast = FastOutputs {
+            read_only: true,
+            ..make_fast_outputs()
+        };
+        let lines = compose_prompt(&fast, None, 80);
+        // The lock icon portion should be styled red (ANSI \x1b[31m)
+        let lock_pos = lines.left1.find('\u{f023}');
+        assert!(lock_pos.is_some(), "lock icon should be present");
+        // Check that red ANSI code appears before the lock icon
+        let before_lock = &lines.left1[..lock_pos.map_or(0, |p| p)];
+        assert!(
+            before_lock.contains("\x1b[31m"),
+            "lock icon should be styled red: {}",
+            lines.left1
+        );
+    }
+
+    #[test]
+    fn test_daemon_compose_prompt_writable_no_lock_icon() {
+        let fast = make_fast_outputs(); // read_only: false
+        let lines = compose_prompt(&fast, None, 80);
+        assert!(
+            !lines.left1.contains('\u{f023}'),
+            "writable dir should not show lock icon: {}",
             lines.left1
         );
     }
