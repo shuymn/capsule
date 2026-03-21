@@ -53,9 +53,11 @@ fn ensure_daemon(socket_path: &Path) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Spawn daemon process
+    // Spawn daemon process.
+    // Intentionally detach: the daemon outlives this process and tracks
+    // its own PID via the lock file.
     let exe = std::env::current_exe().context("cannot find capsule binary")?;
-    std::process::Command::new(&exe)
+    let _child = std::process::Command::new(&exe)
         .arg("daemon")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
