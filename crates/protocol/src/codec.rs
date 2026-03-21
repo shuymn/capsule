@@ -95,6 +95,7 @@ mod tests {
             last_exit_code: 0,
             duration_ms: None,
             keymap: "main".to_owned(),
+            env_vars: vec![],
         }
     }
 

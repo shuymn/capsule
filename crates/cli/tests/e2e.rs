@@ -115,6 +115,7 @@ fn make_request(cwd: &str, generation: u64) -> Request {
         last_exit_code: 0,
         duration_ms: None,
         keymap: "main".to_owned(),
+        env_vars: vec![],
     }
 }
 
@@ -279,6 +280,7 @@ async fn test_e2e_connect_relay() -> Result<(), Box<dyn std::error::Error>> {
         last_exit_code: 0,
         duration_ms: None,
         keymap: "main".to_owned(),
+        env_vars: vec![],
     });
     let mut wire = req.to_wire();
     wire.push(b'\n');

@@ -95,6 +95,11 @@ pub struct Request {
     pub duration_ms: Option<u64>,
     /// Current zle keymap name.
     pub keymap: String,
+    /// Environment variables propagated from the shell (e.g. PATH).
+    ///
+    /// Wire format: `KEY=VALUE\0KEY=VALUE\0...` in the meta field (field\[9\]).
+    /// Empty when the client does not send env vars (backward compatible).
+    pub env_vars: Vec<(String, String)>,
 }
 
 /// Immediate response from the daemon with fast module outputs.
@@ -201,7 +206,8 @@ impl Request {
             None => netstring::encode_into(&mut buf, b""),
         }
         netstring::encode_into(&mut buf, self.keymap.as_bytes());
-        netstring::encode_into(&mut buf, b""); // meta (reserved)
+        let meta = encode_env_vars(&self.env_vars);
+        netstring::encode_into(&mut buf, &meta);
         buf
     }
 }
@@ -344,6 +350,48 @@ fn parse_field<T: std::str::FromStr>(field: &[u8], name: &'static str) -> Result
     })
 }
 
+/// Encode env vars as `KEY=VALUE\0KEY=VALUE\0...` bytes.
+fn encode_env_vars(vars: &[(String, String)]) -> Vec<u8> {
+    if vars.is_empty() {
+        return Vec::new();
+    }
+    let cap: usize = vars
+        .iter()
+        .map(|(k, v)| k.len() + 1 + v.len())
+        .sum::<usize>()
+        + vars.len().saturating_sub(1);
+    let mut buf = Vec::with_capacity(cap);
+    for (i, (key, value)) in vars.iter().enumerate() {
+        if i > 0 {
+            buf.push(0); // null separator
+        }
+        buf.extend_from_slice(key.as_bytes());
+        buf.push(b'=');
+        buf.extend_from_slice(value.as_bytes());
+    }
+    buf
+}
+
+/// Decode env vars from `KEY=VALUE\0KEY=VALUE\0...` bytes.
+/// Empty input returns an empty vec (backward compatible with old clients).
+fn decode_env_vars(field: &[u8]) -> Vec<(String, String)> {
+    if field.is_empty() {
+        return Vec::new();
+    }
+    let mut vars = Vec::with_capacity(4);
+    for part in field.split(|&b| b == 0) {
+        if let Some(eq_pos) = part.iter().position(|&b| b == b'=')
+            && let (Ok(key), Ok(value)) = (
+                std::str::from_utf8(&part[..eq_pos]),
+                std::str::from_utf8(&part[eq_pos + 1..]),
+            )
+        {
+            vars.push((key.to_owned(), value.to_owned()));
+        }
+    }
+    vars
+}
+
 fn parse_opt_u64(field: &[u8], name: &'static str) -> Result<Option<u64>, ProtocolError> {
     if field.is_empty() {
         return Ok(None);
@@ -379,7 +427,7 @@ impl Request {
             last_exit_code: parse_field::<i32>(fields[6], "last_exit_code")?,
             duration_ms: parse_opt_u64(fields[7], "duration_ms")?,
             keymap: field_to_string(fields[8], "keymap")?,
-            // fields[9] = meta (ignored)
+            env_vars: decode_env_vars(fields[9]),
         })
     }
 }
@@ -480,6 +528,7 @@ mod tests {
             last_exit_code: 0,
             duration_ms: Some(1500),
             keymap: "main".to_owned(),
+            env_vars: vec![],
         }
     }
 
@@ -584,6 +633,39 @@ mod tests {
     fn test_request_with_utf8_cwd() -> Result<(), ProtocolError> {
         let mut req = sample_request();
         req.cwd = "/home/ユーザー/プロジェクト".to_owned();
+        let wire = req.to_wire();
+        let parsed = Message::from_wire(&wire)?;
+        assert_eq!(parsed, Message::Request(req));
+        Ok(())
+    }
+
+    #[test]
+    fn test_request_with_env_vars() -> Result<(), ProtocolError> {
+        let mut req = sample_request();
+        req.env_vars = vec![("PATH".to_owned(), "/usr/local/bin:/usr/bin".to_owned())];
+        let wire = req.to_wire();
+        let parsed = Message::from_wire(&wire)?;
+        assert_eq!(parsed, Message::Request(req));
+        Ok(())
+    }
+
+    #[test]
+    fn test_request_with_multiple_env_vars() -> Result<(), ProtocolError> {
+        let mut req = sample_request();
+        req.env_vars = vec![
+            ("PATH".to_owned(), "/usr/local/bin:/usr/bin".to_owned()),
+            ("HOME".to_owned(), "/home/user".to_owned()),
+        ];
+        let wire = req.to_wire();
+        let parsed = Message::from_wire(&wire)?;
+        assert_eq!(parsed, Message::Request(req));
+        Ok(())
+    }
+
+    #[test]
+    fn test_request_empty_env_vars_backward_compat() -> Result<(), ProtocolError> {
+        let req = sample_request();
+        assert!(req.env_vars.is_empty());
         let wire = req.to_wire();
         let parsed = Message::from_wire(&wire)?;
         assert_eq!(parsed, Message::Request(req));
@@ -719,5 +801,136 @@ mod tests {
         wire.extend_from_slice(&netstring::encode(b""));
         let result = Message::from_wire(&wire);
         assert!(matches!(result, Err(ProtocolError::InvalidField { .. })));
+    }
+
+    // -- Env var edge cases --
+
+    #[test]
+    fn test_request_env_vars_empty_key() -> Result<(), ProtocolError> {
+        let mut req = sample_request();
+        req.env_vars = vec![(String::new(), "value".to_owned())];
+        let wire = req.to_wire();
+        let parsed = Message::from_wire(&wire)?;
+        assert_eq!(parsed, Message::Request(req));
+        Ok(())
+    }
+
+    #[test]
+    fn test_request_env_vars_empty_value() -> Result<(), ProtocolError> {
+        let mut req = sample_request();
+        req.env_vars = vec![("PATH".to_owned(), String::new())];
+        let wire = req.to_wire();
+        let parsed = Message::from_wire(&wire)?;
+        assert_eq!(parsed, Message::Request(req));
+        Ok(())
+    }
+
+    #[test]
+    fn test_request_env_vars_empty_key_and_value() -> Result<(), ProtocolError> {
+        let mut req = sample_request();
+        req.env_vars = vec![(String::new(), String::new())];
+        let wire = req.to_wire();
+        let parsed = Message::from_wire(&wire)?;
+        assert_eq!(parsed, Message::Request(req));
+        Ok(())
+    }
+
+    #[test]
+    fn test_request_env_vars_value_contains_equals() -> Result<(), ProtocolError> {
+        let mut req = sample_request();
+        req.env_vars = vec![("PATH".to_owned(), "/usr/bin:dir=with=equals".to_owned())];
+        let wire = req.to_wire();
+        let parsed = Message::from_wire(&wire)?;
+        assert_eq!(parsed, Message::Request(req));
+        Ok(())
+    }
+
+    #[test]
+    fn test_request_env_vars_large_value() -> Result<(), ProtocolError> {
+        let mut req = sample_request();
+        req.env_vars = vec![("PATH".to_owned(), "/usr/local/bin:".repeat(500))];
+        let wire = req.to_wire();
+        let parsed = Message::from_wire(&wire)?;
+        assert_eq!(parsed, Message::Request(req));
+        Ok(())
+    }
+
+    #[test]
+    fn test_request_env_vars_shell_metacharacters() -> Result<(), ProtocolError> {
+        let mut req = sample_request();
+        req.env_vars = vec![(
+            "PATH".to_owned(),
+            "/usr/bin;rm -rf /:$(evil):`evil`:$((1+1))".to_owned(),
+        )];
+        let wire = req.to_wire();
+        let parsed = Message::from_wire(&wire)?;
+        assert_eq!(parsed, Message::Request(req));
+        Ok(())
+    }
+
+    // -- Env var wire-level edge cases (hand-crafted bytes) --
+
+    /// Build a 10-field Q message from raw bytes with a custom meta field,
+    /// then decode it and return the `env_vars`.
+    fn decode_env_vars_from_wire(meta: &[u8]) -> Result<Vec<(String, String)>, ProtocolError> {
+        let mut wire = Vec::new();
+        netstring::encode_into(&mut wire, b"1");
+        netstring::encode_into(&mut wire, b"Q");
+        netstring::encode_into(&mut wire, b"0123456789abcdef");
+        netstring::encode_into(&mut wire, b"1");
+        netstring::encode_into(&mut wire, b"/tmp");
+        netstring::encode_into(&mut wire, b"80");
+        netstring::encode_into(&mut wire, b"0");
+        netstring::encode_into(&mut wire, b"");
+        netstring::encode_into(&mut wire, b"main");
+        netstring::encode_into(&mut wire, meta);
+        let Message::Request(req) = Message::from_wire(&wire)? else {
+            return Ok(vec![]);
+        };
+        Ok(req.env_vars)
+    }
+
+    /// Null byte in the wire meta field splits into separate entries.
+    /// Rust `String` cannot contain null bytes, so the encoder never produces
+    /// this — the decoder handles it consistently by treating null as separator.
+    #[test]
+    fn test_request_env_vars_null_byte_in_wire() -> Result<(), ProtocolError> {
+        let vars = decode_env_vars_from_wire(b"PATH=/usr/bin\0INJECT=evil")?;
+        assert_eq!(vars.len(), 2);
+        assert_eq!(vars[0], ("PATH".to_owned(), "/usr/bin".to_owned()));
+        assert_eq!(vars[1], ("INJECT".to_owned(), "evil".to_owned()));
+        Ok(())
+    }
+
+    #[test]
+    fn test_request_env_vars_non_utf8_in_wire() -> Result<(), ProtocolError> {
+        let vars = decode_env_vars_from_wire(b"PATH=\xff\xfe/usr/bin")?;
+        assert!(vars.is_empty(), "non-UTF-8 entries should be dropped");
+        Ok(())
+    }
+
+    #[test]
+    fn test_request_env_vars_old_client_empty_meta() -> Result<(), ProtocolError> {
+        let vars = decode_env_vars_from_wire(b"")?;
+        assert!(
+            vars.is_empty(),
+            "empty meta must decode to empty env_vars for backward compat"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_request_env_vars_bare_equals_in_wire() -> Result<(), ProtocolError> {
+        let vars = decode_env_vars_from_wire(b"=")?;
+        assert_eq!(vars.len(), 1);
+        assert_eq!(vars[0], (String::new(), String::new()));
+        Ok(())
+    }
+
+    #[test]
+    fn test_request_env_vars_no_equals_in_wire() -> Result<(), ProtocolError> {
+        let vars = decode_env_vars_from_wire(b"MALFORMED_NO_EQUALS")?;
+        assert!(vars.is_empty(), "entry without '=' should be dropped");
+        Ok(())
     }
 }
