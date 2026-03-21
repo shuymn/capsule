@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::render::style::Color;
+use crate::render::style::{Color, ColorMap, Style};
 
 /// Top-level configuration.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -25,9 +25,44 @@ pub struct Config {
     pub connectors: ConnectorConfig,
     /// Timeout settings for module execution.
     pub timeout: TimeoutConfig,
+    /// Mapping from symbolic colors to concrete ANSI foreground codes.
+    pub color_map: ColorMap,
     /// User-defined prompt modules (`[[module]]` array).
     #[serde(default)]
     pub module: Vec<ModuleDef>,
+}
+
+/// A partially specified prompt style override.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(default)]
+pub struct StyleConfig {
+    /// Optional symbolic foreground color.
+    pub fg: Option<Color>,
+    /// Optional bold override.
+    pub bold: Option<bool>,
+    /// Optional dimmed override.
+    pub dimmed: Option<bool>,
+}
+
+impl StyleConfig {
+    #[expect(
+        clippy::missing_const_for_fn,
+        reason = "Option equality is not const-stable on the current toolchain"
+    )]
+    #[must_use]
+    pub fn resolve(&self, base: Style) -> Style {
+        let mut style = base;
+        if let Some(color) = self.fg {
+            style = style.fg(color);
+        }
+        if matches!(self.bold, Some(true)) {
+            style = style.bold();
+        }
+        if matches!(self.dimmed, Some(true)) {
+            style = style.dimmed();
+        }
+        style
+    }
 }
 
 /// Character prompt settings.
@@ -40,6 +75,10 @@ pub struct CharacterConfig {
     pub success_color: Color,
     /// Color when last command failed.
     pub error_color: Color,
+    /// Structured style override for the success glyph.
+    pub success_style: StyleConfig,
+    /// Structured style override for the error glyph.
+    pub error_style: StyleConfig,
 }
 
 impl Default for CharacterConfig {
@@ -48,7 +87,22 @@ impl Default for CharacterConfig {
             glyph: "\u{276f}".to_owned(),
             success_color: Color::Green,
             error_color: Color::Red,
+            success_style: StyleConfig::default(),
+            error_style: StyleConfig::default(),
         }
+    }
+}
+
+impl CharacterConfig {
+    #[must_use]
+    pub fn success_prompt_style(&self) -> Style {
+        self.success_style
+            .resolve(Style::new().fg(self.success_color))
+    }
+
+    #[must_use]
+    pub fn error_prompt_style(&self) -> Style {
+        self.error_style.resolve(Style::new().fg(self.error_color))
     }
 }
 
@@ -58,11 +112,39 @@ impl Default for CharacterConfig {
 pub struct DirectoryConfig {
     /// Foreground color for the directory path (bold is always applied).
     pub color: Color,
+    /// Structured style override for the directory path.
+    pub style: StyleConfig,
+    /// Structured style override for the readonly lock indicator.
+    pub read_only_style: StyleConfig,
 }
 
 impl Default for DirectoryConfig {
     fn default() -> Self {
-        Self { color: Color::Cyan }
+        Self {
+            color: Color::Cyan,
+            style: StyleConfig {
+                fg: None,
+                bold: Some(true),
+                dimmed: None,
+            },
+            read_only_style: StyleConfig {
+                fg: Some(Color::Red),
+                bold: None,
+                dimmed: None,
+            },
+        }
+    }
+}
+
+impl DirectoryConfig {
+    #[must_use]
+    pub fn prompt_style(&self) -> Style {
+        self.style.resolve(Style::new().fg(self.color))
+    }
+
+    #[must_use]
+    pub fn read_only_prompt_style(&self) -> Style {
+        self.read_only_style.resolve(Style::new())
     }
 }
 
@@ -74,6 +156,10 @@ pub struct GitConfig {
     pub icon: String,
     /// Color for the bracket indicators (bold is always applied).
     pub indicator_color: Color,
+    /// Structured style override for the branch text and icon.
+    pub style: StyleConfig,
+    /// Structured style override for status indicators.
+    pub indicator_style: StyleConfig,
 }
 
 impl Default for GitConfig {
@@ -81,16 +167,41 @@ impl Default for GitConfig {
         Self {
             icon: "\u{f418}".to_owned(),
             indicator_color: Color::Red,
+            style: StyleConfig {
+                fg: Some(Color::Magenta),
+                bold: Some(true),
+                dimmed: None,
+            },
+            indicator_style: StyleConfig {
+                fg: None,
+                bold: Some(true),
+                dimmed: None,
+            },
         }
     }
 }
 
+impl GitConfig {
+    #[must_use]
+    pub fn prompt_style(&self) -> Style {
+        self.style.resolve(Style::new())
+    }
+
+    #[must_use]
+    pub fn indicator_prompt_style(&self) -> Style {
+        self.indicator_style
+            .resolve(Style::new().fg(self.indicator_color))
+    }
+}
+
 /// Supported time display formats.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display, strum::EnumString)]
 pub enum TimeFormat {
     /// `HH:MM:SS` — hours, minutes, seconds.
+    #[strum(serialize = "HH:MM:SS")]
     WithSeconds,
     /// `HH:MM` — hours and minutes only.
+    #[strum(serialize = "HH:MM")]
     WithoutSeconds,
 }
 
@@ -107,27 +218,14 @@ impl<'de> serde::Deserialize<'de> for TimeFormat {
     where
         D: serde::Deserializer<'de>,
     {
-        struct Visitor;
-
-        impl serde::de::Visitor<'_> for Visitor {
-            type Value = TimeFormat;
-
-            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str("\"HH:MM:SS\" or \"HH:MM\"")
-            }
-
-            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
-                match v {
-                    "HH:MM:SS" => Ok(TimeFormat::WithSeconds),
-                    "HH:MM" => Ok(TimeFormat::WithoutSeconds),
-                    _ => Err(E::custom(format!(
-                        "unsupported time format `{v}`, expected \"HH:MM:SS\" or \"HH:MM\""
-                    ))),
-                }
-            }
-        }
-
-        deserializer.deserialize_str(Visitor)
+        let value = String::deserialize(deserializer)?;
+        value.parse().map_err(|error| {
+            serde::de::Error::custom(format!(
+                "unsupported time format `{value}`: {error}; expected \"{}\" or \"{}\"",
+                Self::WithSeconds,
+                Self::WithoutSeconds
+            ))
+        })
     }
 }
 
@@ -141,6 +239,8 @@ pub struct TimeConfig {
     pub format: TimeFormat,
     /// Foreground color for the time segment.
     pub color: Color,
+    /// Structured style override for the time segment.
+    pub style: StyleConfig,
 }
 
 impl Default for TimeConfig {
@@ -149,6 +249,7 @@ impl Default for TimeConfig {
             enabled: true,
             format: TimeFormat::WithSeconds,
             color: Color::Yellow,
+            style: StyleConfig::default(),
         }
     }
 }
@@ -158,6 +259,11 @@ impl TimeConfig {
     #[must_use]
     pub const fn show_seconds(&self) -> bool {
         self.format.show_seconds()
+    }
+
+    #[must_use]
+    pub fn prompt_style(&self) -> Style {
+        self.style.resolve(Style::new().fg(self.color))
     }
 }
 
@@ -169,6 +275,8 @@ pub struct CmdDurationConfig {
     pub threshold_ms: u64,
     /// Foreground color for the duration segment.
     pub color: Color,
+    /// Structured style override for the duration segment.
+    pub style: StyleConfig,
 }
 
 impl Default for CmdDurationConfig {
@@ -176,7 +284,15 @@ impl Default for CmdDurationConfig {
         Self {
             threshold_ms: 2000,
             color: Color::Yellow,
+            style: StyleConfig::default(),
         }
+    }
+}
+
+impl CmdDurationConfig {
+    #[must_use]
+    pub fn prompt_style(&self) -> Style {
+        self.style.resolve(Style::new().fg(self.color))
     }
 }
 
@@ -316,6 +432,8 @@ pub struct ConnectorConfig {
     pub time: String,
     /// Connector before `cmd_duration` segment.
     pub cmd_duration: String,
+    /// Structured style override for all connector words.
+    pub style: StyleConfig,
 }
 
 impl Default for ConnectorConfig {
@@ -324,7 +442,15 @@ impl Default for ConnectorConfig {
             git: "on".to_owned(),
             time: "at".to_owned(),
             cmd_duration: "took".to_owned(),
+            style: StyleConfig::default(),
         }
+    }
+}
+
+impl ConnectorConfig {
+    #[must_use]
+    pub fn prompt_style(&self) -> Style {
+        self.style.resolve(Style::new())
     }
 }
 
@@ -436,6 +562,7 @@ mod tests {
         assert_eq!(config.connectors.git, "on");
         assert_eq!(config.connectors.time, "at");
         assert_eq!(config.connectors.cmd_duration, "took");
+        assert_eq!(config.color_map, ColorMap::default());
     }
 
     #[test]
@@ -630,6 +757,80 @@ indicator_color = "yellow"
         let config = load_config(&path);
         assert_eq!(config.git.icon, "");
         assert_eq!(config.git.indicator_color, Color::Yellow);
+        Ok(())
+    }
+
+    #[test]
+    fn test_config_style_defaults_match_current_prompt_theme() {
+        let config = Config::default();
+        assert_eq!(config.character.success_style.fg, None);
+        assert_eq!(config.character.error_style.fg, None);
+        assert_eq!(config.directory.style.bold, Some(true));
+        assert_eq!(config.directory.style.fg, None);
+        assert_eq!(config.directory.read_only_style.fg, Some(Color::Red));
+        assert_eq!(config.git.style.fg, Some(Color::Magenta));
+        assert_eq!(config.git.style.bold, Some(true));
+        assert_eq!(config.git.indicator_style.fg, None);
+        assert_eq!(config.git.indicator_style.bold, Some(true));
+        assert_eq!(config.time.style.fg, None);
+        assert_eq!(config.cmd_duration.style.fg, None);
+        assert_eq!(config.connectors.style.fg, None);
+        assert_eq!(config.color_map.red, 31);
+        assert_eq!(config.color_map.bright_black, 90);
+    }
+
+    #[test]
+    fn test_config_style_overrides_and_color_map() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[directory.style]
+fg = "blue"
+bold = false
+dimmed = true
+
+[directory.read_only_style]
+fg = "yellow"
+bold = true
+
+[connectors.style]
+fg = "bright_black"
+dimmed = true
+
+[color_map]
+blue = 94
+bright_black = 37
+"#,
+        )?;
+        let config = read_config(&path)?.ok_or("config missing")?;
+        assert_eq!(config.directory.style.fg, Some(Color::Blue));
+        assert_eq!(config.directory.style.bold, Some(false));
+        assert_eq!(config.directory.style.dimmed, Some(true));
+        assert_eq!(config.directory.read_only_style.fg, Some(Color::Yellow));
+        assert_eq!(config.directory.read_only_style.bold, Some(true));
+        assert_eq!(config.connectors.style.fg, Some(Color::BrightBlack));
+        assert_eq!(config.connectors.style.dimmed, Some(true));
+        assert_eq!(config.color_map.blue, 94);
+        assert_eq!(config.color_map.bright_black, 37);
+        Ok(())
+    }
+
+    #[test]
+    fn test_config_invalid_color_map_code_fails_loading() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r"
+[color_map]
+red = 38
+",
+        )?;
+        let result = read_config(&path);
+        assert!(matches!(result, Err(ConfigLoadError::Parse { .. })));
         Ok(())
     }
 

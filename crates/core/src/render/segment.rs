@@ -4,7 +4,7 @@
 //! icon, and style. The composition layer builds segments from module
 //! outputs and renders them left-to-right.
 
-use super::style::Style;
+use super::style::{ColorMap, Style};
 
 /// A connector word displayed before a segment (e.g., "on", "via", "at").
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,21 +46,21 @@ impl Segment {
     ///
     /// Parts are separated by single spaces and absent parts are omitted.
     #[must_use]
-    pub(crate) fn render(&self) -> String {
+    pub(crate) fn render(&self, color_map: ColorMap) -> String {
         let mut out = String::with_capacity(self.content.len() + 32);
 
         if let Some(ref conn) = self.connector {
-            out.push_str(&conn.style.paint(&conn.word));
+            out.push_str(&conn.style.paint_with(&conn.word, color_map));
             out.push(' ');
         }
 
         if let Some(ref icon) = self.icon {
-            out.push_str(&icon.style.paint(&icon.glyph));
+            out.push_str(&icon.style.paint_with(&icon.glyph, color_map));
             out.push(' ');
         }
 
         if let Some(ref style) = self.content_style {
-            out.push_str(&style.paint(&self.content));
+            out.push_str(&style.paint_with(&self.content, color_map));
         } else {
             out.push_str(&self.content);
         }
@@ -72,7 +72,17 @@ impl Segment {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::{layout::display_width, style::Color};
+    use crate::{
+        render::{
+            layout::display_width,
+            style::{Color, ColorMap},
+        },
+        test_utils::contains_style_sequence,
+    };
+
+    fn default_color_map() -> ColorMap {
+        ColorMap::default()
+    }
 
     #[test]
     fn test_segment_content_only() {
@@ -82,7 +92,7 @@ mod tests {
             icon: None,
             content_style: None,
         };
-        assert_eq!(seg.render(), "hello");
+        assert_eq!(seg.render(default_color_map()), "hello");
     }
 
     #[test]
@@ -93,10 +103,10 @@ mod tests {
             icon: None,
             content_style: Some(Style::new().fg(Color::Cyan).bold()),
         };
-        let rendered = seg.render();
+        let rendered = seg.render(default_color_map());
         assert!(rendered.contains("dir"), "should contain content");
         assert!(
-            rendered.contains("\x1b[1;36m"),
+            contains_style_sequence(&rendered, &[1, 36]),
             "should contain bold cyan: {rendered}"
         );
     }
@@ -112,7 +122,7 @@ mod tests {
             icon: None,
             content_style: None,
         };
-        let rendered = seg.render();
+        let rendered = seg.render(default_color_map());
         assert!(rendered.contains("on"), "should contain connector");
         assert!(rendered.contains("main"), "should contain content");
         // Connector styled dimmed, then space, then content
@@ -133,7 +143,7 @@ mod tests {
             }),
             content_style: None,
         };
-        let rendered = seg.render();
+        let rendered = seg.render(default_color_map());
         assert!(rendered.contains(""), "should contain icon");
         assert!(rendered.contains("main"), "should contain content");
     }
@@ -152,7 +162,7 @@ mod tests {
             }),
             content_style: Some(Style::new().fg(Color::Magenta).bold()),
         };
-        let rendered = seg.render();
+        let rendered = seg.render(default_color_map());
         assert!(rendered.contains("on"), "should contain connector");
         assert!(rendered.contains(""), "should contain icon");
         assert!(rendered.contains("main"), "should contain content");
@@ -172,7 +182,7 @@ mod tests {
             }),
             content_style: Some(Style::new().fg(Color::Cyan)),
         };
-        let rendered = seg.render();
+        let rendered = seg.render(default_color_map());
         // "on" (2) + " " (1) + "*" (1) + " " (1) + "dir" (3) = 8
         assert_eq!(
             display_width(&rendered),
@@ -190,7 +200,7 @@ mod tests {
             icon: None,
             content_style: None, // pre-styled, no additional style
         };
-        assert_eq!(seg.render(), pre_styled);
+        assert_eq!(seg.render(default_color_map()), pre_styled);
     }
 
     #[test]
@@ -204,10 +214,36 @@ mod tests {
             icon: None,
             content_style: None,
         };
-        let rendered = seg.render();
+        let rendered = seg.render(default_color_map());
         assert!(
             rendered.contains("\x1b[90m"),
             "connector should use bright black ANSI code: {rendered}"
+        );
+    }
+
+    #[test]
+    fn test_segment_uses_custom_color_map() {
+        let seg = Segment {
+            content: "dir".to_owned(),
+            connector: Some(Connector {
+                word: "on".to_owned(),
+                style: Style::new().fg(Color::BrightBlack),
+            }),
+            icon: None,
+            content_style: Some(Style::new().fg(Color::Blue)),
+        };
+        let rendered = seg.render(ColorMap {
+            blue: 94,
+            bright_black: 37,
+            ..ColorMap::default()
+        });
+        assert!(
+            rendered.contains("\x1b[37m"),
+            "connector remap missing: {rendered}"
+        );
+        assert!(
+            rendered.contains("\x1b[94m"),
+            "content remap missing: {rendered}"
         );
     }
 }

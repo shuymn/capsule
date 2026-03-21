@@ -320,12 +320,15 @@ async fn handle_request<G: GitProvider + Send + 'static>(
 
         // Single PathBuf allocation shared by git and custom module tasks.
         let git_cwd = facts.cwd().to_path_buf();
-        let indicator_color = slow_config.git.indicator_color;
+        let git_style = slow_config.git.prompt_style();
+        let indicator_style = slow_config.git.indicator_prompt_style();
+        let color_map = slow_config.color_map;
         let git_provider = ctx.git_provider;
         let git_path_env = facts.command_path_env().map(ToOwned::to_owned);
         let mut git_set = JoinSet::new();
         git_set.spawn_blocking(move || {
-            let module = GitModule::with_indicator_color(git_provider, indicator_color);
+            let module =
+                GitModule::with_styles(git_provider, git_style, indicator_style, color_map);
             module
                 .render_for_cwd(&git_cwd, git_path_env.as_deref())
                 .map(|output| output.content)
@@ -496,6 +499,7 @@ mod tests {
     use crate::{
         config::{Config, ModuleDef, ModuleWhen, SourceDef, TimeoutConfig},
         module::GitStatus,
+        test_utils::contains_style_sequence,
     };
 
     const HOT_RELOAD_WAIT: Duration = Duration::from_millis(20);
@@ -881,7 +885,7 @@ mod tests {
             Some(Message::Update(update)) => {
                 assert!(update.left1.contains("main"));
                 assert!(
-                    update.left1.contains("\x1b[1;32m"),
+                    contains_style_sequence(&update.left1, &[1, 32]),
                     "updated prompt should use reloaded git style: {}",
                     update.left1
                 );
@@ -1274,7 +1278,7 @@ mod tests {
                     update.left1
                 );
                 assert!(
-                    update.left1.contains("\x1b[1;32m"),
+                    contains_style_sequence(&update.left1, &[1, 32]),
                     "Update should use green style from reloaded config: {}",
                     update.left1
                 );

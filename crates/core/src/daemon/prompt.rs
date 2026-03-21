@@ -6,7 +6,7 @@ use crate::{
     render::{
         PromptLines, compose_segments,
         segment::{Connector, Icon, Segment},
-        style::{Color, Style},
+        style::Style,
     },
 };
 
@@ -58,12 +58,10 @@ pub(super) fn run_fast_modules(
     }
 }
 
-const CONNECTOR_STYLE: Style = Style::new();
-
-fn make_connector(word: &str) -> Connector {
+fn make_connector(word: &str, style: Style) -> Connector {
     Connector {
         word: word.to_owned(),
-        style: CONNECTOR_STYLE,
+        style,
     }
 }
 
@@ -74,8 +72,15 @@ fn make_icon(glyph: &str, style: Style) -> Icon {
     }
 }
 
-fn push_custom_module_segment(segments: &mut Vec<Segment>, module: &CustomModuleInfo) {
-    let connector = module.connector.as_deref().map(make_connector);
+fn push_custom_module_segment(
+    segments: &mut Vec<Segment>,
+    module: &CustomModuleInfo,
+    connector_style: Style,
+) {
+    let connector = module
+        .connector
+        .as_deref()
+        .map(|word| make_connector(word, connector_style));
     let icon = module
         .icon
         .as_deref()
@@ -97,14 +102,19 @@ pub(super) fn compose_prompt(
     cols: usize,
     config: &Config,
 ) -> PromptLines {
-    let dir_style = Style::new().fg(config.directory.color).bold();
+    let connector_style = config.connectors.prompt_style();
+    let dir_style = config.directory.prompt_style();
 
     let mut line1 = Vec::with_capacity(4);
 
     if let Some(dir) = &fast.directory {
         if fast.read_only {
-            let lock_style = Style::new().fg(Color::Red);
-            let content = format!("{} {}", dir_style.paint(dir), lock_style.paint("\u{f023}"));
+            let lock_style = config.directory.read_only_prompt_style();
+            let content = format!(
+                "{} {}",
+                dir_style.paint_with(dir, config.color_map),
+                lock_style.paint_with("\u{f023}", config.color_map)
+            );
             line1.push(Segment {
                 content,
                 connector: None,
@@ -124,27 +134,30 @@ pub(super) fn compose_prompt(
     if let Some(git) = slow.and_then(|output| output.git.as_deref()) {
         line1.push(Segment {
             content: git.to_owned(),
-            connector: Some(make_connector(&config.connectors.git)),
-            icon: Some(make_icon(&config.git.icon, Style::new().fg(Color::Magenta))),
+            connector: Some(make_connector(&config.connectors.git, connector_style)),
+            icon: Some(make_icon(&config.git.icon, config.git.prompt_style())),
             content_style: None,
         });
     }
 
     for module in &fast.custom_modules {
-        push_custom_module_segment(&mut line1, module);
+        push_custom_module_segment(&mut line1, module, connector_style);
     }
     if let Some(custom_modules) = slow.map(|output| &output.custom_modules) {
         for module in custom_modules {
-            push_custom_module_segment(&mut line1, module);
+            push_custom_module_segment(&mut line1, module, connector_style);
         }
     }
 
     if let Some(duration) = &fast.cmd_duration {
         line1.push(Segment {
             content: duration.clone(),
-            connector: Some(make_connector(&config.connectors.cmd_duration)),
+            connector: Some(make_connector(
+                &config.connectors.cmd_duration,
+                connector_style,
+            )),
             icon: None,
-            content_style: Some(Style::new().fg(config.cmd_duration.color)),
+            content_style: Some(config.cmd_duration.prompt_style()),
         });
     }
 
@@ -153,17 +166,17 @@ pub(super) fn compose_prompt(
     if let Some(time) = &fast.time {
         line2.push(Segment {
             content: time.clone(),
-            connector: Some(make_connector(&config.connectors.time)),
+            connector: Some(make_connector(&config.connectors.time, connector_style)),
             icon: None,
-            content_style: Some(Style::new().fg(config.time.color)),
+            content_style: Some(config.time.prompt_style()),
         });
     }
 
     if let Some(character) = &fast.character {
         let char_style = if fast.last_exit_code == 0 {
-            Style::new().fg(config.character.success_color)
+            config.character.success_prompt_style()
         } else {
-            Style::new().fg(config.character.error_color)
+            config.character.error_prompt_style()
         };
         line2.push(Segment {
             content: character.clone(),
@@ -173,13 +186,16 @@ pub(super) fn compose_prompt(
         });
     }
 
-    compose_segments(&line1, &line2, cols)
+    compose_segments(&line1, &line2, cols, config.color_map)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{config::Config, module::resolve_modules};
+    use crate::{
+        config::Config, module::resolve_modules, render::style::Color,
+        test_utils::contains_style_sequence,
+    };
 
     fn default_config() -> Config {
         Config::default()
@@ -280,7 +296,7 @@ mod tests {
         let fast = make_fast_outputs();
         let lines = compose_prompt(&fast, None, 80, &default_config());
         assert!(
-            lines.left1.contains("\x1b[1;36m"),
+            contains_style_sequence(&lines.left1, &[1, 36]),
             "directory should be bold cyan: {}",
             lines.left1
         );
@@ -345,7 +361,7 @@ mod tests {
         };
         let lines = compose_prompt(&fast, Some(&slow), 80, &default_config());
         assert!(
-            lines.left1.contains("\x1b[1;31m"),
+            contains_style_sequence(&lines.left1, &[1, 31]),
             "rust toolchain should use bold red: {}",
             lines.left1
         );
@@ -475,7 +491,7 @@ mod tests {
             lines.left2
         );
         assert!(
-            lines.left1.contains("\x1b[1;31m"),
+            contains_style_sequence(&lines.left1, &[1, 31]),
             "rust toolchain should use bold red: {}",
             lines.left1
         );
@@ -595,7 +611,7 @@ mod tests {
         config.directory.color = Color::Green;
         let lines = compose_prompt(&fast, None, 80, &config);
         assert!(
-            lines.left1.contains("\x1b[1;32m"),
+            contains_style_sequence(&lines.left1, &[1, 32]),
             "directory should use bold green: {}",
             lines.left1
         );
@@ -683,6 +699,79 @@ mod tests {
             lines.left1.contains("\x1b[31m"),
             "cmd_duration should use red: {}",
             lines.left1
+        );
+    }
+
+    #[test]
+    fn test_daemon_compose_prompt_applies_structured_styles_and_color_map() {
+        let fast = FastOutputs {
+            time: Some("14:30:45".to_owned()),
+            cmd_duration: Some("3s".to_owned()),
+            read_only: true,
+            ..make_fast_outputs()
+        };
+        let slow = SlowOutput {
+            git: Some("main [!+]".to_owned()),
+            custom_modules: vec![make_toolchain_module("rust", "v1.82.0")],
+        };
+        let mut config = default_config();
+        config.directory.style.fg = Some(Color::Blue);
+        config.directory.style.bold = Some(false);
+        config.directory.read_only_style.fg = Some(Color::Yellow);
+        config.directory.read_only_style.bold = Some(true);
+        config.git.style.fg = Some(Color::Cyan);
+        config.git.style.bold = Some(false);
+        config.git.indicator_style.fg = Some(Color::Yellow);
+        config.git.indicator_style.bold = Some(false);
+        config.time.style.fg = Some(Color::Blue);
+        config.time.style.dimmed = Some(true);
+        config.cmd_duration.style.fg = Some(Color::Yellow);
+        config.cmd_duration.style.bold = Some(true);
+        config.character.success_style.fg = Some(Color::Magenta);
+        config.character.success_style.bold = Some(true);
+        config.connectors.style.fg = Some(Color::BrightBlack);
+        config.connectors.style.dimmed = Some(true);
+        config.color_map.blue = 94;
+        config.color_map.yellow = 93;
+        config.color_map.magenta = 95;
+        config.color_map.cyan = 96;
+        config.color_map.bright_black = 37;
+
+        let lines = compose_prompt(&fast, Some(&slow), 120, &config);
+
+        assert!(
+            lines.left1.contains("\x1b[94m"),
+            "directory should use remapped blue: {}",
+            lines.left1
+        );
+        assert!(
+            contains_style_sequence(&lines.left1, &[1, 93])
+                || contains_style_sequence(&lines.left1, &[93, 1]),
+            "read-only lock should use bold remapped yellow: {}",
+            lines.left1
+        );
+        assert!(
+            lines.left1.contains("\x1b[96m"),
+            "git branch/icon should use remapped cyan: {}",
+            lines.left1
+        );
+        assert!(
+            contains_style_sequence(&lines.left1, &[37, 2])
+                || contains_style_sequence(&lines.left1, &[2, 37]),
+            "connectors should use configured dimmed bright_black mapping: {}",
+            lines.left1
+        );
+        assert!(
+            contains_style_sequence(&lines.left2, &[2, 94])
+                || contains_style_sequence(&lines.left2, &[94, 2]),
+            "time should use dimmed remapped blue: {}",
+            lines.left2
+        );
+        assert!(
+            contains_style_sequence(&lines.left2, &[1, 95])
+                || contains_style_sequence(&lines.left2, &[95, 1]),
+            "character should use bold remapped magenta: {}",
+            lines.left2
         );
     }
 }

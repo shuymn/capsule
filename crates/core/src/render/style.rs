@@ -3,7 +3,7 @@
 //! Produces strings with ANSI color codes wrapped in zsh `%{..%}` escapes
 //! so that zsh correctly calculates cursor position.
 
-use std::fmt::Write;
+use anstyle::{AnsiColor, Color as AnstyleColor, Effects, Style as AnstyleStyle};
 
 /// Terminal foreground colors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
@@ -23,6 +23,44 @@ pub enum Color {
     Cyan,
     /// Bright black / gray (ANSI 90).
     BrightBlack,
+}
+
+/// Foreground ANSI SGR codes for the supported symbolic colors.
+///
+/// Only classic/bright foreground codes are accepted. This keeps `color_map`
+/// aligned with the existing symbolic color vocabulary and preserves current
+/// defaults without introducing 256-color semantics.
+#[derive(Debug, Clone, Copy, serde::Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ColorMap {
+    #[serde(deserialize_with = "deserialize_foreground_code")]
+    pub red: u8,
+    #[serde(deserialize_with = "deserialize_foreground_code")]
+    pub green: u8,
+    #[serde(deserialize_with = "deserialize_foreground_code")]
+    pub yellow: u8,
+    #[serde(deserialize_with = "deserialize_foreground_code")]
+    pub blue: u8,
+    #[serde(deserialize_with = "deserialize_foreground_code")]
+    pub magenta: u8,
+    #[serde(deserialize_with = "deserialize_foreground_code")]
+    pub cyan: u8,
+    #[serde(deserialize_with = "deserialize_foreground_code")]
+    pub bright_black: u8,
+}
+
+impl Default for ColorMap {
+    fn default() -> Self {
+        Self {
+            red: 31,
+            green: 32,
+            yellow: 33,
+            blue: 34,
+            magenta: 35,
+            cyan: 36,
+            bright_black: 90,
+        }
+    }
 }
 
 /// A text style with optional foreground color, bold, and dimmed attributes.
@@ -70,51 +108,110 @@ impl Style {
     /// Returns `text` unchanged when no style attributes are set.
     #[must_use]
     pub fn paint(&self, text: &str) -> String {
+        self.paint_with(text, ColorMap::default())
+    }
+
+    /// Apply ANSI styling using a caller-provided symbolic color mapping.
+    #[must_use]
+    pub fn paint_with(&self, text: &str, color_map: ColorMap) -> String {
+        use std::fmt::Write;
+
         if self.fg.is_none() && !self.bold && !self.dimmed {
             return text.to_owned();
         }
 
-        let mut codes = String::with_capacity(8);
+        let mut result = String::with_capacity(text.len() + 24);
+        let style = self.to_anstyle(color_map);
+        result.push_str("%{");
+        let _ = write!(result, "{}", style.render());
+        result.push_str("%}");
+        result.push_str(text);
+        result.push_str("%{");
+        let _ = write!(result, "{}", style.render_reset());
+        result.push_str("%}");
+        result
+    }
+
+    fn to_anstyle(self, color_map: ColorMap) -> AnstyleStyle {
+        let mut style = AnstyleStyle::new();
+        if let Some(color) = self.fg {
+            style = style.fg_color(Some(color_map.anstyle_color(color)));
+        }
+        let mut effects = Effects::new();
         if self.bold {
-            codes.push('1');
+            effects |= Effects::BOLD;
         }
         if self.dimmed {
-            if !codes.is_empty() {
-                codes.push(';');
-            }
-            codes.push('2');
+            effects |= Effects::DIMMED;
         }
-        if let Some(color) = self.fg {
-            if !codes.is_empty() {
-                codes.push(';');
-            }
-            let _ = write!(codes, "{}", color.fg_code());
-        }
-
-        let mut result = String::with_capacity(text.len() + 24);
-        let _ = write!(result, "%{{\x1b[{codes}m%}}{text}%{{\x1b[0m%}}");
-        result
+        style.effects(effects)
     }
 }
 
-impl Color {
-    const fn fg_code(self) -> u8 {
-        match self {
-            Self::Red => 31,
-            Self::Green => 32,
-            Self::Yellow => 33,
-            Self::Blue => 34,
-            Self::Magenta => 35,
-            Self::Cyan => 36,
-            Self::BrightBlack => 90,
+impl ColorMap {
+    const fn fg_code(self, color: Color) -> u8 {
+        match color {
+            Color::Red => self.red,
+            Color::Green => self.green,
+            Color::Yellow => self.yellow,
+            Color::Blue => self.blue,
+            Color::Magenta => self.magenta,
+            Color::Cyan => self.cyan,
+            Color::BrightBlack => self.bright_black,
         }
     }
+
+    fn anstyle_color(self, color: Color) -> AnstyleColor {
+        AnstyleColor::Ansi(self.ansi_color(color))
+    }
+
+    fn ansi_color(self, color: Color) -> AnsiColor {
+        match self.fg_code(color) {
+            30 => AnsiColor::Black,
+            31 => AnsiColor::Red,
+            32 => AnsiColor::Green,
+            33 => AnsiColor::Yellow,
+            34 => AnsiColor::Blue,
+            35 => AnsiColor::Magenta,
+            36 => AnsiColor::Cyan,
+            37 => AnsiColor::White,
+            90 => AnsiColor::BrightBlack,
+            91 => AnsiColor::BrightRed,
+            92 => AnsiColor::BrightGreen,
+            93 => AnsiColor::BrightYellow,
+            94 => AnsiColor::BrightBlue,
+            95 => AnsiColor::BrightMagenta,
+            96 => AnsiColor::BrightCyan,
+            97 => AnsiColor::BrightWhite,
+            _ => unreachable!("color map validated at deserialization time"),
+        }
+    }
+}
+
+fn deserialize_foreground_code<'de, D>(deserializer: D) -> Result<u8, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let code = <u16 as serde::Deserialize>::deserialize(deserializer)?;
+    if is_valid_foreground_code(code) {
+        u8::try_from(code).map_err(|error| {
+            serde::de::Error::custom(format!("invalid ANSI foreground code `{code}`: {error}"))
+        })
+    } else {
+        Err(serde::de::Error::custom(format!(
+            "invalid ANSI foreground code `{code}`, expected one of 30..=37 or 90..=97"
+        )))
+    }
+}
+
+const fn is_valid_foreground_code(code: u16) -> bool {
+    (code >= 30 && code <= 37) || (code >= 90 && code <= 97)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::layout::display_width;
+    use crate::{render::layout::display_width, test_utils::contains_style_sequence};
 
     #[test]
     fn test_render_style_no_style() {
@@ -145,7 +242,7 @@ mod tests {
         let style = Style::new().fg(Color::Green).bold();
         let painted = style.paint("hello");
         assert!(
-            painted.contains("\x1b[1;32m"),
+            contains_style_sequence(&painted, &[1, 32]),
             "should contain bold+green ANSI code"
         );
     }
@@ -184,7 +281,7 @@ mod tests {
         let style = Style::new().fg(Color::Cyan).dimmed();
         let painted = style.paint("hello");
         assert!(
-            painted.contains("\x1b[2;36m"),
+            contains_style_sequence(&painted, &[2, 36]),
             "should contain dimmed+cyan ANSI code: {painted}"
         );
     }
@@ -207,6 +304,20 @@ mod tests {
         assert!(
             painted.contains("\x1b[90m"),
             "should contain bright black ANSI code: {painted}"
+        );
+    }
+
+    #[test]
+    fn test_render_style_uses_custom_color_map() {
+        let style = Style::new().fg(Color::Blue).bold();
+        let color_map = ColorMap {
+            blue: 94,
+            ..ColorMap::default()
+        };
+        let painted = style.paint_with("hello", color_map);
+        assert!(
+            contains_style_sequence(&painted, &[1, 94]),
+            "should contain remapped blue ANSI code: {painted}"
         );
     }
 }

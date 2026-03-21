@@ -11,7 +11,7 @@ pub mod style;
 
 pub use layout::{display_width, truncate};
 pub(crate) use segment::Segment;
-pub use style::{Color, Style};
+pub use style::{Color, ColorMap, Style};
 
 /// Composed prompt output ready for the wire protocol.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,15 +29,23 @@ pub struct PromptLines {
 /// (directory) is truncated. If still too wide, rightmost segments
 /// are dropped one at a time.
 #[must_use]
-pub(crate) fn compose_segments(line1: &[Segment], line2: &[Segment], cols: usize) -> PromptLines {
+pub(crate) fn compose_segments(
+    line1: &[Segment],
+    line2: &[Segment],
+    cols: usize,
+    color_map: ColorMap,
+) -> PromptLines {
     PromptLines {
-        left1: compose_line(line1, cols),
-        left2: compose_line(line2, cols),
+        left1: compose_line(line1, cols, color_map),
+        left2: compose_line(line2, cols, color_map),
     }
 }
 
-fn render_segments(segments: &[Segment]) -> Vec<String> {
-    segments.iter().map(Segment::render).collect()
+fn render_segments(segments: &[Segment], color_map: ColorMap) -> Vec<String> {
+    segments
+        .iter()
+        .map(|segment| segment.render(color_map))
+        .collect()
 }
 
 fn join_rendered(parts: &[String]) -> String {
@@ -51,12 +59,12 @@ fn join_rendered(parts: &[String]) -> String {
     out
 }
 
-fn compose_line(segments: &[Segment], cols: usize) -> String {
+fn compose_line(segments: &[Segment], cols: usize, color_map: ColorMap) -> String {
     if cols == 0 || segments.is_empty() {
         return String::new();
     }
 
-    let rendered = render_segments(segments);
+    let rendered = render_segments(segments, color_map);
     let joined = join_rendered(&rendered);
     let width = display_width(&joined);
 
@@ -145,6 +153,7 @@ mod tests {
             &[seg("dir"), seg_with_connector("main", "on")],
             &[seg("❯")],
             80,
+            ColorMap::default(),
         );
         assert!(
             result.left1.contains("dir"),
@@ -166,7 +175,12 @@ mod tests {
 
     #[test]
     fn test_compose_segments_left_aligned() {
-        let result = compose_segments(&[seg("dir"), seg("rust")], &[seg("❯")], 80);
+        let result = compose_segments(
+            &[seg("dir"), seg("rust")],
+            &[seg("❯")],
+            80,
+            ColorMap::default(),
+        );
         // No right-padding: display width should be less than cols
         assert!(
             display_width(&result.left1) < 80,
@@ -183,6 +197,7 @@ mod tests {
             &[seg("very/long/directory/path/here"), seg("git")],
             &[seg("❯")],
             15,
+            ColorMap::default(),
         );
         assert!(
             display_width(&result.left1) <= 15,
@@ -203,6 +218,7 @@ mod tests {
             &[seg("dir"), seg("segment-aaa"), seg("segment-bbb")],
             &[seg("❯")],
             20,
+            ColorMap::default(),
         );
         assert!(
             display_width(&result.left1) <= 20,
@@ -225,14 +241,14 @@ mod tests {
 
     #[test]
     fn test_compose_segments_zero_cols() {
-        let result = compose_segments(&[seg("hello")], &[seg("❯")], 0);
+        let result = compose_segments(&[seg("hello")], &[seg("❯")], 0, ColorMap::default());
         assert_eq!(result.left1, "");
         assert_eq!(result.left2, "");
     }
 
     #[test]
     fn test_compose_segments_empty() {
-        let result = compose_segments(&[], &[], 80);
+        let result = compose_segments(&[], &[], 80, ColorMap::default());
         assert_eq!(result.left1, "");
         assert_eq!(result.left2, "");
     }
@@ -245,7 +261,7 @@ mod tests {
             icon: None,
             content_style: Some(Style::new().fg(Color::Cyan)),
         };
-        let result = compose_segments(&[styled_seg], &[seg("❯")], 30);
+        let result = compose_segments(&[styled_seg], &[seg("❯")], 30, ColorMap::default());
         assert!(
             result.left1.contains("project"),
             "should contain content: {}",
@@ -254,6 +270,35 @@ mod tests {
         assert!(
             result.left1.contains("\x1b[36m"),
             "should contain cyan ANSI: {}",
+            result.left1
+        );
+    }
+
+    #[test]
+    fn test_compose_segments_uses_custom_color_map() {
+        let styled_seg = Segment {
+            content: "project".to_owned(),
+            connector: Some(Connector {
+                word: "via".to_owned(),
+                style: Style::new().fg(Color::BrightBlack),
+            }),
+            icon: None,
+            content_style: Some(Style::new().fg(Color::Blue)),
+        };
+        let color_map = ColorMap {
+            blue: 94,
+            bright_black: 37,
+            ..ColorMap::default()
+        };
+        let result = compose_segments(&[styled_seg], &[seg("❯")], 30, color_map);
+        assert!(
+            result.left1.contains("\x1b[37m"),
+            "connector remap missing: {}",
+            result.left1
+        );
+        assert!(
+            result.left1.contains("\x1b[94m"),
+            "content remap missing: {}",
             result.left1
         );
     }

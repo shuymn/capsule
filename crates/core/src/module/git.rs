@@ -3,7 +3,7 @@
 use std::{path::Path, process::Command};
 
 use super::{Module, ModuleOutput, ModuleSpeed, RenderContext};
-use crate::render::style::{Color, Style};
+use crate::render::style::{Color, ColorMap, Style};
 
 /// Errors that can occur when querying git.
 #[derive(Debug, thiserror::Error)]
@@ -86,23 +86,34 @@ impl GitProvider for CommandGitProvider {
 #[allow(clippy::module_name_repetitions)]
 pub struct GitModule<G> {
     provider: G,
-    indicator_color: Color,
+    style: Style,
+    indicator_style: Style,
+    color_map: ColorMap,
 }
 
 impl<G> GitModule<G> {
     /// Creates a new `GitModule` with the given provider and default indicator color.
-    pub const fn new(provider: G) -> Self {
+    pub fn new(provider: G) -> Self {
         Self {
             provider,
-            indicator_color: Color::Red,
+            style: Style::new().fg(Color::Magenta).bold(),
+            indicator_style: Style::new().fg(Color::Red).bold(),
+            color_map: ColorMap::default(),
         }
     }
 
-    /// Creates a new `GitModule` with the given provider and custom indicator color.
-    pub const fn with_indicator_color(provider: G, indicator_color: Color) -> Self {
+    /// Creates a new `GitModule` with explicit styles and color mapping.
+    pub const fn with_styles(
+        provider: G,
+        style: Style,
+        indicator_style: Style,
+        color_map: ColorMap,
+    ) -> Self {
         Self {
             provider,
-            indicator_color,
+            style,
+            indicator_style,
+            color_map,
         }
     }
 }
@@ -121,7 +132,7 @@ impl<G: GitProvider> GitModule<G> {
                 return None;
             }
         };
-        let content = format_git_output(&status, self.indicator_color);
+        let content = format_git_output(&status, self.style, self.indicator_style, self.color_map);
         if content.is_empty() {
             return None;
         }
@@ -206,12 +217,16 @@ fn parse_changed_entry(line: &str, status: &mut GitStatus) {
 // Formatting
 // ---------------------------------------------------------------------------
 
-fn format_git_output(status: &GitStatus, indicator_color: Color) -> String {
+fn format_git_output(
+    status: &GitStatus,
+    style: Style,
+    indicator_style: Style,
+    color_map: ColorMap,
+) -> String {
     let mut out = String::with_capacity(64);
 
     if let Some(ref branch) = status.branch {
-        let style = Style::new().fg(Color::Magenta).bold();
-        out.push_str(&style.paint(branch));
+        out.push_str(&style.paint_with(branch, color_map));
     }
 
     // Indicator order follows Starship defaults: = $ ✘ » ! + ? ⇕/⇡⇣
@@ -252,10 +267,9 @@ fn format_git_output(status: &GitStatus, indicator_color: Color) -> String {
         if !out.is_empty() {
             out.push(' ');
         }
-        let bracket_style = Style::new().fg(indicator_color).bold();
         indicators.insert(0, '[');
         indicators.push(']');
-        out.push_str(&bracket_style.paint(&indicators));
+        out.push_str(&indicator_style.paint_with(&indicators, color_map));
     }
 
     out
@@ -266,7 +280,19 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::render::layout::display_width;
+    use crate::{render::layout::display_width, test_utils::contains_style_sequence};
+
+    fn default_style() -> Style {
+        Style::new().fg(Color::Magenta).bold()
+    }
+
+    fn default_indicator_style() -> Style {
+        Style::new().fg(Color::Red).bold()
+    }
+
+    fn default_color_map() -> ColorMap {
+        ColorMap::default()
+    }
 
     // -- Parsing tests --
 
@@ -336,11 +362,16 @@ mod tests {
             branch: Some("main".to_owned()),
             ..GitStatus::default()
         };
-        let output = format_git_output(&status, Color::Red);
+        let output = format_git_output(
+            &status,
+            default_style(),
+            default_indicator_style(),
+            default_color_map(),
+        );
         assert_eq!(display_width(&output), 4, "visible width: {output:?}");
         assert!(output.contains("main"), "should contain branch name");
         assert!(
-            output.contains("\x1b[1;35m"),
+            contains_style_sequence(&output, &[1, 35]),
             "branch should be bold magenta"
         );
         // No indicators → display width is just the branch name
@@ -361,7 +392,12 @@ mod tests {
             ahead: 1,
             ..GitStatus::default()
         };
-        let output = format_git_output(&status, Color::Red);
+        let output = format_git_output(
+            &status,
+            default_style(),
+            default_indicator_style(),
+            default_color_map(),
+        );
         // "main [!+?⇡]" = 4 + 1 + 6 = 11 visible chars
         assert_eq!(display_width(&output), 11, "visible width: {output:?}");
         assert!(output.contains("main"), "should contain branch");
@@ -370,7 +406,7 @@ mod tests {
             "should contain bracketed indicators: {output:?}"
         );
         assert!(
-            output.contains("\x1b[1;31m"),
+            contains_style_sequence(&output, &[1, 31]),
             "brackets should be bold red: {output:?}"
         );
     }
@@ -382,7 +418,12 @@ mod tests {
             staged: 1,
             ..GitStatus::default()
         };
-        let output = format_git_output(&status, Color::Red);
+        let output = format_git_output(
+            &status,
+            default_style(),
+            default_indicator_style(),
+            default_color_map(),
+        );
         // "[+]" = 3 visible chars
         assert_eq!(display_width(&output), 3, "visible width: {output:?}");
         assert!(
@@ -390,7 +431,7 @@ mod tests {
             "should contain bracketed staged indicator: {output:?}"
         );
         assert!(
-            output.contains("\x1b[1;31m"),
+            contains_style_sequence(&output, &[1, 31]),
             "brackets should be bold red: {output:?}"
         );
     }
@@ -530,7 +571,12 @@ mod tests {
             conflicted: 1,
             ..GitStatus::default()
         };
-        let output = format_git_output(&status, Color::Red);
+        let output = format_git_output(
+            &status,
+            default_style(),
+            default_indicator_style(),
+            default_color_map(),
+        );
         assert!(
             output.contains("[=]"),
             "conflict should use '=' not '~': {output:?}"
@@ -544,7 +590,12 @@ mod tests {
             stashed: 3,
             ..GitStatus::default()
         };
-        let output = format_git_output(&status, Color::Red);
+        let output = format_git_output(
+            &status,
+            default_style(),
+            default_indicator_style(),
+            default_color_map(),
+        );
         assert!(output.contains("[$]"), "stash should show '$': {output:?}");
     }
 
@@ -555,7 +606,12 @@ mod tests {
             deleted: 1,
             ..GitStatus::default()
         };
-        let output = format_git_output(&status, Color::Red);
+        let output = format_git_output(
+            &status,
+            default_style(),
+            default_indicator_style(),
+            default_color_map(),
+        );
         assert!(
             output.contains("[✘]"),
             "deleted should show '✘': {output:?}"
@@ -569,7 +625,12 @@ mod tests {
             renamed: 1,
             ..GitStatus::default()
         };
-        let output = format_git_output(&status, Color::Red);
+        let output = format_git_output(
+            &status,
+            default_style(),
+            default_indicator_style(),
+            default_color_map(),
+        );
         assert!(
             output.contains("[»]"),
             "renamed should show '»': {output:?}"
@@ -584,7 +645,12 @@ mod tests {
             behind: 1,
             ..GitStatus::default()
         };
-        let output = format_git_output(&status, Color::Red);
+        let output = format_git_output(
+            &status,
+            default_style(),
+            default_indicator_style(),
+            default_color_map(),
+        );
         assert!(
             output.contains('⇕'),
             "diverged (ahead+behind) should show '⇕': {output:?}"
@@ -613,13 +679,45 @@ mod tests {
             ahead: 1,
             behind: 0,
         };
-        let output = format_git_output(&status, Color::Red);
+        let output = format_git_output(
+            &status,
+            default_style(),
+            default_indicator_style(),
+            default_color_map(),
+        );
         // Strip all ANSI/zsh escapes to get visible text
         let clean = strip_ansi_and_zsh(&output);
         // Expected visible: "main [=$✘»!+?⇡]"
         assert_eq!(
             clean, "main [=$✘»!+?⇡]",
             "indicators should be in Starship order: {output:?}"
+        );
+    }
+
+    #[test]
+    fn test_format_git_output_uses_custom_styles_and_color_map() {
+        let status = GitStatus {
+            branch: Some("main".to_owned()),
+            modified: 1,
+            ..GitStatus::default()
+        };
+        let output = format_git_output(
+            &status,
+            Style::new().fg(Color::Cyan),
+            Style::new().fg(Color::Yellow),
+            ColorMap {
+                cyan: 96,
+                yellow: 93,
+                ..ColorMap::default()
+            },
+        );
+        assert!(
+            output.contains("\x1b[96m"),
+            "branch should use remapped cyan: {output:?}"
+        );
+        assert!(
+            output.contains("\x1b[93m"),
+            "indicators should use remapped yellow: {output:?}"
         );
     }
 

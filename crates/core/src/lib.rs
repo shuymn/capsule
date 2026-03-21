@@ -7,3 +7,6 @@ pub mod daemon;
 pub mod init;
 pub mod module;
 pub mod render;
+
+#[cfg(test)]
+pub(crate) mod test_utils;
