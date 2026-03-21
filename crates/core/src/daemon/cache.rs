@@ -6,6 +6,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Result of a cache lookup, distinguishing hit, miss, and TTL expiry.
+pub(super) enum CacheGetResult<'a, V> {
+    Hit(&'a V),
+    Miss,
+    Expired,
+}
+
 /// A bounded key-value cache with time-to-live eviction.
 ///
 /// When the cache reaches `max_size`, the oldest entry is evicted on insertion.
@@ -34,24 +41,28 @@ where
         }
     }
 
-    /// Returns a reference to the cached value if it exists and has not expired.
-    ///
-    /// Expired entries are removed from the cache on access.
-    pub(super) fn get(&mut self, key: &K) -> Option<&V> {
+    /// Returns a reference to the cached value, distinguishing hit, miss, and
+    /// TTL expiry.  Expired entries are removed on access.
+    pub(super) fn get(&mut self, key: &K) -> CacheGetResult<'_, V> {
         let expired = self
             .entries
             .get(key)
             .is_some_and(|e| e.inserted_at.elapsed() > self.ttl);
         if expired {
             self.entries.remove(key);
-            return None;
+            return CacheGetResult::Expired;
         }
-        self.entries.get(key).map(|e| &e.value)
+        self.entries
+            .get(key)
+            .map_or(CacheGetResult::Miss, |e| CacheGetResult::Hit(&e.value))
     }
 
     /// Inserts a value, evicting the oldest entry if the cache is full.
-    pub(super) fn insert(&mut self, key: K, value: V) {
-        if self.entries.len() >= self.max_size && !self.entries.contains_key(&key) {
+    ///
+    /// Returns `true` if an eviction occurred.
+    pub(super) fn insert(&mut self, key: K, value: V) -> bool {
+        let evicted = self.entries.len() >= self.max_size && !self.entries.contains_key(&key);
+        if evicted {
             self.evict_oldest();
         }
         self.entries.insert(
@@ -61,10 +72,15 @@ where
                 inserted_at: Instant::now(),
             },
         );
+        evicted
     }
 
     pub(super) fn clear(&mut self) {
         self.entries.clear();
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.entries.len()
     }
 
     fn evict_oldest(&mut self) {
@@ -84,19 +100,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_cache_get_returns_none_for_missing_key() {
+    fn test_cache_get_returns_miss_for_missing_key() {
         let mut cache = BoundedCache::<String, String>::new(10, Duration::from_mins(1));
-        assert!(cache.get(&"missing".to_owned()).is_none());
+        assert!(matches!(
+            cache.get(&"missing".to_owned()),
+            CacheGetResult::Miss
+        ));
     }
 
     #[test]
     fn test_cache_insert_and_get() {
         let mut cache = BoundedCache::new(10, Duration::from_mins(1));
         cache.insert("/home/user".to_owned(), "cached".to_owned());
-        assert_eq!(
+        assert!(matches!(
             cache.get(&"/home/user".to_owned()),
-            Some(&"cached".to_owned())
-        );
+            CacheGetResult::Hit(v) if *v == "cached"
+        ));
     }
 
     #[test]
@@ -104,24 +123,29 @@ mod tests {
         let mut cache = BoundedCache::new(10, Duration::from_mins(1));
         cache.insert("key".to_owned(), "v1".to_owned());
         cache.insert("key".to_owned(), "v2".to_owned());
-        assert_eq!(cache.get(&"key".to_owned()), Some(&"v2".to_owned()));
+        assert!(matches!(
+            cache.get(&"key".to_owned()),
+            CacheGetResult::Hit(v) if *v == "v2"
+        ));
     }
 
     #[test]
     fn test_cache_evicts_oldest_on_max_size() {
         let mut cache = BoundedCache::new(2, Duration::from_mins(1));
-        cache.insert("a".to_owned(), "1".to_owned());
-        // Small delay so insertion times differ
+        assert!(!cache.insert("a".to_owned(), "1".to_owned()));
         std::thread::sleep(Duration::from_millis(1));
-        cache.insert("b".to_owned(), "2".to_owned());
+        assert!(!cache.insert("b".to_owned(), "2".to_owned()));
         std::thread::sleep(Duration::from_millis(1));
-        cache.insert("c".to_owned(), "3".to_owned());
         assert!(
-            cache.get(&"a".to_owned()).is_none(),
+            cache.insert("c".to_owned(), "3".to_owned()),
+            "should evict oldest entry"
+        );
+        assert!(
+            matches!(cache.get(&"a".to_owned()), CacheGetResult::Miss),
             "oldest entry should be evicted"
         );
-        assert_eq!(cache.get(&"b".to_owned()), Some(&"2".to_owned()));
-        assert_eq!(cache.get(&"c".to_owned()), Some(&"3".to_owned()));
+        assert!(matches!(cache.get(&"b".to_owned()), CacheGetResult::Hit(_)));
+        assert!(matches!(cache.get(&"c".to_owned()), CacheGetResult::Hit(_)));
     }
 
     #[test]
@@ -129,10 +153,15 @@ mod tests {
         let mut cache = BoundedCache::new(2, Duration::from_mins(1));
         cache.insert("a".to_owned(), "1".to_owned());
         cache.insert("b".to_owned(), "2".to_owned());
-        // Updating existing key should not trigger eviction
-        cache.insert("a".to_owned(), "updated".to_owned());
-        assert_eq!(cache.get(&"a".to_owned()), Some(&"updated".to_owned()));
-        assert_eq!(cache.get(&"b".to_owned()), Some(&"2".to_owned()));
+        assert!(
+            !cache.insert("a".to_owned(), "updated".to_owned()),
+            "updating existing key should not evict"
+        );
+        assert!(matches!(
+            cache.get(&"a".to_owned()),
+            CacheGetResult::Hit(v) if *v == "updated"
+        ));
+        assert!(matches!(cache.get(&"b".to_owned()), CacheGetResult::Hit(_)));
     }
 
     #[test]
@@ -141,8 +170,8 @@ mod tests {
         cache.insert("key".to_owned(), "val".to_owned());
         std::thread::sleep(Duration::from_millis(5));
         assert!(
-            cache.get(&"key".to_owned()).is_none(),
-            "expired entry should not be returned"
+            matches!(cache.get(&"key".to_owned()), CacheGetResult::Expired),
+            "expired entry should return Expired"
         );
     }
 
@@ -150,13 +179,23 @@ mod tests {
     fn test_cache_ttl_expiry_removes_entry() {
         let mut cache = BoundedCache::new(10, Duration::from_millis(1));
         cache.insert("key".to_owned(), "val".to_owned());
-        assert_eq!(cache.entries.len(), 1);
+        assert_eq!(cache.len(), 1);
         std::thread::sleep(Duration::from_millis(5));
         cache.get(&"key".to_owned());
         assert_eq!(
-            cache.entries.len(),
+            cache.len(),
             0,
             "expired entry should be removed from the map"
         );
+    }
+
+    #[test]
+    fn test_cache_len() {
+        let mut cache = BoundedCache::new(10, Duration::from_mins(1));
+        assert_eq!(cache.len(), 0);
+        cache.insert("a".to_owned(), "1".to_owned());
+        assert_eq!(cache.len(), 1);
+        cache.insert("b".to_owned(), "2".to_owned());
+        assert_eq!(cache.len(), 2);
     }
 }

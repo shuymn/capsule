@@ -6,7 +6,9 @@ use tokio::{
     sync::Mutex,
 };
 
-use super::{DaemonError, INODE_CHECK_INTERVAL, ReloadableConfig, SharedState, request};
+use super::{
+    DaemonError, INODE_CHECK_INTERVAL, ReloadableConfig, SharedState, request, stats::DaemonStats,
+};
 use crate::module::GitProvider;
 
 /// Shared state for the accept loops (avoids passing many args).
@@ -16,6 +18,7 @@ pub(super) struct AcceptCtx<G> {
     pub(super) build_id: Arc<Option<BuildId>>,
     pub(super) state: Arc<Mutex<SharedState>>,
     pub(super) config: Arc<Mutex<ReloadableConfig>>,
+    pub(super) stats: Arc<DaemonStats>,
 }
 
 impl<G> AcceptCtx<G> {
@@ -23,17 +26,26 @@ impl<G> AcceptCtx<G> {
     where
         G: GitProvider + Clone + Send + 'static,
     {
+        use std::sync::atomic::Ordering;
+
+        self.stats.connections_total.fetch_add(1, Ordering::Relaxed);
+        self.stats
+            .connections_active
+            .fetch_add(1, Ordering::Relaxed);
+        let stats = Arc::clone(&self.stats);
         let ctx = request::ConnectionCtx {
             state: Arc::clone(&self.state),
             home_dir: Arc::clone(&self.home_dir),
             git_provider: self.git_provider.clone(),
             build_id: Arc::clone(&self.build_id),
             config: Arc::clone(&self.config),
+            stats: Arc::clone(&self.stats),
         };
         tokio::spawn(async move {
             if let Err(e) = request::handle_connection(stream, ctx).await {
                 tracing::warn!(error = %e, "client connection error");
             }
+            stats.connections_active.fetch_sub(1, Ordering::Relaxed);
         });
     }
 }

@@ -11,8 +11,12 @@ readme.workspace = true
 publish = false
 
 [dependencies]
+serde = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio.workspace = true
+
+[features]
+serde = ["dep:serde"]
 
 [lints]
 workspace = true

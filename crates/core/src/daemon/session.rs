@@ -65,10 +65,18 @@ impl SessionMap {
         }
     }
 
+    pub(super) fn len(&self) -> usize {
+        self.sessions.len()
+    }
+
     /// Removes sessions that have not been seen for longer than `ttl`.
-    pub(super) fn prune_stale(&mut self, ttl: Duration) {
+    ///
+    /// Returns the number of sessions removed.
+    pub(super) fn prune_stale(&mut self, ttl: Duration) -> usize {
+        let before = self.sessions.len();
         self.sessions
             .retain(|_, session| session.last_seen.elapsed() <= ttl);
+        before - self.sessions.len()
     }
 }
 

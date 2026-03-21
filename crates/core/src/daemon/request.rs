@@ -11,7 +11,8 @@ use tokio::{
 };
 
 use super::{
-    CacheKey, DaemonError, ReloadableConfig, SESSION_TTL, SharedState, prompt, session::Session,
+    CacheKey, DaemonError, ReloadableConfig, SESSION_TTL, SharedState, cache, prompt,
+    session::Session, stats::DaemonStats,
 };
 use crate::module::{
     CustomModuleInfo, DetectedModuleCandidate, GitModule, GitProvider, ModuleSpeed, RequestFacts,
@@ -25,6 +26,7 @@ pub(super) struct ConnectionCtx<G> {
     pub(super) git_provider: G,
     pub(super) build_id: Arc<Option<BuildId>>,
     pub(super) config: Arc<Mutex<ReloadableConfig>>,
+    pub(super) stats: Arc<DaemonStats>,
 }
 
 struct RequestCtx<G> {
@@ -33,6 +35,7 @@ struct RequestCtx<G> {
     home_dir: Arc<PathBuf>,
     git_provider: G,
     config: Arc<Mutex<ReloadableConfig>>,
+    stats: Arc<DaemonStats>,
 }
 
 async fn write_message(
@@ -62,13 +65,22 @@ pub(super) async fn handle_connection<G: GitProvider + Clone + Send + 'static>(
                     home_dir: Arc::clone(&ctx.home_dir),
                     git_provider: ctx.git_provider.clone(),
                     config: Arc::clone(&ctx.config),
+                    stats: Arc::clone(&ctx.stats),
                 };
                 handle_request(req, req_ctx).await?;
+            }
+            Ok(Some(Message::StatusRequest(_))) => {
+                let response = {
+                    let state = ctx.state.lock().await;
+                    let config = ctx.config.lock().await;
+                    ctx.stats.snapshot(&state, &config)
+                };
+                write_message(&msg_writer, &Message::StatusResponse(response)).await?;
             }
             Ok(Some(Message::Hello(_))) => {
                 let modules = {
                     let mut config = ctx.config.lock().await;
-                    let (_, modules, _) = config.snapshot(&ctx.state).await;
+                    let (_, modules, _) = config.snapshot(&ctx.state, &ctx.stats).await;
                     drop(config);
                     modules
                 };
@@ -97,6 +109,7 @@ struct DetectInput<'a> {
     facts: Arc<RequestFacts>,
     speed: ModuleSpeed,
     timeout: Duration,
+    stats: Option<Arc<DaemonStats>>,
 }
 
 fn cache_key_for_request(
@@ -174,6 +187,11 @@ async fn detect_custom_modules(input: &DetectInput<'_>) -> Vec<CustomModuleInfo>
                 Ok(None) => break,     // all done
                 Err(_) => {
                     // Timeout — abort remaining tasks, omit their segments
+                    if let Some(ref stats) = input.stats {
+                        stats
+                            .custom_module_timeouts
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
                     join_set.abort_all();
                     break;
                 }
@@ -200,19 +218,29 @@ async fn handle_request<G: GitProvider + Send + 'static>(
     req: Request,
     ctx: RequestCtx<G>,
 ) -> Result<(), DaemonError> {
+    use std::sync::atomic::Ordering;
+
+    ctx.stats.requests_total.fetch_add(1, Ordering::Relaxed);
+
     let session_id = req.session_id;
     let generation = req.generation;
     let cwd = req.cwd.clone();
     let cols = req.cols;
     let (config, modules, config_generation) = {
         let mut reloadable = ctx.config.lock().await;
-        reloadable.snapshot(&ctx.state).await
+        reloadable.snapshot(&ctx.state, &ctx.stats).await
     };
 
     {
         let mut state = ctx.state.lock().await;
-        state.sessions.prune_stale(SESSION_TTL);
+        let pruned = state.sessions.prune_stale(SESSION_TTL);
+        if pruned > 0 {
+            ctx.stats
+                .sessions_pruned
+                .fetch_add(pruned.try_into().unwrap_or(u64::MAX), Ordering::Relaxed);
+        }
         if !state.sessions.check_generation(session_id, generation) {
+            ctx.stats.stale_discards.fetch_add(1, Ordering::Relaxed);
             tracing::debug!(session_id = %session_id, generation, "stale generation, discarding");
             return Ok(());
         }
@@ -238,6 +266,7 @@ async fn handle_request<G: GitProvider + Send + 'static>(
         facts: Arc::clone(&facts),
         speed: ModuleSpeed::Fast,
         timeout: Duration::from_millis(config.timeout.fast_ms),
+        stats: None,
     })
     .await;
 
@@ -245,7 +274,23 @@ async fn handle_request<G: GitProvider + Send + 'static>(
 
     let cached_slow = {
         let mut state = ctx.state.lock().await;
-        state.cache.get(&cache_key).cloned()
+        match state.cache.get(&cache_key) {
+            cache::CacheGetResult::Hit(v) => {
+                ctx.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
+                Some(v.clone())
+            }
+            cache::CacheGetResult::Expired => {
+                ctx.stats
+                    .cache_ttl_expirations
+                    .fetch_add(1, Ordering::Relaxed);
+                ctx.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
+                None
+            }
+            cache::CacheGetResult::Miss => {
+                ctx.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
+                None
+            }
+        }
     };
 
     let lines = prompt::compose_prompt(&fast, cached_slow.as_deref(), usize::from(cols), &config);
@@ -282,7 +327,10 @@ async fn handle_request<G: GitProvider + Send + 'static>(
                 shared_state.inflight.insert(cache_key.clone(), sender);
                 (receiver, true)
             },
-            |sender| (sender.subscribe(), false),
+            |sender| {
+                ctx.stats.inflight_coalesces.fetch_add(1, Ordering::Relaxed);
+                (sender.subscribe(), false)
+            },
         );
         drop(shared_state);
         tokio::spawn(wait_for_slow_update(SlowUpdateTarget {
@@ -304,7 +352,12 @@ async fn handle_request<G: GitProvider + Send + 'static>(
         return Ok(());
     }
 
+    let slow_stats = Arc::clone(&ctx.stats);
     let state = Arc::clone(&ctx.state);
+    slow_stats
+        .slow_computes_started
+        .fetch_add(1, Ordering::Relaxed);
+    let slow_start = std::time::Instant::now();
     tokio::spawn(async move {
         let slow_timeout = Duration::from_millis(slow_config.timeout.slow_ms);
         let deadline = tokio::time::Instant::now() + slow_timeout;
@@ -329,6 +382,7 @@ async fn handle_request<G: GitProvider + Send + 'static>(
             facts: Arc::clone(&facts),
             speed: ModuleSpeed::Slow,
             timeout: slow_timeout,
+            stats: Some(Arc::clone(&slow_stats)),
         };
         let custom_future = detect_custom_modules(&slow_detect_input);
 
@@ -337,11 +391,20 @@ async fn handle_request<G: GitProvider + Send + 'static>(
             async {
                 match tokio::time::timeout_at(deadline, git_set.join_next()).await {
                     Ok(Some(Ok(git))) => git,
+                    Err(_) => {
+                        slow_stats.git_timeouts.fetch_add(1, Ordering::Relaxed);
+                        None
+                    }
                     _ => None,
                 }
             },
             custom_future,
         );
+
+        let elapsed_us = u64::try_from(slow_start.elapsed().as_micros()).unwrap_or(u64::MAX);
+        slow_stats
+            .slow_compute_duration_us
+            .fetch_add(elapsed_us, Ordering::Relaxed);
 
         let slow = prompt::SlowOutput {
             git: git_result,
@@ -352,7 +415,10 @@ async fn handle_request<G: GitProvider + Send + 'static>(
         let sender = {
             let mut state = state.lock().await;
             let sender = state.inflight.remove(&cache_key);
-            state.cache.insert(cache_key, Arc::clone(&slow));
+            if state.cache.insert(cache_key, Arc::clone(&slow)) {
+                slow_stats.cache_evictions.fetch_add(1, Ordering::Relaxed);
+            }
+            drop(state);
             sender
         };
         if let Some(sender) = sender {
@@ -1507,6 +1573,53 @@ mod tests {
             1,
             "file dependency with stable existence should reuse cached slow result"
         );
+
+        harness.shutdown().await
+    }
+
+    #[tokio::test]
+    async fn test_daemon_status_request_returns_metrics() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let provider = MockGitProvider {
+            status: Some(GitStatus {
+                branch: Some("main".to_owned()),
+                ..GitStatus::default()
+            }),
+            ..MockGitProvider::default()
+        };
+        let harness = TestHarness::start(provider).await?;
+        let (mut reader, mut writer) = harness.connect().await?;
+
+        // Send a prompt request first so metrics have data
+        writer
+            .write_message(&Message::Request(make_request("/tmp", 1, 80)))
+            .await?;
+        let _ = reader.read_message().await?;
+        let _ = tokio::time::timeout(Duration::from_secs(5), reader.read_message()).await??;
+
+        // Send StatusRequest
+        writer
+            .write_message(&Message::StatusRequest(capsule_protocol::StatusRequest {
+                version: capsule_protocol::PROTOCOL_VERSION,
+            }))
+            .await?;
+
+        let resp = tokio::time::timeout(Duration::from_secs(5), reader.read_message()).await??;
+        match resp {
+            Some(Message::StatusResponse(s)) => {
+                assert!(s.pid > 0, "pid should be positive");
+                assert!(
+                    s.requests_total >= 1,
+                    "should have at least one request: {}",
+                    s.requests_total
+                );
+                assert!(
+                    s.connections_active >= 1,
+                    "should have at least one active connection"
+                );
+            }
+            other => return Err(format!("expected StatusResponse, got {other:?}").into()),
+        }
 
         harness.shutdown().await
     }

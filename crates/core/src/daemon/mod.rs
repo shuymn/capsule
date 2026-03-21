@@ -10,6 +10,7 @@ pub mod listener;
 mod prompt;
 mod request;
 mod session;
+mod stats;
 
 #[cfg(test)]
 mod parallel_tests;
@@ -89,6 +90,14 @@ impl SharedState {
             inflight: HashMap::new(),
         }
     }
+
+    pub(super) fn cache_len(&self) -> usize {
+        self.cache.len()
+    }
+
+    pub(super) fn session_len(&self) -> usize {
+        self.sessions.len()
+    }
 }
 
 pub(super) struct ReloadableConfig {
@@ -100,6 +109,10 @@ pub(super) struct ReloadableConfig {
 }
 
 impl ReloadableConfig {
+    pub(super) const fn generation(&self) -> u64 {
+        self.generation
+    }
+
     fn new(config: Arc<Config>, path: Option<PathBuf>) -> Self {
         let modules = Arc::new(resolve_modules(&config.module));
         let modified_at = path
@@ -118,8 +131,12 @@ impl ReloadableConfig {
     async fn snapshot(
         &mut self,
         state: &Arc<Mutex<SharedState>>,
+        metrics: &stats::DaemonStats,
     ) -> (Arc<Config>, Arc<Vec<ResolvedModule>>, u64) {
-        if let Err(error) = self.reload_if_needed(state).await {
+        if let Err(error) = self.reload_if_needed(state, metrics).await {
+            metrics
+                .config_reload_errors
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             tracing::error!(error = %error, "config hot-reload check failed");
         }
         (
@@ -132,6 +149,7 @@ impl ReloadableConfig {
     async fn reload_if_needed(
         &mut self,
         state: &Arc<Mutex<SharedState>>,
+        metrics: &stats::DaemonStats,
     ) -> Result<(), ConfigLoadError> {
         let Some(path) = self.path.clone() else {
             return Ok(());
@@ -155,6 +173,9 @@ impl ReloadableConfig {
                 self.modules = Arc::new(resolve_modules(&self.config.module));
                 self.modified_at = observed_mtime;
                 self.generation = self.generation.saturating_add(1);
+                metrics
+                    .config_reloads
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
                 let mut shared = state.lock().await;
                 shared.cache.clear();
@@ -275,6 +296,7 @@ impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
                 self.config_source.config,
                 self.config_source.path,
             ))),
+            stats: Arc::new(stats::DaemonStats::new()),
         };
 
         match self.listener_mode {

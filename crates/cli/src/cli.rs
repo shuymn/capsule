@@ -29,6 +29,12 @@ pub enum DaemonAction {
     Install,
     /// Uninstall the launchd service and remove the plist
     Uninstall,
+    /// Show daemon metrics and status
+    Status {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Clone, ValueEnum)]

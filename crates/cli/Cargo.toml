@@ -16,7 +16,8 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 capsule-core = { path = "../core" }
-capsule-protocol = { path = "../protocol" }
+capsule-protocol = { path = "../protocol", features = ["serde"] }
+serde_json.workspace = true
 clap.workspace = true
 tokio = { workspace = true }
 tracing = { workspace = true }

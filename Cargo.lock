@@ -87,6 +87,7 @@ dependencies = [
  "capsule-core",
  "capsule-protocol",
  "clap",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",
@@ -116,6 +117,7 @@ dependencies = [
 name = "capsule-protocol"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "thiserror",
  "tokio",
 ]
