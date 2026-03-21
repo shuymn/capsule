@@ -26,6 +26,12 @@ pub struct GitStatus {
     pub untracked: usize,
     /// Number of conflicted files.
     pub conflicted: usize,
+    /// Number of stashed entries.
+    pub stashed: usize,
+    /// Number of deleted files.
+    pub deleted: usize,
+    /// Number of renamed files.
+    pub renamed: usize,
     /// Commits ahead of upstream.
     pub ahead: usize,
     /// Commits behind upstream.
@@ -52,7 +58,7 @@ pub struct CommandGitProvider;
 impl GitProvider for CommandGitProvider {
     fn status(&self, cwd: &Path) -> Result<Option<GitStatus>, GitError> {
         let output = Command::new("git")
-            .args(["status", "--porcelain=v2", "--branch"])
+            .args(["status", "--porcelain=v2", "--branch", "--show-stash"])
             .current_dir(cwd)
             .stderr(std::process::Stdio::null())
             .output()
@@ -134,6 +140,8 @@ fn parse_porcelain_v2(output: &str) -> GitStatus {
             };
         } else if let Some(rest) = line.strip_prefix("# branch.ab ") {
             parse_ahead_behind(rest, &mut status);
+        } else if let Some(rest) = line.strip_prefix("# stash ") {
+            status.stashed = rest.parse().unwrap_or(0);
         } else if line.starts_with("1 ") || line.starts_with("2 ") {
             parse_changed_entry(line, &mut status);
         } else if line.starts_with("u ") {
@@ -167,6 +175,12 @@ fn parse_changed_entry(line: &str, status: &mut GitStatus) {
         if bytes[1] != b'.' {
             status.modified += 1;
         }
+        if bytes[0] == b'D' || bytes[1] == b'D' {
+            status.deleted += 1;
+        }
+    }
+    if line.starts_with("2 ") {
+        status.renamed += 1;
     }
 }
 
@@ -182,24 +196,38 @@ fn format_git_output(status: &GitStatus) -> String {
         out.push_str(&style.paint(branch));
     }
 
+    // Indicator order follows Starship defaults: = $ ✘ » ! + ? ⇕/⇡⇣
     let mut indicators = String::new();
-    if status.staged > 0 {
-        indicators.push('+');
+    if status.conflicted > 0 {
+        indicators.push('=');
+    }
+    if status.stashed > 0 {
+        indicators.push('$');
+    }
+    if status.deleted > 0 {
+        indicators.push('✘');
+    }
+    if status.renamed > 0 {
+        indicators.push('»');
     }
     if status.modified > 0 {
         indicators.push('!');
     }
+    if status.staged > 0 {
+        indicators.push('+');
+    }
     if status.untracked > 0 {
         indicators.push('?');
     }
-    if status.conflicted > 0 {
-        indicators.push('~');
-    }
-    if status.ahead > 0 {
-        indicators.push('⇡');
-    }
-    if status.behind > 0 {
-        indicators.push('⇣');
+    if status.ahead > 0 && status.behind > 0 {
+        indicators.push('⇕');
+    } else {
+        if status.ahead > 0 {
+            indicators.push('⇡');
+        }
+        if status.behind > 0 {
+            indicators.push('⇣');
+        }
     }
 
     if !indicators.is_empty() {
@@ -207,8 +235,9 @@ fn format_git_output(status: &GitStatus) -> String {
             out.push(' ');
         }
         let bracket_style = Style::new().fg(Color::Red).bold();
-        let bracketed = format!("[{indicators}]");
-        out.push_str(&bracket_style.paint(&bracketed));
+        indicators.insert(0, '[');
+        indicators.push(']');
+        out.push_str(&bracket_style.paint(&indicators));
     }
 
     out
@@ -311,16 +340,15 @@ mod tests {
             staged: 2,
             modified: 1,
             untracked: 3,
-            conflicted: 0,
             ahead: 1,
-            behind: 0,
+            ..GitStatus::default()
         };
         let output = format_git_output(&status);
-        // "main [+!?⇡]" = 4 + 1 + 6 = 11 visible chars
+        // "main [!+?⇡]" = 4 + 1 + 6 = 11 visible chars
         assert_eq!(display_width(&output), 11, "visible width: {output:?}");
         assert!(output.contains("main"), "should contain branch");
         assert!(
-            output.contains("[+!?⇡]"),
+            output.contains("[!+?⇡]"),
             "should contain bracketed indicators: {output:?}"
         );
         assert!(
@@ -469,5 +497,168 @@ mod tests {
         let status = provider.status(dir.path())?;
         assert!(status.is_none(), "non-git dir should return None");
         Ok(())
+    }
+
+    // -- Starship-compatible indicator tests (Theme 10) --
+
+    #[test]
+    fn test_format_conflict_uses_equals_sign() {
+        let status = GitStatus {
+            branch: Some("main".to_owned()),
+            conflicted: 1,
+            ..GitStatus::default()
+        };
+        let output = format_git_output(&status);
+        assert!(
+            output.contains("[=]"),
+            "conflict should use '=' not '~': {output:?}"
+        );
+    }
+
+    #[test]
+    fn test_format_stash_indicator() {
+        let status = GitStatus {
+            branch: Some("main".to_owned()),
+            stashed: 3,
+            ..GitStatus::default()
+        };
+        let output = format_git_output(&status);
+        assert!(output.contains("[$]"), "stash should show '$': {output:?}");
+    }
+
+    #[test]
+    fn test_format_deleted_indicator() {
+        let status = GitStatus {
+            branch: Some("main".to_owned()),
+            deleted: 1,
+            ..GitStatus::default()
+        };
+        let output = format_git_output(&status);
+        assert!(
+            output.contains("[✘]"),
+            "deleted should show '✘': {output:?}"
+        );
+    }
+
+    #[test]
+    fn test_format_renamed_indicator() {
+        let status = GitStatus {
+            branch: Some("main".to_owned()),
+            renamed: 1,
+            ..GitStatus::default()
+        };
+        let output = format_git_output(&status);
+        assert!(
+            output.contains("[»]"),
+            "renamed should show '»': {output:?}"
+        );
+    }
+
+    #[test]
+    fn test_format_diverged_indicator() {
+        let status = GitStatus {
+            branch: Some("main".to_owned()),
+            ahead: 2,
+            behind: 1,
+            ..GitStatus::default()
+        };
+        let output = format_git_output(&status);
+        assert!(
+            output.contains('⇕'),
+            "diverged (ahead+behind) should show '⇕': {output:?}"
+        );
+        assert!(
+            !output.contains('⇡'),
+            "diverged should not show separate '⇡': {output:?}"
+        );
+        assert!(
+            !output.contains('⇣'),
+            "diverged should not show separate '⇣': {output:?}"
+        );
+    }
+
+    #[test]
+    fn test_format_indicator_order() {
+        let status = GitStatus {
+            branch: Some("main".to_owned()),
+            conflicted: 1,
+            stashed: 1,
+            deleted: 1,
+            renamed: 1,
+            modified: 1,
+            staged: 1,
+            untracked: 1,
+            ahead: 1,
+            behind: 0,
+        };
+        let output = format_git_output(&status);
+        // Strip all ANSI/zsh escapes to get visible text
+        let clean = strip_ansi_and_zsh(&output);
+        // Expected visible: "main [=$✘»!+?⇡]"
+        assert_eq!(
+            clean, "main [=$✘»!+?⇡]",
+            "indicators should be in Starship order: {output:?}"
+        );
+    }
+
+    /// Strip ANSI escape sequences and zsh `%{{..%}}` wrappers.
+    fn strip_ansi_and_zsh(s: &str) -> String {
+        let mut result = String::with_capacity(s.len());
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '%' && chars.peek() == Some(&'{') {
+                // Skip %{...%}
+                chars.next(); // consume '{'
+                while let Some(inner) = chars.next() {
+                    if inner == '%' && chars.peek() == Some(&'}') {
+                        chars.next(); // consume '}'
+                        break;
+                    }
+                }
+            } else {
+                result.push(c);
+            }
+        }
+        result
+    }
+
+    #[test]
+    fn test_parse_stash_count() {
+        let output = "\
+# branch.head main
+# stash 5
+";
+        let status = parse_porcelain_v2(output);
+        assert_eq!(status.stashed, 5);
+    }
+
+    #[test]
+    fn test_parse_deleted_file() {
+        let output = "\
+# branch.head main
+1 D. N... 100644 000000 000000 abc123 000000 deleted.rs
+";
+        let status = parse_porcelain_v2(output);
+        assert_eq!(status.deleted, 1, "index delete should be tracked");
+    }
+
+    #[test]
+    fn test_parse_worktree_deleted_file() {
+        let output = "\
+# branch.head main
+1 .D N... 100644 100644 000000 abc123 def456 deleted.rs
+";
+        let status = parse_porcelain_v2(output);
+        assert_eq!(status.deleted, 1, "worktree delete should be tracked");
+    }
+
+    #[test]
+    fn test_parse_renamed_file() {
+        let output = "\
+# branch.head main
+2 R. N... 100644 100644 100644 abc123 def456 R100 new.rs\told.rs
+";
+        let status = parse_porcelain_v2(output);
+        assert_eq!(status.renamed, 1, "rename should be tracked");
     }
 }
