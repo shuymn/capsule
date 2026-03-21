@@ -118,3 +118,12 @@ tasks:
       - task: test
       - task: doc
       - task: build
+
+  bench:prompt:
+    desc: Benchmark capsule against starship in isolated zsh sessions
+    summary: |
+      Builds the release binary and runs the isolated prompt benchmark harness.
+      Requires uv and starship to be installed locally.
+    cmds:
+      - task: build:release
+      - uv run python tools/prompt_bench.py --capsule-bin target/release/capsule

@@ -114,6 +114,12 @@ task fmt
 task check
 ```
 
+Benchmark prompt latency against `starship` in isolated `zsh` sessions:
+
+```bash
+task bench:prompt
+```
+
 Cargo equivalents:
 
 ```bash
@@ -135,4 +141,5 @@ lefthook install
 - `crates/core`: daemon, init script generation, prompt modules, rendering
 - `crates/protocol`: wire protocol, message codec, netstring framing
 - `docs/architecture.md`: architecture baseline and constraints
+- `docs/benchmarking.md`: prompt benchmark rules and usage
 - `docs/tooling.md`: build, lint, hook, and CI policy
