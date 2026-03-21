@@ -1,15 +1,22 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use capsule_protocol::{
     BuildId, HelloAck, Message, MessageReader, MessageWriter, PROTOCOL_VERSION, RenderResult,
     Request, Update,
 };
-use tokio::{net::UnixStream, sync::Mutex};
+use tokio::{net::UnixStream, sync::Mutex, task::JoinSet};
 
 use super::{DaemonError, SESSION_TTL, SharedState, prompt};
 use crate::{
     config::Config,
-    module::{GitProvider, ResolvedModule, required_env_var_names},
+    module::{
+        CustomModuleInfo, GitModule, GitProvider, ModuleSpeed, ResolvedModule, check_when,
+        detect_module, required_env_var_names,
+    },
 };
 
 /// Per-connection context, cloned from the accept loop for each spawned handler.
@@ -82,6 +89,78 @@ pub(super) async fn handle_connection<G: GitProvider + Clone + Send + 'static>(
     Ok(())
 }
 
+/// Input for parallel custom module detection.
+struct DetectInput<'a> {
+    modules: &'a [ResolvedModule],
+    cwd: &'a Path,
+    env_vars: &'a [(String, String)],
+    path_env: Option<&'a str>,
+    speed: ModuleSpeed,
+    timeout: Duration,
+}
+
+/// Detect custom modules in parallel with a timeout.
+///
+/// Pre-allocates slots in definition order. Each module's detection runs in a
+/// separate blocking task. On timeout, remaining tasks are aborted and their
+/// segments are omitted (fail-open).
+async fn detect_custom_modules(input: &DetectInput<'_>) -> Vec<CustomModuleInfo> {
+    // Filter matching modules (fast, no I/O)
+    let matching: Vec<(usize, &ResolvedModule)> = input
+        .modules
+        .iter()
+        .filter(|d| d.speed == input.speed)
+        .filter(|d| check_when(&d.when, input.cwd, input.env_vars))
+        .enumerate()
+        .collect();
+
+    if matching.is_empty() {
+        return Vec::new();
+    }
+
+    let slot_count = matching.len();
+    let mut join_set = JoinSet::new();
+
+    // Share immutable data across tasks via Arc to avoid per-task cloning.
+    let shared_cwd = Arc::new(input.cwd.to_path_buf());
+    let shared_env_vars = Arc::new(input.env_vars.to_vec());
+    let shared_path_env = Arc::new(input.path_env.map(ToOwned::to_owned));
+
+    for (slot, def) in &matching {
+        let slot = *slot;
+        let def = (*def).clone();
+        let cwd = Arc::clone(&shared_cwd);
+        let env_vars = Arc::clone(&shared_env_vars);
+        let path_env = Arc::clone(&shared_path_env);
+        join_set.spawn_blocking(move || {
+            (
+                slot,
+                detect_module(&def, &cwd, &env_vars, path_env.as_deref()),
+            )
+        });
+    }
+
+    let mut slots: Vec<Option<CustomModuleInfo>> = vec![None; slot_count];
+    let deadline = tokio::time::Instant::now() + input.timeout;
+
+    while !join_set.is_empty() {
+        match tokio::time::timeout_at(deadline, join_set.join_next()).await {
+            Ok(Some(Ok((slot, info)))) => {
+                slots[slot] = info;
+            }
+            Ok(Some(Err(_))) => {} // task panicked
+            Ok(None) => break,     // all done
+            Err(_) => {
+                // Timeout — abort remaining tasks, omit their segments
+                join_set.abort_all();
+                break;
+            }
+        }
+    }
+
+    slots.into_iter().flatten().collect()
+}
+
 async fn handle_request<G: GitProvider + Send + 'static>(
     req: Request,
     ctx: RequestCtx<G>,
@@ -110,7 +189,20 @@ async fn handle_request<G: GitProvider + Send + 'static>(
         keymap: &req.keymap,
         cols,
     };
-    let fast = prompt::run_fast_modules(&render_ctx, &ctx.config, &ctx.modules, &env_vars);
+
+    // Parallel fast custom module detection (runs concurrently with built-in
+    // fast modules which are computed synchronously below).
+    let fast_custom = detect_custom_modules(&DetectInput {
+        modules: &ctx.modules,
+        cwd: &cwd_path,
+        env_vars: &env_vars,
+        path_env: None,
+        speed: ModuleSpeed::Fast,
+        timeout: Duration::from_millis(ctx.config.timeout.fast_ms),
+    })
+    .await;
+
+    let fast = prompt::run_fast_modules(&render_ctx, &ctx.config, fast_custom);
 
     let cached_slow = {
         let mut state = ctx.state.lock().await;
@@ -145,21 +237,48 @@ async fn handle_request<G: GitProvider + Send + 'static>(
     let state = Arc::clone(&ctx.state);
     let writer = Arc::clone(&ctx.writer);
     tokio::spawn(async move {
-        let cwd_for_slow = PathBuf::from(&cwd);
+        let slow_timeout = Duration::from_millis(slow_config.timeout.slow_ms);
+        let deadline = tokio::time::Instant::now() + slow_timeout;
+
+        // Single PathBuf allocation shared by git and custom module tasks.
+        let cwd_path = PathBuf::from(&cwd);
+
+        // Spawn git module task
+        let git_cwd = cwd_path.clone();
         let indicator_color = slow_config.git.indicator_color;
-        let Ok(slow) = tokio::task::spawn_blocking(move || {
-            prompt::run_slow_modules(prompt::SlowModulesInput {
-                cwd: &cwd_for_slow,
-                provider: ctx.git_provider,
-                indicator_color,
-                path_env: path_env.as_deref(),
-                modules: &slow_modules,
-                env_vars: &env_vars,
-            })
-        })
-        .await
-        else {
-            return;
+        let git_provider = ctx.git_provider;
+        let git_path_env = path_env.clone();
+        let mut git_set = JoinSet::new();
+        git_set.spawn_blocking(move || {
+            let module = GitModule::with_indicator_color(git_provider, indicator_color);
+            module
+                .render_for_cwd(&git_cwd, git_path_env.as_deref())
+                .map(|output| output.content)
+        });
+        let slow_detect_input = DetectInput {
+            modules: &slow_modules,
+            cwd: &cwd_path,
+            env_vars: &env_vars,
+            path_env: path_env.as_deref(),
+            speed: ModuleSpeed::Slow,
+            timeout: slow_timeout,
+        };
+        let custom_future = detect_custom_modules(&slow_detect_input);
+
+        // Run git and custom detection concurrently with shared timeout
+        let (git_result, custom_modules) = tokio::join!(
+            async {
+                match tokio::time::timeout_at(deadline, git_set.join_next()).await {
+                    Ok(Some(Ok(git))) => git,
+                    _ => None,
+                }
+            },
+            custom_future,
+        );
+
+        let slow = prompt::SlowOutput {
+            git: git_result,
+            custom_modules,
         };
 
         {

@@ -12,6 +12,8 @@ mod request;
 mod session;
 
 #[cfg(test)]
+mod parallel_tests;
+#[cfg(test)]
 mod test_support;
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
