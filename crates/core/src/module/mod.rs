@@ -6,6 +6,7 @@
 
 pub mod character;
 pub mod cmd_duration;
+pub mod custom;
 pub mod directory;
 pub mod git;
 pub mod status;
@@ -16,14 +17,14 @@ use std::path::Path;
 
 pub use character::CharacterModule;
 pub use cmd_duration::CmdDurationModule;
+pub use custom::{
+    CustomModuleInfo, ResolvedModule, detect_modules, required_env_var_names, resolve_modules,
+};
 pub use directory::DirectoryModule;
 pub use git::{CommandGitProvider, GitError, GitModule, GitProvider, GitStatus};
 pub use status::StatusModule;
 pub use time::TimeModule;
-pub use toolchain::{
-    ResolvedToolchain, ToolchainInfo, ToolchainModule, detect_all as detect_toolchains,
-    resolve_toolchains,
-};
+pub use toolchain::ToolchainModule;
 
 /// Speed classification for prompt modules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

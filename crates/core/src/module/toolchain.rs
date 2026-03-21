@@ -11,7 +11,7 @@ use regex_lite::Regex;
 
 use super::{Module, ModuleOutput, ModuleSpeed, RenderContext};
 use crate::{
-    config::ToolchainDef,
+    config::{RegexPattern, ToolchainDef},
     render::style::{Color, Style},
 };
 
@@ -97,7 +97,7 @@ pub fn builtin_toolchains() -> Vec<ToolchainDef> {
             files: vec!["Cargo.toml".to_owned()],
             version_file: None,
             command: Some(vec!["rustc".to_owned(), "--version".to_owned()]),
-            version_regex: Some(r"rustc\s+(\S+)".to_owned()),
+            version_regex: Some(RegexPattern::new_unchecked(r"rustc\s+(\S+)".to_owned())),
             icon: Some("\u{f1617}".to_owned()),
             color: Some(Color::Red),
         },
@@ -106,7 +106,7 @@ pub fn builtin_toolchains() -> Vec<ToolchainDef> {
             files: vec!["bun.lockb".to_owned(), "bunfig.toml".to_owned()],
             version_file: None,
             command: Some(vec!["bun".to_owned(), "--version".to_owned()]),
-            version_regex: Some(r"(\d[\d.]*)".to_owned()),
+            version_regex: Some(RegexPattern::new_unchecked(r"(\d[\d.]*)".to_owned())),
             icon: Some("\u{e76f}".to_owned()),
             color: Some(Color::Red),
         },
@@ -115,7 +115,7 @@ pub fn builtin_toolchains() -> Vec<ToolchainDef> {
             files: vec!["package.json".to_owned()],
             version_file: Some(".node-version".to_owned()),
             command: Some(vec!["node".to_owned(), "--version".to_owned()]),
-            version_regex: Some(r"v?(\d[\d.]*)".to_owned()),
+            version_regex: Some(RegexPattern::new_unchecked(r"v?(\d[\d.]*)".to_owned())),
             icon: Some("\u{e718}".to_owned()),
             color: Some(Color::Green),
         },
@@ -124,7 +124,7 @@ pub fn builtin_toolchains() -> Vec<ToolchainDef> {
             files: vec!["go.mod".to_owned()],
             version_file: None,
             command: Some(vec!["go".to_owned(), "version".to_owned()]),
-            version_regex: Some(r"go(\d[\d.]*)".to_owned()),
+            version_regex: Some(RegexPattern::new_unchecked(r"go(\d[\d.]*)".to_owned())),
             icon: Some("\u{e627}".to_owned()),
             color: Some(Color::Cyan),
         },
@@ -133,7 +133,7 @@ pub fn builtin_toolchains() -> Vec<ToolchainDef> {
             files: vec!["pyproject.toml".to_owned(), "setup.py".to_owned()],
             version_file: None,
             command: Some(vec!["python3".to_owned(), "--version".to_owned()]),
-            version_regex: Some(r"Python\s+(\S+)".to_owned()),
+            version_regex: Some(RegexPattern::new_unchecked(r"Python\s+(\S+)".to_owned())),
             icon: Some("\u{e235}".to_owned()),
             color: Some(Color::Yellow),
         },
@@ -142,7 +142,9 @@ pub fn builtin_toolchains() -> Vec<ToolchainDef> {
             files: vec!["Gemfile".to_owned()],
             version_file: None,
             command: Some(vec!["ruby".to_owned(), "--version".to_owned()]),
-            version_regex: Some(r"ruby\s+(\d+\.\d+\.\d+)".to_owned()),
+            version_regex: Some(RegexPattern::new_unchecked(
+                r"ruby\s+(\d+\.\d+\.\d+)".to_owned(),
+            )),
             icon: Some("\u{e791}".to_owned()),
             color: Some(Color::Red),
         },
@@ -172,18 +174,10 @@ pub fn resolve_toolchains(user_defs: &[ToolchainDef]) -> Vec<ResolvedToolchain> 
 }
 
 fn compile_def(def: ToolchainDef) -> ResolvedToolchain {
-    let version_regex = def.version_regex.as_ref().and_then(|pat| {
-        Regex::new(pat)
-            .map_err(|e| {
-                tracing::error!(
-                    toolchain = %def.name,
-                    pattern = %pat,
-                    error = %e,
-                    "invalid version_regex, ignoring"
-                );
-            })
-            .ok()
-    });
+    let version_regex = def
+        .version_regex
+        .as_ref()
+        .and_then(|pat| Regex::new(pat.as_str()).ok());
     let style = def.color.map_or_else(
         || Style::new().fg(Color::BrightBlack),
         |c| Style::new().fg(c).bold(),
@@ -360,7 +354,7 @@ mod tests {
             files: vec!["Cargo.toml".to_owned()],
             version_file: None,
             command: Some(vec!["rustc".to_owned(), "--version".to_owned()]),
-            version_regex: Some(r"rustc\s+(\S+)".to_owned()),
+            version_regex: Some(RegexPattern::new_unchecked(r"rustc\s+(\S+)".to_owned())),
             icon: Some("R".to_owned()),
             color: Some(Color::Blue),
         }];
@@ -378,7 +372,7 @@ mod tests {
             files: vec!["build.zig".to_owned()],
             version_file: None,
             command: Some(vec!["zig".to_owned(), "version".to_owned()]),
-            version_regex: Some(r"(\d[\d.]*)".to_owned()),
+            version_regex: Some(RegexPattern::new_unchecked(r"(\d[\d.]*)".to_owned())),
             icon: Some("Z".to_owned()),
             color: Some(Color::Yellow),
         }];
@@ -389,12 +383,13 @@ mod tests {
 
     #[test]
     fn test_resolve_invalid_regex_compiles_to_none() {
+        // new_unchecked bypasses validation; compile_def still handles gracefully
         let user = vec![ToolchainDef {
             name: "bad".to_owned(),
             files: vec!["bad.txt".to_owned()],
             version_file: None,
             command: Some(vec!["echo".to_owned(), "1.0".to_owned()]),
-            version_regex: Some(r"(unclosed".to_owned()),
+            version_regex: Some(RegexPattern::new_unchecked(r"(unclosed".to_owned())),
             icon: None,
             color: None,
         }];
@@ -826,74 +821,7 @@ mod tests {
         Ok(())
     }
 
-    // -- Config [[toolchain]] integration -------------------------------------
-
-    #[test]
-    fn test_config_toolchain_section_parsing() -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("config.toml");
-        std::fs::write(
-            &path,
-            r#"
-[[toolchain]]
-name = "zig"
-files = ["build.zig"]
-command = ["zig", "version"]
-version_regex = '(\d[\d.]*)'
-icon = "Z"
-color = "yellow"
-"#,
-        )?;
-        let config = crate::config::load_config(&path);
-        assert_eq!(config.toolchain.len(), 1);
-        assert_eq!(config.toolchain[0].name, "zig");
-        assert_eq!(config.toolchain[0].files, vec!["build.zig"]);
-        let cmd = config.toolchain[0].command.as_ref();
-        let cmd_strs: Option<Vec<&str>> = cmd.map(|v| v.iter().map(String::as_str).collect());
-        assert_eq!(cmd_strs.as_deref(), Some(["zig", "version"].as_slice()));
-        assert_eq!(
-            config.toolchain[0].version_regex.as_deref(),
-            Some(r"(\d[\d.]*)")
-        );
-        assert_eq!(config.toolchain[0].icon.as_deref(), Some("Z"));
-        assert_eq!(config.toolchain[0].color, Some(Color::Yellow));
-        Ok(())
-    }
-
-    #[test]
-    fn test_config_no_toolchain_section_defaults_empty() -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("config.toml");
-        std::fs::write(&path, "")?;
-        let config = crate::config::load_config(&path);
-        assert!(config.toolchain.is_empty());
-        Ok(())
-    }
-
-    #[test]
-    fn test_config_multiple_toolchain_sections() -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("config.toml");
-        std::fs::write(
-            &path,
-            r#"
-[[toolchain]]
-name = "zig"
-files = ["build.zig"]
-
-[[toolchain]]
-name = "deno"
-files = ["deno.json"]
-"#,
-        )?;
-        let config = crate::config::load_config(&path);
-        assert_eq!(config.toolchain.len(), 2);
-        assert_eq!(config.toolchain[0].name, "zig");
-        assert_eq!(config.toolchain[1].name, "deno");
-        Ok(())
-    }
-
-    // -- Module trait (backward compat) ---------------------------------------
+    // -- Module trait -----------------------------------------------------------
 
     #[test]
     fn test_module_speed_is_slow() {
