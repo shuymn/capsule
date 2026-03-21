@@ -51,7 +51,7 @@ impl Module for ToolchainModule {
     }
 
     fn render(&self, ctx: &RenderContext<'_>) -> Option<ModuleOutput> {
-        let info = detect(ctx.cwd)?;
+        let info = detect(ctx.cwd, None)?;
         Some(ModuleOutput {
             content: info.version,
         })
@@ -60,11 +60,14 @@ impl Module for ToolchainModule {
 
 /// Detects toolchain and resolves version for the given directory.
 ///
+/// `path_env` overrides the `PATH` environment variable for version
+/// detection commands (important under launchd).
+///
 /// Returns `None` if no marker file is found or version cannot be resolved.
 #[must_use]
-pub fn detect(cwd: &Path) -> Option<ToolchainInfo> {
+pub fn detect(cwd: &Path, path_env: Option<&str>) -> Option<ToolchainInfo> {
     let name = detect_toolchain(cwd)?;
-    let version = detect_version(name, cwd)?;
+    let version = detect_version(name, cwd, path_env)?;
     Some(ToolchainInfo { name, version })
 }
 
@@ -77,7 +80,7 @@ fn detect_toolchain(cwd: &Path) -> Option<&'static str> {
     None
 }
 
-fn detect_version(name: &str, cwd: &Path) -> Option<String> {
+fn detect_version(name: &str, cwd: &Path, path_env: Option<&str>) -> Option<String> {
     if name == "node"
         && let Some(v) = read_node_version_file(cwd)
     {
@@ -85,11 +88,12 @@ fn detect_version(name: &str, cwd: &Path) -> Option<String> {
     }
 
     let (cmd, args) = version_command(name)?;
-    let output = Command::new(cmd)
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .ok()?;
+    let mut command = Command::new(cmd);
+    command.args(args).current_dir(cwd);
+    if let Some(path) = path_env {
+        command.env("PATH", path);
+    }
+    let output = command.output().ok()?;
     if !output.status.success() {
         return None;
     }

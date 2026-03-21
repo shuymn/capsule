@@ -408,6 +408,12 @@ async fn handle_request<G: GitProvider + Send + 'static>(
     w.write_message(&Message::RenderResult(result)).await?;
     drop(w);
 
+    let path_env: Option<String> = req
+        .env_vars
+        .into_iter()
+        .find(|(k, _)| k == "PATH")
+        .map(|(_, v)| v);
+
     // Spawn slow module recomputation in background
     let sent_left1 = lines.left1;
     let sent_left2 = lines.left2;
@@ -416,7 +422,12 @@ async fn handle_request<G: GitProvider + Send + 'static>(
         let cwd_for_slow = PathBuf::from(&cwd);
         let indicator_color = slow_config.git.indicator_color;
         let Ok(slow) = tokio::task::spawn_blocking(move || {
-            run_slow_modules(&cwd_for_slow, git_provider, indicator_color)
+            run_slow_modules(
+                &cwd_for_slow,
+                git_provider,
+                indicator_color,
+                path_env.as_deref(),
+            )
         })
         .await
         else {
@@ -482,11 +493,16 @@ fn run_fast_modules(ctx: &RenderContext<'_>, config: &Config) -> FastOutputs {
     }
 }
 
-fn run_slow_modules<G: GitProvider>(cwd: &Path, provider: G, indicator_color: Color) -> SlowOutput {
+fn run_slow_modules<G: GitProvider>(
+    cwd: &Path,
+    provider: G,
+    indicator_color: Color,
+    path_env: Option<&str>,
+) -> SlowOutput {
     let git_module = GitModule::with_indicator_color(provider, indicator_color);
     SlowOutput {
-        git: git_module.render_for_cwd(cwd).map(|o| o.content),
-        toolchain: detect_toolchain(cwd),
+        git: git_module.render_for_cwd(cwd, path_env).map(|o| o.content),
+        toolchain: detect_toolchain(cwd, path_env),
     }
 }
 
@@ -496,7 +512,7 @@ fn run_slow_modules<G: GitProvider>(cwd: &Path, provider: G, indicator_color: Co
 
 /// Nerd Font icon for a toolchain name (Starship nerd-font-symbols preset).
 ///
-/// Accepts `&Config` for future toolchain DSL support (Theme 15).
+/// Accepts `&Config` so user-defined toolchains can override icons.
 fn toolchain_icon(_config: &Config, name: &str) -> Option<&'static str> {
     match name {
         "rust" => Some("\u{f1617}"),
@@ -511,7 +527,7 @@ fn toolchain_icon(_config: &Config, name: &str) -> Option<&'static str> {
 
 /// Starship-compatible theme color for a toolchain.
 ///
-/// Accepts `&Config` for future toolchain DSL support (Theme 15).
+/// Accepts `&Config` so user-defined toolchains can override colors.
 fn toolchain_style(_config: &Config, name: &str) -> Style {
     match name {
         "node" => Style::new().fg(Color::Green).bold(),
@@ -653,7 +669,11 @@ mod tests {
     }
 
     impl GitProvider for MockGitProvider {
-        fn status(&self, _cwd: &Path) -> Result<Option<GitStatus>, GitError> {
+        fn status(
+            &self,
+            _cwd: &Path,
+            _path_env: Option<&str>,
+        ) -> Result<Option<GitStatus>, GitError> {
             Ok(self.status.clone())
         }
     }
@@ -696,6 +716,7 @@ mod tests {
             last_exit_code: 0,
             duration_ms: None,
             keymap: "main".to_owned(),
+            env_vars: vec![],
         }
     }
 
@@ -1007,7 +1028,7 @@ mod tests {
         );
     }
 
-    // -- Theme 10: branch icon + cmd_duration connector tests ----------------
+    // branch icon + cmd_duration connector tests
 
     #[test]
     fn test_daemon_compose_prompt_branch_icon_f418() {

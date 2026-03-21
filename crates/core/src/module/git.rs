@@ -42,12 +42,16 @@ pub struct GitStatus {
 pub trait GitProvider {
     /// Query the git status of the repository at `cwd`.
     ///
+    /// `path_env` overrides the `PATH` environment variable for the spawned
+    /// process, allowing the daemon to use the shell's PATH (important under
+    /// launchd where the daemon's PATH is minimal).
+    ///
     /// Returns `Ok(None)` if `cwd` is not inside a git repository.
     ///
     /// # Errors
     ///
     /// Returns [`GitError`] if the git command cannot be executed.
-    fn status(&self, cwd: &Path) -> Result<Option<GitStatus>, GitError>;
+    fn status(&self, cwd: &Path, path_env: Option<&str>) -> Result<Option<GitStatus>, GitError>;
 }
 
 /// [`GitProvider`] that shells out to the `git` command.
@@ -56,13 +60,15 @@ pub trait GitProvider {
 pub struct CommandGitProvider;
 
 impl GitProvider for CommandGitProvider {
-    fn status(&self, cwd: &Path) -> Result<Option<GitStatus>, GitError> {
-        let output = Command::new("git")
-            .args(["status", "--porcelain=v2", "--branch", "--show-stash"])
+    fn status(&self, cwd: &Path, path_env: Option<&str>) -> Result<Option<GitStatus>, GitError> {
+        let mut cmd = Command::new("git");
+        cmd.args(["status", "--porcelain=v2", "--branch", "--show-stash"])
             .current_dir(cwd)
-            .stderr(std::process::Stdio::null())
-            .output()
-            .map_err(GitError::Command)?;
+            .stderr(std::process::Stdio::null());
+        if let Some(path) = path_env {
+            cmd.env("PATH", path);
+        }
+        let output = cmd.output().map_err(GitError::Command)?;
 
         if !output.status.success() {
             return Ok(None);
@@ -106,8 +112,8 @@ impl<G: GitProvider> GitModule<G> {
     ///
     /// This is the core implementation used by both [`Module::render`] and
     /// the daemon's slow-module path (which has no full [`RenderContext`]).
-    pub fn render_for_cwd(&self, cwd: &Path) -> Option<ModuleOutput> {
-        let status = match self.provider.status(cwd) {
+    pub fn render_for_cwd(&self, cwd: &Path, path_env: Option<&str>) -> Option<ModuleOutput> {
+        let status = match self.provider.status(cwd, path_env) {
             Ok(Some(s)) => s,
             Ok(None) => return None,
             Err(e) => {
@@ -133,7 +139,7 @@ impl<G: GitProvider> Module for GitModule<G> {
     }
 
     fn render(&self, ctx: &RenderContext<'_>) -> Option<ModuleOutput> {
-        self.render_for_cwd(ctx.cwd)
+        self.render_for_cwd(ctx.cwd, None)
     }
 }
 
@@ -396,7 +402,11 @@ mod tests {
     }
 
     impl GitProvider for MockGitProvider {
-        fn status(&self, _cwd: &Path) -> Result<Option<GitStatus>, GitError> {
+        fn status(
+            &self,
+            _cwd: &Path,
+            _path_env: Option<&str>,
+        ) -> Result<Option<GitStatus>, GitError> {
             Ok(self.result.clone())
         }
     }
@@ -478,7 +488,7 @@ mod tests {
 
         // Query via CommandGitProvider
         let provider = CommandGitProvider;
-        let status = provider.status(path)?;
+        let status = provider.status(path, None)?;
         let status = status.as_ref();
         assert!(status.is_some(), "should detect git repo");
         assert!(
@@ -506,12 +516,12 @@ mod tests {
     fn test_module_not_a_git_repo() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let provider = CommandGitProvider;
-        let status = provider.status(dir.path())?;
+        let status = provider.status(dir.path(), None)?;
         assert!(status.is_none(), "non-git dir should return None");
         Ok(())
     }
 
-    // -- Starship-compatible indicator tests (Theme 10) --
+    // -- Starship-compatible indicator tests --
 
     #[test]
     fn test_format_conflict_uses_equals_sign() {
