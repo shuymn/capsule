@@ -947,4 +947,32 @@ env = "NODE_VERSION"
         );
         Ok(())
     }
+
+    #[test]
+    fn test_config_empty_strings_preserve_empty() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[character]
+glyph = ""
+[git]
+icon = ""
+[connectors]
+git = ""
+time = ""
+cmd_duration = ""
+"#,
+        )?;
+        let result = read_config(&path)?;
+        let config = result.ok_or("config should parse")?;
+        // Empty strings are valid — they should be preserved, not replaced with defaults
+        assert_eq!(config.character.glyph, "");
+        assert_eq!(config.git.icon, "");
+        assert_eq!(config.connectors.git, "");
+        assert_eq!(config.connectors.time, "");
+        assert_eq!(config.connectors.cmd_duration, "");
+        Ok(())
+    }
 }
