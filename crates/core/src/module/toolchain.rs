@@ -85,7 +85,11 @@ fn detect_version(name: &str, cwd: &Path) -> Option<String> {
     }
 
     let (cmd, args) = version_command(name)?;
-    let output = Command::new(cmd).args(args).output().ok()?;
+    let output = Command::new(cmd)
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
