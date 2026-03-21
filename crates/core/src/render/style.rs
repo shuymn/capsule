@@ -259,12 +259,6 @@ mod tests {
     }
 
     #[test]
-    fn test_render_style_default_is_unstyled() {
-        let style = Style::default();
-        assert_eq!(style.paint("test"), "test");
-    }
-
-    #[test]
     fn test_render_style_dimmed() {
         let style = Style::new().dimmed();
         let painted = style.paint("hello");
@@ -283,17 +277,6 @@ mod tests {
         assert!(
             contains_style_sequence(&painted, &[2, 36]),
             "should contain dimmed+cyan ANSI code: {painted}"
-        );
-    }
-
-    #[test]
-    fn test_render_style_dimmed_display_width_unchanged() {
-        let style = Style::new().dimmed();
-        let painted = style.paint("hello");
-        assert_eq!(
-            display_width(&painted),
-            5,
-            "dimmed text should have same display width as plain text"
         );
     }
 

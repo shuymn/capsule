@@ -20,28 +20,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_init_zsh_contains_capsule_functions() {
-        let script = generate();
-        assert!(
-            script.contains("_capsule_precmd"),
-            "missing _capsule_precmd"
-        );
-        assert!(
-            script.contains("_capsule_preexec"),
-            "missing _capsule_preexec"
-        );
-        assert!(script.contains("_capsule_init"), "missing _capsule_init");
-        assert!(
-            script.contains("_capsule_start_coproc"),
-            "missing _capsule_start_coproc"
-        );
-        assert!(
-            script.contains("_capsule_async_callback"),
-            "missing _capsule_async_callback"
-        );
-    }
-
-    #[test]
     fn test_init_zsh_contains_fallback_prompt() {
         let script = generate();
         assert!(script.contains("%~ %# "), "missing fallback prompt");

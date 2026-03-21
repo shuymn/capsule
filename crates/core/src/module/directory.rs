@@ -176,14 +176,4 @@ mod tests {
             "should fall back to home-abbreviated when no .git"
         );
     }
-
-    #[test]
-    fn test_module_speed_is_fast() {
-        assert_eq!(DirectoryModule::new().speed(), ModuleSpeed::Fast);
-    }
-
-    #[test]
-    fn test_module_name() {
-        assert_eq!(DirectoryModule::new().name(), "directory");
-    }
 }

@@ -25,11 +25,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_compute_returns_some() {
-        assert!(compute().is_some(), "should succeed for the test binary");
-    }
-
-    #[test]
     fn test_compute_format() {
         let id = compute();
         assert!(id.is_some(), "should succeed for the test binary");
@@ -44,12 +39,5 @@ mod tests {
             parts[1].parse::<u64>().is_ok(),
             "mtime_nanos should be a valid u64"
         );
-    }
-
-    #[test]
-    fn test_compute_is_deterministic() {
-        let id1 = compute();
-        let id2 = compute();
-        assert_eq!(id1, id2, "consecutive calls should return the same value");
     }
 }

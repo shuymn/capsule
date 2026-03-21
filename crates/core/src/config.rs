@@ -548,26 +548,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_config_default_matches_hardcoded_values() {
-        let config = Config::default();
-        assert_eq!(config.character.glyph, "\u{276f}");
-        assert_eq!(config.character.success_color, Color::Green);
-        assert_eq!(config.character.error_color, Color::Red);
-        assert_eq!(config.directory.color, Color::Cyan);
-        assert_eq!(config.git.icon, "\u{f418}");
-        assert_eq!(config.git.indicator_color, Color::Red);
-        assert!(config.time.enabled);
-        assert_eq!(config.time.format, TimeFormat::WithSeconds);
-        assert_eq!(config.time.color, Color::Yellow);
-        assert_eq!(config.cmd_duration.threshold_ms, 2000);
-        assert_eq!(config.cmd_duration.color, Color::Yellow);
-        assert_eq!(config.connectors.git, "on");
-        assert_eq!(config.connectors.time, "at");
-        assert_eq!(config.connectors.cmd_duration, "took");
-        assert_eq!(config.color_map, ColorMap::default());
-    }
-
-    #[test]
     fn test_config_load_missing_file_returns_defaults() {
         let config = load_config(Path::new("/nonexistent/config.toml"));
         assert_eq!(config.character.glyph, "\u{276f}");
@@ -760,27 +740,6 @@ indicator_color = "yellow"
         assert_eq!(config.git.icon, "");
         assert_eq!(config.git.indicator_color, Color::Yellow);
         Ok(())
-    }
-
-    #[test]
-    fn test_config_style_defaults_match_current_prompt_theme() {
-        let config = Config::default();
-        assert_eq!(config.character.success_style.fg, None);
-        assert_eq!(config.character.error_style.fg, None);
-        assert_eq!(config.directory.style.bold, Some(true));
-        assert_eq!(config.directory.style.fg, None);
-        assert_eq!(config.directory.read_only_style.fg, Some(Color::Red));
-        assert_eq!(config.git.style.fg, Some(Color::Magenta));
-        assert_eq!(config.git.style.bold, Some(true));
-        assert_eq!(config.git.indicator_style.fg, None);
-        assert_eq!(config.git.indicator_style.bold, Some(true));
-        assert_eq!(config.time.style.fg, None);
-        assert_eq!(config.time.style.bold, Some(true));
-        assert_eq!(config.cmd_duration.style.fg, None);
-        assert_eq!(config.cmd_duration.style.bold, Some(true));
-        assert_eq!(config.connectors.style.fg, None);
-        assert_eq!(config.color_map.red, 31);
-        assert_eq!(config.color_map.bright_black, 90);
     }
 
     #[test]

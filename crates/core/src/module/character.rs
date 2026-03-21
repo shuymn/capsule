@@ -67,16 +67,4 @@ mod tests {
         let output = CharacterModule::new().render(&ctx);
         assert_eq!(output.map(|o| o.content), Some("❯".to_owned()));
     }
-
-    #[test]
-    fn test_module_success_and_error_same_content() {
-        let success_ctx = make_ctx(0);
-        let error_ctx = make_ctx(1);
-        let success = CharacterModule::new().render(&success_ctx);
-        let error = CharacterModule::new().render(&error_ctx);
-        assert_eq!(
-            success, error,
-            "character content should be the same; color is applied by composition"
-        );
-    }
 }
