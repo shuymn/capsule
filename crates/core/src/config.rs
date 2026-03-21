@@ -45,6 +45,16 @@ pub struct StyleConfig {
 }
 
 impl StyleConfig {
+    /// Returns a `StyleConfig` with only bold enabled.
+    #[must_use]
+    pub const fn bold() -> Self {
+        Self {
+            fg: None,
+            bold: Some(true),
+            dimmed: None,
+        }
+    }
+
     #[expect(
         clippy::missing_const_for_fn,
         reason = "Option equality is not const-stable on the current toolchain"
@@ -122,11 +132,7 @@ impl Default for DirectoryConfig {
     fn default() -> Self {
         Self {
             color: Color::Cyan,
-            style: StyleConfig {
-                fg: None,
-                bold: Some(true),
-                dimmed: None,
-            },
+            style: StyleConfig::bold(),
             read_only_style: StyleConfig {
                 fg: Some(Color::Red),
                 bold: None,
@@ -172,11 +178,7 @@ impl Default for GitConfig {
                 bold: Some(true),
                 dimmed: None,
             },
-            indicator_style: StyleConfig {
-                fg: None,
-                bold: Some(true),
-                dimmed: None,
-            },
+            indicator_style: StyleConfig::bold(),
         }
     }
 }
@@ -249,7 +251,7 @@ impl Default for TimeConfig {
             enabled: true,
             format: TimeFormat::WithSeconds,
             color: Color::Yellow,
-            style: StyleConfig::default(),
+            style: StyleConfig::bold(),
         }
     }
 }
@@ -284,7 +286,7 @@ impl Default for CmdDurationConfig {
         Self {
             threshold_ms: 2000,
             color: Color::Yellow,
-            style: StyleConfig::default(),
+            style: StyleConfig::bold(),
         }
     }
 }
@@ -773,7 +775,9 @@ indicator_color = "yellow"
         assert_eq!(config.git.indicator_style.fg, None);
         assert_eq!(config.git.indicator_style.bold, Some(true));
         assert_eq!(config.time.style.fg, None);
+        assert_eq!(config.time.style.bold, Some(true));
         assert_eq!(config.cmd_duration.style.fg, None);
+        assert_eq!(config.cmd_duration.style.bold, Some(true));
         assert_eq!(config.connectors.style.fg, None);
         assert_eq!(config.color_map.red, 31);
         assert_eq!(config.color_map.bright_black, 90);

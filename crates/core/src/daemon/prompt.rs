@@ -234,6 +234,8 @@ mod tests {
 
     fn contains_yellow_ansi(line: &str) -> bool {
         line.contains("\x1b[33m")
+            || contains_style_sequence(line, &[1, 33])
+            || contains_style_sequence(line, &[33, 1])
     }
 
     #[test]
@@ -696,8 +698,9 @@ mod tests {
         config.cmd_duration.color = Color::Red;
         let lines = compose_prompt(&fast, None, 80, &config);
         assert!(
-            lines.left1.contains("\x1b[31m"),
-            "cmd_duration should use red: {}",
+            contains_style_sequence(&lines.left1, &[1, 31])
+                || contains_style_sequence(&lines.left1, &[31, 1]),
+            "cmd_duration should use bold red: {}",
             lines.left1
         );
     }
