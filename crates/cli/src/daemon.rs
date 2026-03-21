@@ -173,8 +173,11 @@ fn plist_path() -> anyhow::Result<PathBuf> {
 
 /// Install the launchd plist and load the daemon service.
 ///
-/// Idempotent: if the plist already exists with identical content, no
-/// reload occurs. If the content differs, the service is reloaded.
+/// Idempotent: if the plist already exists with identical content and the
+/// running daemon's build ID matches the current binary, no reload occurs.
+/// If the plist content differs, the service is reloaded. If the plist is
+/// current but the binary has been updated, the daemon is restarted via
+/// `launchctl kickstart -k`.
 ///
 /// # Errors
 ///
@@ -192,7 +195,21 @@ pub fn install() -> anyhow::Result<()> {
     // Check if plist already exists with same content.
     if let Ok(existing) = std::fs::read_to_string(&plist) {
         if existing == plist_content {
-            println!("plist is already current, no reload needed");
+            // Plist unchanged — check if binary was updated.
+            if daemon_needs_restart(&canonical_socket) {
+                let status = std::process::Command::new("launchctl")
+                    .args(["kickstart", "-k", &format!("gui/{uid}/{LAUNCHD_LABEL}")])
+                    .status()
+                    .context("failed to run launchctl kickstart")?;
+
+                if status.success() {
+                    println!("daemon restarted (binary updated)");
+                } else {
+                    anyhow::bail!("launchctl kickstart failed with {status}");
+                }
+            } else {
+                println!("plist is already current, no reload needed");
+            }
             return Ok(());
         }
         // Content differs — bootout before bootstrap.
@@ -268,6 +285,17 @@ fn uid() -> anyhow::Result<u32> {
     s.trim()
         .parse()
         .with_context(|| format!("failed to parse uid from `id -u`: {s:?}"))
+}
+
+/// Check if a running daemon needs to be restarted due to a binary update.
+///
+/// Returns `true` if the daemon is running and its build ID differs from
+/// the current binary. Returns `false` if build IDs match, the daemon is
+/// unreachable, or the local build ID cannot be computed.
+fn daemon_needs_restart(socket_path: &std::path::Path) -> bool {
+    // Only Ok(false) means IDs differ; Ok(true) (match) and Err (unreachable)
+    // both mean no restart is needed.
+    matches!(crate::connect::negotiate_build_id(socket_path), Ok(false))
 }
 
 // ---------------------------------------------------------------------------
@@ -353,9 +381,69 @@ fn home_dir() -> anyhow::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs::File, path::PathBuf};
+    use std::{
+        fs::File,
+        io::{BufRead as _, Write as _},
+        path::{Path, PathBuf},
+        time::Duration,
+    };
+
+    use capsule_protocol::{HelloAck, Message, PROTOCOL_VERSION};
 
     use super::*;
+
+    /// Start a mock daemon that responds to Hello with a `HelloAck`
+    /// containing the specified build ID. The listener uses non-blocking
+    /// accept with a timeout so the thread does not hang if no client
+    /// connects.
+    fn start_mock_daemon(
+        socket_path: &Path,
+        respond_build_id: String,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let listener = std::os::unix::net::UnixListener::bind(socket_path)?;
+        listener.set_nonblocking(true)?;
+        std::thread::spawn(move || {
+            // Poll accept for up to 5 seconds.
+            let stream = {
+                let mut result = None;
+                for _ in 0..500 {
+                    match listener.accept() {
+                        Ok((s, _)) => {
+                            result = Some(s);
+                            break;
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(_) => return,
+                    }
+                }
+                let Some(stream) = result else { return };
+                stream
+            };
+
+            let _ = stream.set_nonblocking(false);
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+
+            // Read Hello (newline-delimited)
+            {
+                let mut reader = std::io::BufReader::new(&stream);
+                let mut buf = Vec::new();
+                let _ = reader.read_until(b'\n', &mut buf);
+            }
+
+            // Send `HelloAck`
+            let ack = Message::HelloAck(HelloAck {
+                version: PROTOCOL_VERSION,
+                build_id: respond_build_id,
+            });
+            let mut wire = ack.to_wire();
+            wire.push(b'\n');
+            let _ = (&stream).write_all(&wire);
+        });
+        Ok(())
+    }
 
     #[test]
     fn test_daemon_flock_prevents_dual_startup() -> Result<(), Box<dyn std::error::Error>> {
@@ -436,5 +524,51 @@ mod tests {
             "plist should start with XML declaration"
         );
         assert!(plist.contains("</plist>"), "plist should be well-formed");
+    }
+
+    #[test]
+    fn test_install_build_id_match_skips_restart() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let socket = dir.path().join("test.sock");
+
+        // Mock daemon echoes back the same build_id as the current binary.
+        let my_id = crate::build_id::compute().unwrap_or_default();
+        start_mock_daemon(&socket, my_id)?;
+
+        assert!(
+            !daemon_needs_restart(&socket),
+            "should not restart when build IDs match"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_install_build_id_mismatch_triggers_restart() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let socket = dir.path().join("test.sock");
+
+        // Mock daemon returns a different build_id.
+        start_mock_daemon(&socket, "different:12345".to_owned())?;
+
+        assert!(
+            daemon_needs_restart(&socket),
+            "should restart when build IDs differ"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_install_daemon_unreachable_skips_restart() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let socket = dir.path().join("nonexistent.sock");
+
+        assert!(
+            !daemon_needs_restart(&socket),
+            "should not restart when daemon is unreachable"
+        );
+
+        Ok(())
     }
 }

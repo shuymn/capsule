@@ -78,7 +78,7 @@ fn ensure_daemon(socket_path: &Path) -> anyhow::Result<()> {
 ///
 /// Returns `Ok(true)` if build IDs match (or negotiation is skipped),
 /// `Ok(false)` if they differ, or an error on I/O failure.
-fn negotiate_build_id(socket_path: &Path) -> anyhow::Result<bool> {
+pub fn negotiate_build_id(socket_path: &Path) -> anyhow::Result<bool> {
     let Some(my_build_id) = crate::build_id::compute() else {
         return Ok(true); // skip if we can't compute
     };
