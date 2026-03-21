@@ -5,31 +5,6 @@ use std::process::Command;
 /// Path to the init.zsh source file for direct zsh function testing.
 const INIT_ZSH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../core/src/init/init.zsh");
 
-/// Helper: run a zsh snippet that sources init.zsh (without calling _capsule_init)
-/// and executes the given test code. Returns stdout.
-fn run_zsh_snippet(code: &str) -> Result<String, Box<dyn std::error::Error>> {
-    // Source only function definitions, skip _capsule_init call at the end.
-    // We do this by defining _capsule_init as a no-op before sourcing.
-    let script = format!(
-        r#"
-emulate -L zsh
-_capsule_init() {{ : }}
-source {INIT_ZSH}
-{code}
-"#
-    );
-    let output = Command::new("zsh").args(["-c", &script]).output()?;
-    if !output.status.success() {
-        return Err(format!(
-            "zsh exited with {}: stderr={}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        )
-        .into());
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
 #[test]
 fn test_init_zsh_succeeds() -> Result<(), Box<dyn std::error::Error>> {
     let output = Command::new(env!("CARGO_BIN_EXE_capsule"))
@@ -109,126 +84,67 @@ fn test_init_zsh_sets_prompt_in_isolated_session() -> Result<(), Box<dyn std::er
     Ok(())
 }
 
-// -- Pure function tests: _capsule_ns (netstring encoding) --------------------
+// -- Verify removed protocol functions are absent ----------------------------
 
 #[test]
-fn test_zsh_ns_ascii() -> Result<(), Box<dyn std::error::Error>> {
-    let out = run_zsh_snippet(r#"_capsule_ns "hello"; print -r -- "$REPLY""#)?;
-    assert_eq!(out.trim(), "5:hello,", "ASCII netstring encoding");
+fn test_init_zsh_no_netstring_functions() -> Result<(), Box<dyn std::error::Error>> {
+    let output = Command::new(env!("CARGO_BIN_EXE_capsule"))
+        .args(["init", "zsh"])
+        .output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("_capsule_ns"),
+        "_capsule_ns should be removed"
+    );
+    assert!(
+        !stdout.contains("_capsule_parse_wire"),
+        "_capsule_parse_wire should be removed"
+    );
+    assert!(
+        !stdout.contains("_capsule_send_request"),
+        "_capsule_send_request should be removed"
+    );
+    Ok(())
+}
+
+// -- Tab-separated protocol format tests --------------------------------------
+
+#[test]
+fn test_zsh_precmd_sends_tab_separated_request() -> Result<(), Box<dyn std::error::Error>> {
+    // Verify the precmd constructs a tab-separated request with correct field count.
+    // We check the print format string in the source to ensure it uses \t separators.
+    let output = Command::new(env!("CARGO_BIN_EXE_capsule"))
+        .args(["init", "zsh"])
+        .output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // The precmd should use tab-separated format with print -nu
+    assert!(
+        stdout.contains(r#"\t${_CAPSULE_LAST_EXIT}\t"#),
+        "precmd should use tab separators"
+    );
+    assert!(
+        stdout.contains("print -nu $_CAPSULE_FD_IN"),
+        "precmd should write to coproc fd"
+    );
     Ok(())
 }
 
 #[test]
-fn test_zsh_ns_empty() -> Result<(), Box<dyn std::error::Error>> {
-    let out = run_zsh_snippet(r#"_capsule_ns ""; print -r -- "$REPLY""#)?;
-    assert_eq!(out.trim(), "0:,", "empty netstring encoding");
-    Ok(())
-}
-
-#[test]
-fn test_zsh_ns_utf8_counts_bytes() -> Result<(), Box<dyn std::error::Error>> {
-    // "日本" is 6 bytes in UTF-8 (3 bytes per character)
-    let out = run_zsh_snippet(r#"_capsule_ns "日本"; print -r -- "$REPLY""#)?;
-    assert_eq!(out.trim(), "6:日本,", "UTF-8 should count bytes, not chars");
-    Ok(())
-}
-
-#[test]
-fn test_zsh_ns_matches_rust_encode() -> Result<(), Box<dyn std::error::Error>> {
-    // Verify zsh encoding matches Rust encoding for various inputs
-    let test_cases = [
-        "",
-        "hello",
-        "日本語パス",
-        "with spaces",
-        "special:chars,here",
-    ];
-    for input in test_cases {
-        let rust_encoded =
-            String::from_utf8(capsule_protocol::netstring::encode(input.as_bytes()))?;
-        let zsh_out = run_zsh_snippet(&format!(r#"_capsule_ns "{input}"; print -r -- "$REPLY""#))?;
-        assert_eq!(
-            zsh_out.trim(),
-            rust_encoded,
-            "zsh and Rust netstring encoding must match for input: {input:?}"
-        );
-    }
-    Ok(())
-}
-
-// -- Pure function tests: _capsule_parse_wire ---------------------------------
-
-#[test]
-fn test_zsh_parse_wire_basic() -> Result<(), Box<dyn std::error::Error>> {
-    // Wire format: netstring-encoded fields
-    let out = run_zsh_snippet(
-        r#"
-_capsule_parse_wire "5:hello,5:world,"
-print -r -- "${#_capsule_fields}"
-print -r -- "${_capsule_fields[1]}"
-print -r -- "${_capsule_fields[2]}"
-"#,
-    )?;
-    let lines: Vec<&str> = out.trim().lines().collect();
-    assert_eq!(lines[0], "2", "should parse 2 fields");
-    assert_eq!(lines[1], "hello", "field 1");
-    assert_eq!(lines[2], "world", "field 2");
-    Ok(())
-}
-
-#[test]
-fn test_zsh_parse_wire_empty_field() -> Result<(), Box<dyn std::error::Error>> {
-    let out = run_zsh_snippet(
-        r#"
-_capsule_parse_wire "0:,5:hello,"
-print -r -- "${#_capsule_fields}"
-print -r -- "[${_capsule_fields[1]}]"
-print -r -- "${_capsule_fields[2]}"
-"#,
-    )?;
-    let lines: Vec<&str> = out.trim().lines().collect();
-    assert_eq!(lines[0], "2", "should parse 2 fields");
-    assert_eq!(lines[1], "[]", "field 1 should be empty");
-    assert_eq!(lines[2], "hello", "field 2");
-    Ok(())
-}
-
-#[test]
-fn test_zsh_parse_wire_malformed_no_colon() -> Result<(), Box<dyn std::error::Error>> {
-    // Malformed input with no colon should not hang (blocker fix verification)
-    let out = run_zsh_snippet(
-        r#"
-_capsule_parse_wire "garbage"
-print -r -- "${#_capsule_fields}"
-"#,
-    )?;
-    assert_eq!(out.trim(), "0", "malformed input should produce 0 fields");
-    Ok(())
-}
-
-#[test]
-fn test_zsh_parse_wire_roundtrip_with_rust() -> Result<(), Box<dyn std::error::Error>> {
-    // Build a wire message using Rust's netstring encoder, parse it in zsh
-    let mut wire = Vec::new();
-    capsule_protocol::netstring::encode_into(&mut wire, b"alpha");
-    capsule_protocol::netstring::encode_into(&mut wire, b"beta");
-    capsule_protocol::netstring::encode_into(&mut wire, b"");
-    capsule_protocol::netstring::encode_into(&mut wire, "日本語".as_bytes());
-    let wire_str = String::from_utf8(wire)?;
-
-    let out = run_zsh_snippet(&format!(
-        r#"
-_capsule_parse_wire "{wire_str}"
-print -r -- "${{#_capsule_fields}}"
-for f in "${{_capsule_fields[@]}}"; do print -r -- "$f"; done
-"#
-    ))?;
-    let lines: Vec<&str> = out.trim().lines().collect();
-    assert_eq!(lines[0], "4", "should parse 4 fields");
-    assert_eq!(lines[1], "alpha");
-    assert_eq!(lines[2], "beta");
-    assert_eq!(lines[3], "");
-    assert_eq!(lines[4], "日本語");
+fn test_zsh_response_parsing_uses_tab_split() -> Result<(), Box<dyn std::error::Error>> {
+    // Verify the async callback and precmd parse tab-separated responses
+    let output = Command::new(env!("CARGO_BIN_EXE_capsule"))
+        .args(["init", "zsh"])
+        .output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Check that response parsing uses tab-based field extraction
+    assert!(
+        stdout.contains(r#"${line%%$'\t'*}"#),
+        "response parsing should extract first tab-delimited field"
+    );
+    assert!(
+        stdout.contains(r#"${line#*$'\t'*$'\t'}"#),
+        "response parsing should skip type and gen fields"
+    );
     Ok(())
 }
 

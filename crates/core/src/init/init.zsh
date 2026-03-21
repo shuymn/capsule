@@ -7,8 +7,7 @@ _capsule_init() {
     # Load required modules
     zmodload zsh/datetime 2>/dev/null
 
-    # Session state
-    typeset -g _CAPSULE_SESSION_ID
+    # Session state (session_id managed by capsule connect)
     typeset -gi _CAPSULE_GENERATION=0
     typeset -gi _CAPSULE_LAST_EXIT=0
     typeset -g _CAPSULE_CMD_START=""
@@ -20,9 +19,6 @@ _capsule_init() {
 
     # Fallback prompt
     typeset -g _CAPSULE_FALLBACK='%~ %# '
-
-    # Generate random session ID (16 hex chars = 8 bytes)
-    _CAPSULE_SESSION_ID=$(command od -An -tx1 -N8 /dev/urandom | command tr -d ' \n')
 
     # Set initial prompt (ensures PROMPT is non-empty even if coproc fails)
     PROMPT=$_CAPSULE_FALLBACK
@@ -115,69 +111,6 @@ _capsule_cleanup_fds() {
     _CAPSULE_COPROC_PID=""
 }
 
-# Encode a string as a netstring: <byte_len>:<data>,
-# Result is stored in REPLY (avoids subshell).
-# no_multibyte makes ${#1} count bytes, matching the Rust decoder.
-_capsule_ns() {
-    emulate -L zsh
-    setopt no_multibyte
-    REPLY="${#1}:${1},"
-}
-
-# Build and send a Request message to the coproc.
-_capsule_send_request() {
-    emulate -L zsh
-    setopt no_multibyte
-
-    # Guard: refuse to write to fd 0 (stdin) if fds are uninitialized.
-    (( _CAPSULE_FD_IN > 0 )) || return 1
-
-    local msg=""
-
-    _capsule_ns 1; msg+=$REPLY
-    _capsule_ns Q; msg+=$REPLY
-    _capsule_ns "$_CAPSULE_SESSION_ID"; msg+=$REPLY
-    _capsule_ns "$_CAPSULE_GENERATION"; msg+=$REPLY
-    _capsule_ns "$PWD"; msg+=$REPLY
-    _capsule_ns "$COLUMNS"; msg+=$REPLY
-    _capsule_ns "$_CAPSULE_LAST_EXIT"; msg+=$REPLY
-    _capsule_ns "${_CAPSULE_DURATION_MS:-}"; msg+=$REPLY
-    _capsule_ns "${KEYMAP:-main}"; msg+=$REPLY
-    # Encode env vars: PATH is always sent; extra vars come from daemon HelloAck.
-    local _meta="PATH=${PATH}"
-    local _ev
-    for _ev in "${_CAPSULE_EXTRA_ENV[@]}"; do
-        local _val="${(P)_ev}"
-        [[ -n "$_val" ]] && _meta+=$'\0'"${_ev}=${_val}"
-    done
-    _capsule_ns "$_meta"; msg+=$REPLY
-
-    print -nu $_CAPSULE_FD_IN "${msg}"$'\n'
-}
-
-# Parse netstring fields from a wire-format line.
-# Populates the _capsule_fields array (1-indexed in zsh).
-_capsule_parse_wire() {
-    emulate -L zsh
-    setopt no_multibyte
-    _capsule_fields=()
-    local input=$1
-
-    while [[ -n "$input" ]]; do
-        # Guard: malformed input without ':' would spin; bail out.
-        [[ "$input" == *:* ]] || break
-        local len_str=${input%%:*}
-        input=${input#*:}
-        local -i len=$len_str
-        if (( len > 0 )); then
-            _capsule_fields+=("${input[1,$len]}")
-        else
-            _capsule_fields+=("")
-        fi
-        input=${input[$((len + 2)),-1]}
-    done
-}
-
 _capsule_precmd() {
     # Capture $? immediately — must be the very first statement.
     # NOTE: If another plugin prepends to precmd_functions after capsule,
@@ -210,28 +143,48 @@ _capsule_precmd() {
     # Disable async handler during synchronous read
     (( _CAPSULE_FD_OUT > 0 )) && zle -F $_CAPSULE_FD_OUT 2>/dev/null
 
-    # Send request
-    if ! _capsule_send_request 2>/dev/null; then
+    # Build env metadata (null-separated KEY=VALUE pairs)
+    local _meta="PATH=${PATH}"
+    local _ev
+    for _ev in "${_CAPSULE_EXTRA_ENV[@]}"; do
+        local _val="${(P)_ev}"
+        [[ -n "$_val" ]] && _meta+=$'\0'"${_ev}=${_val}"
+    done
+
+    # Guard: refuse to write to fd 0 (stdin) if fds are uninitialized.
+    (( _CAPSULE_FD_IN > 0 )) || {
+        PROMPT=$_CAPSULE_FALLBACK
+        return
+    }
+
+    # Send tab-separated request:
+    # <gen>\t<exit>\t<dur>\t<cwd>\t<cols>\t<keymap>\t<env_meta>\n
+    if ! print -nu $_CAPSULE_FD_IN \
+        "${_CAPSULE_GENERATION}\t${_CAPSULE_LAST_EXIT}\t${_CAPSULE_DURATION_MS:-}\t${PWD}\t${COLUMNS}\t${KEYMAP:-main}\t${_meta}"$'\n' 2>/dev/null; then
         _capsule_cleanup_fds
         PROMPT=$_CAPSULE_FALLBACK
         return
     fi
 
     # Read response (consume stale Updates, wait for RenderResult)
+    # Response format: <type>\t<gen>\t<left1>\t<left2>
     local line attempts=0 got_render=0
+    local _left1 _left2
     while (( attempts < 3 )) && IFS= read -rt 1 -u $_CAPSULE_FD_OUT line 2>/dev/null; do
         (( attempts++ ))
-        _capsule_parse_wire "$line"
-        # fields[2] is message type: R=RenderResult, U=Update
-        if [[ "${_capsule_fields[2]}" == "R" ]]; then
+        # Check message type (first field before tab)
+        if [[ "${line%%$'\t'*}" == "R" ]]; then
             got_render=1
+            # Extract left1 and left2: skip type and gen fields
+            local _payload=${line#*$'\t'*$'\t'}
+            _left1=${_payload%%$'\t'*}
+            _left2=${_payload#*$'\t'}
             break
         fi
     done
 
-    # fields[5]=left1 (info line), fields[6]=left2 (input line)
-    if (( got_render )) && (( ${#_capsule_fields} >= 6 )); then
-        PROMPT="${_capsule_fields[5]}"$'\n'"${_capsule_fields[6]} "
+    if (( got_render )); then
+        PROMPT="${_left1}"$'\n'"${_left2} "
     else
         PROMPT=$_CAPSULE_FALLBACK
     fi
@@ -258,12 +211,17 @@ _capsule_async_callback() {
     local fd=$1
     local line
     if IFS= read -ru $fd line 2>/dev/null; then
-        _capsule_parse_wire "$line"
-        if (( ${#_capsule_fields} >= 6 )) && [[ "${_capsule_fields[2]}" == "U" ]]; then
-            # Discard stale Updates from older generations.
-            local -i update_gen=${_capsule_fields[4]}
-            if (( update_gen >= _CAPSULE_GENERATION )); then
-                PROMPT="${_capsule_fields[5]}"$'\n'"${_capsule_fields[6]} "
+        # Check for Update message type
+        if [[ "${line%%$'\t'*}" == "U" ]]; then
+            # Extract generation (second field)
+            local _rest=${line#*$'\t'}
+            local -i _update_gen=${_rest%%$'\t'*}
+            if (( _update_gen >= _CAPSULE_GENERATION )); then
+                # Extract left1 and left2: skip type and gen fields
+                local _payload=${line#*$'\t'*$'\t'}
+                local _left1=${_payload%%$'\t'*}
+                local _left2=${_payload#*$'\t'}
+                PROMPT="${_left1}"$'\n'"${_left2} "
                 zle reset-prompt 2>/dev/null
             fi
         fi

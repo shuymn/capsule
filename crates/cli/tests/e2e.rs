@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-use capsule_protocol::{Hello, Message, MessageReader, MessageWriter, PROTOCOL_VERSION, Request};
+use capsule_protocol::{Hello, Message, MessageReader, MessageWriter, PROTOCOL_VERSION};
 use common::{DaemonProcess, make_request, test_session_id};
 
 // ---------------------------------------------------------------------------
@@ -144,8 +144,9 @@ async fn test_e2e_structured_logging() -> Result<(), Box<dyn std::error::Error>>
     Ok(())
 }
 
-/// `capsule connect` shall relay wire-format messages between stdin/stdout
-/// and the daemon socket.
+/// `capsule connect` shall translate tab-separated text from stdin into
+/// netstring wire-format for the daemon, and translate the daemon's
+/// netstring responses back to tab-separated text on stdout.
 #[tokio::test]
 async fn test_e2e_connect_relay() -> Result<(), Box<dyn std::error::Error>> {
     let mut daemon = DaemonProcess::start()?;
@@ -164,61 +165,46 @@ async fn test_e2e_connect_relay() -> Result<(), Box<dyn std::error::Error>> {
     let mut child_stdin = child.stdin.take().ok_or("no stdin")?;
     let child_stdout = child.stdout.take().ok_or("no stdout")?;
 
-    // Build wire-format Request and write to child's stdin
-    let req = Message::Request(Request {
-        version: PROTOCOL_VERSION,
-        session_id: test_session_id(),
-        generation: 1,
-        cwd: daemon.tmpdir_path().to_string_lossy().into_owned(),
-        cols: 80,
-        last_exit_code: 0,
-        duration_ms: None,
-        keymap: "main".to_owned(),
-        env_vars: vec![],
-    });
-    let mut wire = req.to_wire();
-    wire.push(b'\n');
-    child_stdin.write_all(&wire)?;
+    // Build tab-separated request and write to child's stdin
+    // Format: <gen>\t<exit>\t<dur>\t<cwd>\t<cols>\t<keymap>\t<env_meta>\n
+    let cwd = daemon.tmpdir_path().to_string_lossy().into_owned();
+    let tab_req = format!("1\t0\t\t{cwd}\t80\tmain\t\n");
+    child_stdin.write_all(tab_req.as_bytes())?;
     child_stdin.flush()?;
 
     // Read response from child's stdout (LF-delimited)
     let mut reader = std::io::BufReader::new(child_stdout);
 
     // Use a timeout thread to avoid hanging forever.
-    // First line is env var metadata ("E:..."), second line is wire response.
+    // First line is env var metadata ("E:..."), second line is tab-separated response.
     let (tx, rx) = std::sync::mpsc::channel();
     let handle = std::thread::spawn(move || {
         // Skip env var metadata line
         let mut meta_buf = Vec::new();
         let _ = reader.read_until(b'\n', &mut meta_buf);
-        // Read actual wire response
-        let mut resp_buf = Vec::new();
-        let n = reader.read_until(b'\n', &mut resp_buf);
+        // Read actual tab-separated response
+        let mut resp_buf = String::new();
+        let n = reader.read_line(&mut resp_buf);
         let _ = tx.send((resp_buf, n));
     });
 
-    let (resp_buf, n) = rx.recv_timeout(Duration::from_secs(5))?;
+    let (resp_line, n) = rx.recv_timeout(Duration::from_secs(5))?;
     handle.join().map_err(|_panic| "reader thread panicked")?;
 
     let n = n?;
     assert!(n > 0, "should receive response bytes");
 
-    // Strip trailing LF and parse
-    let wire_data = if resp_buf.last() == Some(&b'\n') {
-        &resp_buf[..resp_buf.len() - 1]
-    } else {
-        &resp_buf
-    };
-    let response = Message::from_wire(wire_data)?;
-
-    match response {
-        Message::RenderResult(rr) => {
-            assert_eq!(rr.session_id, test_session_id());
-            assert_eq!(rr.generation, 1);
-            assert!(!rr.left1.is_empty(), "left1 should not be empty");
-        }
-        other => return Err(format!("expected RenderResult, got {other:?}").into()),
-    }
+    // Parse tab-separated response: <type>\t<gen>\t<left1>\t<left2>\n
+    let resp_line = resp_line.trim_end_matches('\n');
+    let fields: Vec<&str> = resp_line.splitn(4, '\t').collect();
+    assert!(
+        fields.len() >= 4,
+        "expected 4 tab-separated fields, got {}: {resp_line:?}",
+        fields.len()
+    );
+    assert_eq!(fields[0], "R", "expected RenderResult type");
+    assert_eq!(fields[1], "1", "expected generation 1");
+    assert!(!fields[2].is_empty(), "left1 should not be empty");
 
     // Close stdin to let connect exit
     drop(child_stdin);
@@ -229,7 +215,7 @@ async fn test_e2e_connect_relay() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// When daemon is killed during an active relay, capsule connect shall
-/// reconnect (via `ensure_daemon`) and resume relaying.
+/// reconnect (via `ensure_daemon`) and resume translating messages.
 #[tokio::test]
 async fn test_e2e_connect_reconnects_after_daemon_restart() -> Result<(), Box<dyn std::error::Error>>
 {
@@ -252,19 +238,19 @@ async fn test_e2e_connect_reconnects_after_daemon_restart() -> Result<(), Box<dy
 
     // Background reader: collects line-delimited messages from connect stdout.
     // Skips the initial env var metadata line ("E:...").
-    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
     std::thread::spawn(move || {
         let mut reader = std::io::BufReader::new(child_stdout);
         loop {
-            let mut buf = Vec::new();
-            match reader.read_until(b'\n', &mut buf) {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
                 Ok(0) | Err(_) => break,
                 Ok(_) => {
                     // Skip env var metadata lines
-                    if buf.starts_with(b"E:") {
+                    if line.starts_with("E:") {
                         continue;
                     }
-                    if tx.send(buf).is_err() {
+                    if tx.send(line).is_err() {
                         break;
                     }
                 }
@@ -272,23 +258,18 @@ async fn test_e2e_connect_reconnects_after_daemon_restart() -> Result<(), Box<dy
         }
     });
 
-    // Phase 1: Verify relay works
-    let req1 = Message::Request(make_request(&daemon.tmpdir_path().to_string_lossy(), 1));
-    let mut wire1 = req1.to_wire();
-    wire1.push(b'\n');
-    child_stdin.write_all(&wire1)?;
+    let cwd = daemon.tmpdir_path().to_string_lossy().into_owned();
+
+    // Phase 1: Verify relay works with tab-separated text
+    let tab_req1 = format!("1\t0\t\t{cwd}\t80\tmain\t\n");
+    child_stdin.write_all(tab_req1.as_bytes())?;
     child_stdin.flush()?;
 
-    let resp_buf = rx.recv_timeout(Duration::from_secs(5))?;
-    let resp_wire = if resp_buf.last() == Some(&b'\n') {
-        &resp_buf[..resp_buf.len() - 1]
-    } else {
-        &resp_buf
-    };
-    match Message::from_wire(resp_wire)? {
-        Message::RenderResult(rr) => assert_eq!(rr.generation, 1),
-        other => return Err(format!("expected RenderResult gen 1, got {other:?}").into()),
-    }
+    let resp_line = rx.recv_timeout(Duration::from_secs(5))?;
+    let resp_line = resp_line.trim_end_matches('\n');
+    let fields: Vec<&str> = resp_line.splitn(4, '\t').collect();
+    assert_eq!(fields[0], "R", "expected RenderResult");
+    assert_eq!(fields[1], "1", "expected generation 1");
 
     // Phase 2: Kill daemon, let connect's relay reconnect via ensure_daemon
     daemon.stop()?;
@@ -303,25 +284,18 @@ async fn test_e2e_connect_reconnects_after_daemon_restart() -> Result<(), Box<dy
     );
 
     // Phase 3: Send request through reconnected relay
-    let req2 = Message::Request(make_request(&daemon.tmpdir_path().to_string_lossy(), 2));
-    let mut wire2 = req2.to_wire();
-    wire2.push(b'\n');
-    child_stdin.write_all(&wire2)?;
+    let tab_req2 = format!("2\t0\t\t{cwd}\t80\tmain\t\n");
+    child_stdin.write_all(tab_req2.as_bytes())?;
     child_stdin.flush()?;
 
     // Read until we get RenderResult with generation 2
     let mut got_gen2 = false;
     for _ in 0..10 {
         match rx.recv_timeout(Duration::from_secs(5)) {
-            Ok(buf) => {
-                let w = if buf.last() == Some(&b'\n') {
-                    &buf[..buf.len() - 1]
-                } else {
-                    &buf
-                };
-                if let Ok(Message::RenderResult(rr)) = Message::from_wire(w)
-                    && rr.generation == 2
-                {
+            Ok(line) => {
+                let line = line.trim_end_matches('\n');
+                let fields: Vec<&str> = line.splitn(4, '\t').collect();
+                if fields.len() >= 2 && fields[0] == "R" && fields[1] == "2" {
                     got_gen2 = true;
                     break;
                 }
