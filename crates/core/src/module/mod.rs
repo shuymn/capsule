@@ -20,9 +20,7 @@ pub use custom::{
     CustomModuleInfo, ResolvedModule, ResolvedSource, detect_modules, required_env_var_names,
     resolve_modules,
 };
-pub(crate) use custom::{
-    DetectedModuleCandidate, arbitrate_detected_modules, check_when, detect_module,
-};
+pub(crate) use custom::{DetectedModuleCandidate, RequestFacts, arbitrate_detected_modules};
 pub use directory::DirectoryModule;
 pub use git::{CommandGitProvider, GitError, GitModule, GitProvider, GitStatus};
 pub use status::StatusModule;

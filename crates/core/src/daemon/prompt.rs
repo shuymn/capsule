@@ -33,9 +33,9 @@ pub(super) struct SlowOutput {
 pub(super) fn run_fast_modules(
     ctx: &RenderContext<'_>,
     config: &Config,
+    read_only: bool,
     custom_modules: Vec<CustomModuleInfo>,
 ) -> FastOutputs {
-    let read_only = std::fs::metadata(ctx.cwd).is_ok_and(|m| m.permissions().readonly());
     let time = if config.time.enabled {
         TimeModule::with_show_seconds(config.time.show_seconds())
             .render(ctx)

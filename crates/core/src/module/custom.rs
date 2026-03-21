@@ -6,7 +6,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    path::Path,
+    path::{Path, PathBuf},
     process::Command,
 };
 
@@ -95,6 +95,206 @@ impl DetectedModuleCandidate {
             arbitration: module.arbitration.clone(),
             info,
         }
+    }
+}
+
+/// Shared request-derived facts reused across module detection and prompt
+/// rendering.
+#[derive(Debug, Clone)]
+pub(crate) struct RequestFacts {
+    cwd: PathBuf,
+    env_vars: Vec<(String, String)>,
+    path_env: Option<String>,
+    read_only: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ModuleDependencyInputs {
+    pub(crate) env_vars: Vec<String>,
+    pub(crate) files: Vec<String>,
+}
+
+impl ModuleDependencyInputs {
+    #[must_use]
+    pub(crate) const fn depends_on_env_or_files(&self) -> bool {
+        !self.env_vars.is_empty() || !self.files.is_empty()
+    }
+
+    fn push_env(&mut self, name: &str) {
+        push_unique(&mut self.env_vars, name);
+    }
+
+    fn push_file(&mut self, path: &str) {
+        push_unique(&mut self.files, path);
+    }
+
+    fn add_module(&mut self, module: &ResolvedModule) {
+        for env_name in &module.when.env {
+            self.push_env(env_name);
+        }
+        for file_path in &module.when.files {
+            self.push_file(file_path);
+        }
+        for source in &module.sources {
+            match source {
+                ResolvedSource::Env { name, .. } => self.push_env(name),
+                ResolvedSource::File { path, .. } => self.push_file(path),
+                ResolvedSource::Command { .. } => {}
+            }
+        }
+    }
+}
+
+impl RequestFacts {
+    #[must_use]
+    pub(crate) fn collect(cwd: impl Into<PathBuf>, env_vars: Vec<(String, String)>) -> Self {
+        let cwd = cwd.into();
+        let read_only = std::fs::metadata(&cwd).is_ok_and(|meta| meta.permissions().readonly());
+
+        Self {
+            cwd,
+            env_vars,
+            path_env: None,
+            read_only,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn with_command_path_env(mut self, path_env: Option<String>) -> Self {
+        self.path_env = path_env;
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_forwarded_path_env(mut self) -> Self {
+        self.path_env = self.env_value("PATH").map(ToOwned::to_owned);
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn cwd(&self) -> &Path {
+        &self.cwd
+    }
+
+    #[must_use]
+    pub(crate) fn command_path_env(&self) -> Option<&str> {
+        self.path_env.as_deref()
+    }
+
+    #[must_use]
+    pub(crate) const fn read_only(&self) -> bool {
+        self.read_only
+    }
+
+    #[must_use]
+    pub(crate) fn matching_modules<'a>(
+        &'a self,
+        defs: &'a [ResolvedModule],
+        speed: ModuleSpeed,
+    ) -> Vec<(usize, &'a ResolvedModule)> {
+        defs.iter()
+            .filter(|module| module.speed == speed)
+            .filter(|module| self.check_when(&module.when))
+            .enumerate()
+            .collect()
+    }
+
+    #[must_use]
+    pub(crate) fn matching_dependency_inputs(
+        &self,
+        defs: &[ResolvedModule],
+        speed: ModuleSpeed,
+    ) -> ModuleDependencyInputs {
+        let mut inputs = ModuleDependencyInputs::default();
+
+        for (_, module) in self.matching_modules(defs, speed) {
+            inputs.add_module(module);
+        }
+
+        inputs
+    }
+
+    #[must_use]
+    pub(crate) fn check_when(&self, when: &ModuleWhen) -> bool {
+        let files_ok =
+            when.files.is_empty() || when.files.iter().any(|file| self.cwd.join(file).is_file());
+        let env_ok = when.env.is_empty()
+            || when
+                .env
+                .iter()
+                .any(|env_name| self.env_value(env_name).is_some());
+        files_ok && env_ok
+    }
+
+    #[must_use]
+    pub(crate) fn detect_module(&self, def: &ResolvedModule) -> Option<CustomModuleInfo> {
+        // Try fast sources first (env, file)
+        for source in &def.sources {
+            if source.is_fast()
+                && let Some(raw) = self.resolve_source(source)
+            {
+                return Some(make_info(def, &raw));
+            }
+        }
+
+        // Then try slow sources (command)
+        for source in &def.sources {
+            if !source.is_fast()
+                && let Some(raw) = self.resolve_source(source)
+            {
+                return Some(make_info(def, &raw));
+            }
+        }
+
+        None
+    }
+
+    fn env_value(&self, name: &str) -> Option<&str> {
+        self.env_vars
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+    }
+
+    fn resolve_source(&self, source: &ResolvedSource) -> Option<String> {
+        match source {
+            ResolvedSource::Env { name, regex } => {
+                let value = self.env_value(name)?;
+                apply_regex(value, regex.as_ref())
+            }
+            ResolvedSource::File { path, regex } => {
+                let content = std::fs::read_to_string(self.cwd.join(path)).ok()?;
+                let trimmed = content.trim();
+                if trimmed.is_empty() || trimmed.contains('/') {
+                    return None;
+                }
+                apply_regex(trimmed, regex.as_ref())
+            }
+            ResolvedSource::Command { args, regex } => {
+                let (program, cmd_args) = args.split_first()?;
+                let mut command = Command::new(program);
+                command.args(cmd_args).current_dir(&self.cwd);
+                if let Some(path_env) = self.command_path_env() {
+                    command.env("PATH", path_env);
+                }
+                let output = command.output().ok()?;
+                if !output.status.success() {
+                    return None;
+                }
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let trimmed = stdout.trim();
+                if trimmed.is_empty() {
+                    return None;
+                }
+                apply_regex(trimmed, regex.as_ref())
+            }
+        }
+    }
+}
+
+fn push_unique(values: &mut Vec<String>, value: &str) {
+    if !values.iter().any(|existing| existing == value) {
+        values.push(value.to_owned());
     }
 }
 
@@ -370,13 +570,14 @@ pub fn detect_modules(
     path_env: Option<&str>,
     only_speed: ModuleSpeed,
 ) -> Vec<CustomModuleInfo> {
-    let detected = defs
-        .iter()
-        .enumerate()
-        .filter(|(_, d)| d.speed == only_speed)
-        .filter(|(_, d)| check_when(&d.when, cwd, env_vars))
+    let facts = RequestFacts::collect(cwd.to_path_buf(), env_vars.to_vec())
+        .with_command_path_env(path_env.map(ToOwned::to_owned));
+    let detected = facts
+        .matching_modules(defs, only_speed)
+        .into_iter()
         .filter_map(|(_, d)| {
-            detect_module(d, cwd, env_vars, path_env)
+            facts
+                .detect_module(d)
                 .map(|info| DetectedModuleCandidate::new(d, info))
         })
         .collect();
@@ -415,83 +616,6 @@ pub(crate) fn arbitrate_detected_modules(
                 .then_some(candidate.info),
         })
         .collect()
-}
-
-pub(crate) fn check_when(when: &ModuleWhen, cwd: &Path, env_vars: &[(String, String)]) -> bool {
-    let files_ok = when.files.is_empty() || when.files.iter().any(|f| cwd.join(f).is_file());
-    let env_ok = when.env.is_empty()
-        || when
-            .env
-            .iter()
-            .any(|e| env_vars.iter().any(|(k, _)| k == e));
-    files_ok && env_ok
-}
-
-pub(crate) fn detect_module(
-    def: &ResolvedModule,
-    cwd: &Path,
-    env_vars: &[(String, String)],
-    path_env: Option<&str>,
-) -> Option<CustomModuleInfo> {
-    // Try fast sources first (env, file)
-    for source in &def.sources {
-        if source.is_fast()
-            && let Some(raw) = resolve_source(source, cwd, env_vars, path_env)
-        {
-            return Some(make_info(def, &raw));
-        }
-    }
-
-    // Then try slow sources (command)
-    for source in &def.sources {
-        if !source.is_fast()
-            && let Some(raw) = resolve_source(source, cwd, env_vars, path_env)
-        {
-            return Some(make_info(def, &raw));
-        }
-    }
-
-    None
-}
-
-fn resolve_source(
-    source: &ResolvedSource,
-    cwd: &Path,
-    env_vars: &[(String, String)],
-    path_env: Option<&str>,
-) -> Option<String> {
-    match source {
-        ResolvedSource::Env { name, regex } => {
-            let value = env_vars.iter().find(|(k, _)| k == name).map(|(_, v)| v)?;
-            apply_regex(value, regex.as_ref())
-        }
-        ResolvedSource::File { path, regex } => {
-            let content = std::fs::read_to_string(cwd.join(path)).ok()?;
-            let trimmed = content.trim();
-            if trimmed.is_empty() || trimmed.contains('/') {
-                return None;
-            }
-            apply_regex(trimmed, regex.as_ref())
-        }
-        ResolvedSource::Command { args, regex } => {
-            let (program, cmd_args) = args.split_first()?;
-            let mut command = Command::new(program);
-            command.args(cmd_args).current_dir(cwd);
-            if let Some(path) = path_env {
-                command.env("PATH", path);
-            }
-            let output = command.output().ok()?;
-            if !output.status.success() {
-                return None;
-            }
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let trimmed = stdout.trim();
-            if trimmed.is_empty() {
-                return None;
-            }
-            apply_regex(trimmed, regex.as_ref())
-        }
-    }
 }
 
 fn apply_regex(input: &str, regex: Option<&Regex>) -> Option<String> {
@@ -1208,6 +1332,164 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].name, "winner");
         assert_eq!(results[1].name, "plain");
+    }
+
+    #[test]
+    fn test_request_facts_matching_dependency_inputs_only_include_matching_modules()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("package.json"), "{}")?;
+        std::fs::write(dir.path().join(".node-version"), "22.0.0\n")?;
+
+        let defs = resolve_modules(&[ModuleDef {
+            name: "terraform".to_owned(),
+            when: ModuleWhen {
+                files: vec!["main.tf".to_owned()],
+                env: vec!["TF_WORKSPACE".to_owned()],
+            },
+            source: vec![
+                SourceDef {
+                    env: Some("TF_WORKSPACE".to_owned()),
+                    file: None,
+                    command: None,
+                    regex: None,
+                },
+                SourceDef {
+                    env: None,
+                    file: Some(".terraform-version".to_owned()),
+                    command: None,
+                    regex: None,
+                },
+            ],
+            format: "{value}".to_owned(),
+            icon: None,
+            color: None,
+            connector: None,
+            arbitration: None,
+        }]);
+
+        let facts = RequestFacts::collect(dir.path().to_path_buf(), vec![]);
+        let inputs = facts.matching_dependency_inputs(&defs, ModuleSpeed::Slow);
+
+        assert_eq!(inputs.env_vars, Vec::<String>::new());
+        assert_eq!(
+            inputs.files,
+            vec!["package.json".to_owned(), ".node-version".to_owned()]
+        );
+        assert!(inputs.depends_on_env_or_files());
+        Ok(())
+    }
+
+    #[test]
+    fn test_request_facts_detect_module_uses_forwarded_path()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("marker"), "")?;
+
+        let defs = resolve_modules(&[ModuleDef {
+            name: "tool".to_owned(),
+            when: ModuleWhen {
+                files: vec!["marker".to_owned()],
+                env: vec![],
+            },
+            source: vec![SourceDef {
+                env: None,
+                file: None,
+                command: Some(vec!["fake-tool".to_owned(), "--version".to_owned()]),
+                regex: None,
+            }],
+            format: "{value}".to_owned(),
+            icon: None,
+            color: None,
+            connector: None,
+            arbitration: None,
+        }]);
+        let module = defs.iter().find(|resolved| resolved.name == "tool");
+        let Some(module) = module else {
+            return Err("tool module missing".into());
+        };
+
+        let bin_dir = tempfile::tempdir()?;
+        let script_path = bin_dir.path().join("fake-tool");
+        std::fs::write(&script_path, "#!/bin/sh\necho forwarded\n")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut permissions = std::fs::metadata(&script_path)?.permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&script_path, permissions)?;
+        }
+
+        let facts = RequestFacts::collect(
+            dir.path().to_path_buf(),
+            vec![(
+                "PATH".to_owned(),
+                bin_dir.path().to_string_lossy().into_owned(),
+            )],
+        )
+        .with_forwarded_path_env();
+
+        let detected = facts.detect_module(module);
+        assert_eq!(
+            detected.as_ref().map(|info| info.value.as_str()),
+            Some("forwarded")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_detect_modules_does_not_treat_forwarded_path_env_as_override()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("marker"), "")?;
+
+        let defs = resolve_modules(&[ModuleDef {
+            name: "tool".to_owned(),
+            when: ModuleWhen {
+                files: vec!["marker".to_owned()],
+                env: vec![],
+            },
+            source: vec![SourceDef {
+                env: None,
+                file: None,
+                command: Some(vec!["fake-tool".to_owned(), "--version".to_owned()]),
+                regex: None,
+            }],
+            format: "{value}".to_owned(),
+            icon: None,
+            color: None,
+            connector: None,
+            arbitration: None,
+        }]);
+
+        let bin_dir = tempfile::tempdir()?;
+        let script_path = bin_dir.path().join("fake-tool");
+        std::fs::write(&script_path, "#!/bin/sh\necho forwarded\n")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut permissions = std::fs::metadata(&script_path)?.permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&script_path, permissions)?;
+        }
+
+        let results = detect_modules(
+            &defs,
+            dir.path(),
+            &[(
+                "PATH".to_owned(),
+                bin_dir.path().to_string_lossy().into_owned(),
+            )],
+            None,
+            ModuleSpeed::Slow,
+        );
+        assert!(
+            results.is_empty(),
+            "PATH in env_vars alone must not change detect_modules command lookup"
+        );
+        Ok(())
     }
 
     #[test]

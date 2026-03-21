@@ -1,8 +1,4 @@
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-    time::Duration,
-};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use capsule_protocol::{
     BuildId, HelloAck, Message, MessageReader, MessageWriter, PROTOCOL_VERSION, RenderResult,
@@ -18,8 +14,8 @@ use super::{
     CacheKey, DaemonError, ReloadableConfig, SESSION_TTL, SharedState, prompt, session::Session,
 };
 use crate::module::{
-    CustomModuleInfo, DetectedModuleCandidate, GitModule, GitProvider, ModuleSpeed, ResolvedModule,
-    ResolvedSource, arbitrate_detected_modules, check_when, detect_module, required_env_var_names,
+    CustomModuleInfo, DetectedModuleCandidate, GitModule, GitProvider, ModuleSpeed, RequestFacts,
+    ResolvedModule, ResolvedSource, arbitrate_detected_modules, required_env_var_names,
 };
 
 /// Per-connection context, cloned from the accept loop for each spawned handler.
@@ -98,36 +94,21 @@ pub(super) async fn handle_connection<G: GitProvider + Clone + Send + 'static>(
 /// Input for parallel custom module detection.
 struct DetectInput<'a> {
     modules: &'a [ResolvedModule],
-    cwd: &'a Path,
-    env_vars: &'a [(String, String)],
-    path_env: Option<&'a str>,
+    facts: Arc<RequestFacts>,
     speed: ModuleSpeed,
     timeout: Duration,
-}
-
-fn slow_module_depends_on_env_or_files(module: &ResolvedModule) -> bool {
-    !module.when.files.is_empty()
-        || !module.when.env.is_empty()
-        || module.sources.iter().any(|source| {
-            matches!(
-                source,
-                ResolvedSource::Env { .. } | ResolvedSource::File { .. }
-            )
-        })
 }
 
 fn cache_key_for_request(
     cwd: &str,
     config_generation: u64,
     modules: &[ResolvedModule],
-    cwd_path: &Path,
-    env_vars: &[(String, String)],
+    facts: &RequestFacts,
 ) -> Option<CacheKey> {
-    let mut matching_slow_modules = modules
-        .iter()
-        .filter(|module| module.speed == ModuleSpeed::Slow)
-        .filter(|module| check_when(&module.when, cwd_path, env_vars));
-    if matching_slow_modules.any(slow_module_depends_on_env_or_files) {
+    if facts
+        .matching_dependency_inputs(modules, ModuleSpeed::Slow)
+        .depends_on_env_or_files()
+    {
         return None;
     }
     Some(CacheKey::new(cwd.to_owned(), config_generation))
@@ -161,13 +142,7 @@ fn should_detect_inline(speed: ModuleSpeed, module: &ResolvedModule) -> bool {
 /// segments are omitted (fail-open).
 async fn detect_custom_modules(input: &DetectInput<'_>) -> Vec<CustomModuleInfo> {
     // Filter matching modules (fast, no I/O)
-    let matching: Vec<(usize, &ResolvedModule)> = input
-        .modules
-        .iter()
-        .filter(|d| d.speed == input.speed)
-        .filter(|d| check_when(&d.when, input.cwd, input.env_vars))
-        .enumerate()
-        .collect();
+    let matching = input.facts.matching_modules(input.modules, input.speed);
 
     if matching.is_empty() {
         return Vec::new();
@@ -180,28 +155,16 @@ async fn detect_custom_modules(input: &DetectInput<'_>) -> Vec<CustomModuleInfo>
     let mut blocking = Vec::new();
     for (slot, def) in matching.iter().copied() {
         if should_detect_inline(input.speed, def) {
-            slots[slot] = detect_module(def, input.cwd, input.env_vars, input.path_env);
+            slots[slot] = input.facts.detect_module(def);
         } else {
             blocking.push((slot, def.clone()));
         }
     }
 
     if !blocking.is_empty() {
-        // Share immutable data across tasks via Arc to avoid per-task cloning.
-        let shared_cwd = Arc::new(input.cwd.to_path_buf());
-        let shared_env_vars = Arc::new(input.env_vars.to_vec());
-        let shared_path_env = Arc::new(input.path_env.map(ToOwned::to_owned));
-
         for (slot, def) in blocking {
-            let cwd = Arc::clone(&shared_cwd);
-            let env_vars = Arc::clone(&shared_env_vars);
-            let path_env = Arc::clone(&shared_path_env);
-            join_set.spawn_blocking(move || {
-                (
-                    slot,
-                    detect_module(&def, &cwd, &env_vars, path_env.as_deref()),
-                )
-            });
+            let facts = Arc::clone(&input.facts);
+            join_set.spawn_blocking(move || (slot, facts.detect_module(&def)));
         }
 
         let deadline = tokio::time::Instant::now() + input.timeout;
@@ -259,11 +222,12 @@ async fn handle_request<G: GitProvider + Send + 'static>(
         }
     }
 
-    let cwd_path = PathBuf::from(&cwd);
-    let env_vars = req.env_vars;
-    let cache_key = cache_key_for_request(&cwd, config_generation, &modules, &cwd_path, &env_vars);
+    let facts = Arc::new(
+        RequestFacts::collect(PathBuf::from(&cwd), req.env_vars).with_forwarded_path_env(),
+    );
+    let cache_key = cache_key_for_request(&cwd, config_generation, &modules, facts.as_ref());
     let render_ctx = crate::module::RenderContext {
-        cwd: &cwd_path,
+        cwd: facts.cwd(),
         home_dir: ctx.home_dir.as_ref().as_path(),
         last_exit_code: req.last_exit_code,
         duration_ms: req.duration_ms,
@@ -275,15 +239,13 @@ async fn handle_request<G: GitProvider + Send + 'static>(
     // fast modules which are computed synchronously below).
     let fast_custom = detect_custom_modules(&DetectInput {
         modules: &modules,
-        cwd: &cwd_path,
-        env_vars: &env_vars,
-        path_env: None,
+        facts: Arc::clone(&facts),
         speed: ModuleSpeed::Fast,
         timeout: Duration::from_millis(config.timeout.fast_ms),
     })
     .await;
 
-    let fast = prompt::run_fast_modules(&render_ctx, &config, fast_custom);
+    let fast = prompt::run_fast_modules(&render_ctx, &config, facts.read_only(), fast_custom);
 
     let cached_slow = {
         let mut state = ctx.state.lock().await;
@@ -311,11 +273,6 @@ async fn handle_request<G: GitProvider + Send + 'static>(
     if cached_slow.is_some() {
         return Ok(());
     }
-
-    let path_env = env_vars
-        .iter()
-        .find(|(key, _)| key == "PATH")
-        .map(|(_, value)| value.clone());
 
     let sent_left1 = lines.left1;
     let sent_left2 = lines.left2;
@@ -362,13 +319,10 @@ async fn handle_request<G: GitProvider + Send + 'static>(
         let deadline = tokio::time::Instant::now() + slow_timeout;
 
         // Single PathBuf allocation shared by git and custom module tasks.
-        let cwd_path = PathBuf::from(&cwd);
-
-        // Spawn git module task
-        let git_cwd = cwd_path.clone();
+        let git_cwd = facts.cwd().to_path_buf();
         let indicator_color = slow_config.git.indicator_color;
         let git_provider = ctx.git_provider;
-        let git_path_env = path_env.clone();
+        let git_path_env = facts.command_path_env().map(ToOwned::to_owned);
         let mut git_set = JoinSet::new();
         git_set.spawn_blocking(move || {
             let module = GitModule::with_indicator_color(git_provider, indicator_color);
@@ -378,9 +332,7 @@ async fn handle_request<G: GitProvider + Send + 'static>(
         });
         let slow_detect_input = DetectInput {
             modules: &slow_modules,
-            cwd: &cwd_path,
-            env_vars: &env_vars,
-            path_env: path_env.as_deref(),
+            facts: Arc::clone(&facts),
             speed: ModuleSpeed::Slow,
             timeout: slow_timeout,
         };
