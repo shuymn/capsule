@@ -17,8 +17,19 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Daemon { action } => match action {
             None => daemon::run(),
-            Some(DaemonAction::Install) => daemon::install(),
-            Some(DaemonAction::Uninstall) => daemon::uninstall(),
+            Some(action @ (DaemonAction::Install | DaemonAction::Uninstall)) => {
+                #[cfg(not(target_os = "macos"))]
+                anyhow::bail!("capsule daemon install/uninstall requires macOS (launchd)");
+                #[cfg(target_os = "macos")]
+                {
+                    let sm = daemon::Launchd::new()?;
+                    let home = daemon::home_dir()?;
+                    match action {
+                        DaemonAction::Install => daemon::install(&sm, &home),
+                        DaemonAction::Uninstall => daemon::uninstall(&sm, &home),
+                    }
+                }
+            }
         },
         Command::Connect => connect::run(),
         Command::Init { shell } => {

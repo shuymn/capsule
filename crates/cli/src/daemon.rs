@@ -1,6 +1,10 @@
 //! `capsule daemon` — starts the prompt daemon server.
 
-use std::{fs::File, io::Write as _, path::PathBuf};
+use std::{
+    fs::File,
+    io::Write as _,
+    path::{Path, PathBuf},
+};
 
 use anyhow::Context as _;
 use capsule_core::{
@@ -122,12 +126,97 @@ fn run_server(
 /// launchd service label.
 const LAUNCHD_LABEL: &str = "com.github.shuymn.capsule";
 
+/// Abstracts platform-specific service management operations.
+///
+/// Implementations handle loading, unloading, and restarting a daemon
+/// service. `Launchd` dispatches to real `launchctl` commands;
+/// `NoopServiceManager` (test-only) succeeds silently.
+pub trait ServiceManager {
+    /// Load and start the service from the given definition file.
+    fn load(&self, service_file: &Path) -> anyhow::Result<()>;
+
+    /// Stop and unload the service.
+    ///
+    /// Returns `Ok(true)` if the service was unloaded, `Ok(false)` if it
+    /// was not loaded.
+    fn unload(&self) -> anyhow::Result<bool>;
+
+    /// Restart a running service.
+    fn restart(&self) -> anyhow::Result<()>;
+}
+
+/// macOS launchd service manager.
+#[cfg(target_os = "macos")]
+pub struct Launchd {
+    uid: u32,
+}
+
+#[cfg(target_os = "macos")]
+impl Launchd {
+    pub fn new() -> anyhow::Result<Self> {
+        let output = std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .context("failed to run `id -u`")?;
+        let s = String::from_utf8_lossy(&output.stdout);
+        let uid = s
+            .trim()
+            .parse()
+            .with_context(|| format!("failed to parse uid from `id -u`: {s:?}"))?;
+        Ok(Self { uid })
+    }
+
+    /// `gui/{uid}/{label}` target used by bootout and kickstart.
+    fn service_target(&self) -> String {
+        format!("gui/{}/{LAUNCHD_LABEL}", self.uid)
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl ServiceManager for Launchd {
+    fn load(&self, service_file: &Path) -> anyhow::Result<()> {
+        let status = std::process::Command::new("launchctl")
+            .args([
+                "bootstrap",
+                &format!("gui/{}", self.uid),
+                &service_file.to_string_lossy(),
+            ])
+            .status()
+            .context("failed to run launchctl bootstrap")?;
+        if status.success() {
+            Ok(())
+        } else {
+            anyhow::bail!("launchctl bootstrap failed with {status}");
+        }
+    }
+
+    fn unload(&self) -> anyhow::Result<bool> {
+        let status = std::process::Command::new("launchctl")
+            .args(["bootout", &self.service_target()])
+            .status()
+            .context("failed to run launchctl bootout")?;
+        Ok(status.success())
+    }
+
+    fn restart(&self) -> anyhow::Result<()> {
+        let status = std::process::Command::new("launchctl")
+            .args(["kickstart", "-k", &self.service_target()])
+            .status()
+            .context("failed to run launchctl kickstart")?;
+        if status.success() {
+            Ok(())
+        } else {
+            anyhow::bail!("launchctl kickstart failed with {status}");
+        }
+    }
+}
+
 /// Generate the launchd plist XML for the capsule daemon.
 ///
 /// Uses socket activation: launchd creates the socket and launches
 /// the daemon on first connection. The daemon retrieves the socket fd
 /// via `launch_activate_socket`.
-fn generate_plist(capsule_bin: &std::path::Path, socket_path: &std::path::Path) -> String {
+fn generate_plist(capsule_bin: &Path, socket_path: &Path) -> String {
     // SockPathMode 448 = 0o700 (owner read/write/execute)
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -159,16 +248,10 @@ fn generate_plist(capsule_bin: &std::path::Path, socket_path: &std::path::Path) 
     )
 }
 
-/// Path to the launchd plist file.
-///
-/// # Errors
-///
-/// Returns an error if `HOME` is not set.
-fn plist_path() -> anyhow::Result<PathBuf> {
-    let home = home_dir()?;
-    Ok(home
-        .join("Library/LaunchAgents")
-        .join(format!("{LAUNCHD_LABEL}.plist")))
+/// Compute the plist path for a given home directory.
+fn plist_path_for(home: &Path) -> PathBuf {
+    home.join("Library/LaunchAgents")
+        .join(format!("{LAUNCHD_LABEL}.plist"))
 }
 
 /// Install the launchd plist and load the daemon service.
@@ -181,41 +264,30 @@ fn plist_path() -> anyhow::Result<PathBuf> {
 ///
 /// # Errors
 ///
-/// Returns an error if the plist cannot be written or launchctl fails.
-pub fn install() -> anyhow::Result<()> {
+/// Returns an error if the plist cannot be written or the service manager
+/// operation fails.
+pub fn install(sm: &impl ServiceManager, home: &Path) -> anyhow::Result<()> {
     let capsule_bin = std::env::current_exe().context("cannot find capsule binary")?;
     // Use the canonical socket path (ignores $CAPSULE_SOCK_DIR) so the
     // plist always references the production path.
-    let home = home_dir()?;
     let canonical_socket = home.join(".capsule/capsule.sock");
     let plist_content = generate_plist(&capsule_bin, &canonical_socket);
-    let plist = plist_path()?;
-    let uid = uid()?;
+    let plist = plist_path_for(home);
 
     // Check if plist already exists with same content.
     if let Ok(existing) = std::fs::read_to_string(&plist) {
         if existing == plist_content {
             // Plist unchanged — check if binary was updated.
             if daemon_needs_restart(&canonical_socket) {
-                let status = std::process::Command::new("launchctl")
-                    .args(["kickstart", "-k", &format!("gui/{uid}/{LAUNCHD_LABEL}")])
-                    .status()
-                    .context("failed to run launchctl kickstart")?;
-
-                if status.success() {
-                    println!("daemon restarted (binary updated)");
-                } else {
-                    anyhow::bail!("launchctl kickstart failed with {status}");
-                }
+                sm.restart()?;
+                println!("daemon restarted (binary updated)");
             } else {
                 println!("plist is already current, no reload needed");
             }
             return Ok(());
         }
-        // Content differs — bootout before bootstrap.
-        let _ = std::process::Command::new("launchctl")
-            .args(["bootout", &format!("gui/{uid}/{LAUNCHD_LABEL}")])
-            .status();
+        // Content differs — unload before loading new definition.
+        let _ = sm.unload();
     }
 
     // Ensure LaunchAgents directory exists.
@@ -227,16 +299,8 @@ pub fn install() -> anyhow::Result<()> {
     std::fs::write(&plist, &plist_content)
         .with_context(|| format!("failed to write {}", plist.display()))?;
 
-    let status = std::process::Command::new("launchctl")
-        .args(["bootstrap", &format!("gui/{uid}"), &plist.to_string_lossy()])
-        .status()
-        .context("failed to run launchctl bootstrap")?;
-
-    if status.success() {
-        println!("capsule daemon installed and loaded");
-    } else {
-        anyhow::bail!("launchctl bootstrap failed with {status}");
-    }
+    sm.load(&plist)?;
+    println!("capsule daemon installed and loaded");
 
     Ok(())
 }
@@ -245,20 +309,15 @@ pub fn install() -> anyhow::Result<()> {
 ///
 /// # Errors
 ///
-/// Returns an error if launchctl fails or the plist cannot be removed.
-pub fn uninstall() -> anyhow::Result<()> {
-    let uid = uid()?;
-    let plist = plist_path()?;
+/// Returns an error if the service manager operation fails or the plist
+/// cannot be removed.
+pub fn uninstall(sm: &impl ServiceManager, home: &Path) -> anyhow::Result<()> {
+    let plist = plist_path_for(home);
 
-    // Bootout the service (stops it if running).
-    let status = std::process::Command::new("launchctl")
-        .args(["bootout", &format!("gui/{uid}/{LAUNCHD_LABEL}")])
-        .status()
-        .context("failed to run launchctl bootout")?;
-
-    if !status.success() {
+    // Unload the service (stops it if running).
+    if !sm.unload()? {
         // Service may not be loaded — that's ok, continue to remove plist.
-        eprintln!("warning: launchctl bootout exited with {status}");
+        eprintln!("warning: service unload exited with non-zero status");
     }
 
     // Remove plist file.
@@ -275,24 +334,12 @@ pub fn uninstall() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Get the current user's UID for launchctl gui/ domain.
-fn uid() -> anyhow::Result<u32> {
-    let output = std::process::Command::new("id")
-        .arg("-u")
-        .output()
-        .context("failed to run `id -u`")?;
-    let s = String::from_utf8_lossy(&output.stdout);
-    s.trim()
-        .parse()
-        .with_context(|| format!("failed to parse uid from `id -u`: {s:?}"))
-}
-
 /// Check if a running daemon needs to be restarted due to a binary update.
 ///
 /// Returns `true` if the daemon is running and its build ID differs from
 /// the current binary. Returns `false` if build IDs match, the daemon is
 /// unreachable, or the local build ID cannot be computed.
-fn daemon_needs_restart(socket_path: &std::path::Path) -> bool {
+fn daemon_needs_restart(socket_path: &Path) -> bool {
     // Only Ok(false) means IDs differ; Ok(true) (match) and Err (unreachable)
     // both mean no restart is needed.
     matches!(crate::connect::negotiate_build_id(socket_path), Ok(false))
@@ -373,7 +420,7 @@ fn tmpdir() -> PathBuf {
     PathBuf::from(std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_owned()))
 }
 
-fn home_dir() -> anyhow::Result<PathBuf> {
+pub fn home_dir() -> anyhow::Result<PathBuf> {
     std::env::var("HOME")
         .map(PathBuf::from)
         .context("HOME environment variable not set")
@@ -391,6 +438,22 @@ mod tests {
     use capsule_protocol::{HelloAck, Message, PROTOCOL_VERSION};
 
     use super::*;
+
+    struct NoopServiceManager;
+
+    impl ServiceManager for NoopServiceManager {
+        fn load(&self, _service_file: &Path) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn unload(&self) -> anyhow::Result<bool> {
+            Ok(true)
+        }
+
+        fn restart(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
 
     /// Start a mock daemon that responds to Hello with a `HelloAck`
     /// containing the specified build ID. The listener uses non-blocking
@@ -569,6 +632,117 @@ mod tests {
             "should not restart when daemon is unreachable"
         );
 
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // ServiceManager + install/uninstall flow tests (Noop variant)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_install_fresh_creates_plist_noop() -> Result<(), Box<dyn std::error::Error>> {
+        let home = tempfile::tempdir()?;
+
+        install(&NoopServiceManager, home.path())?;
+
+        let plist = plist_path_for(home.path());
+        assert!(plist.is_file(), "plist should be created");
+        let content = std::fs::read_to_string(&plist)?;
+        assert!(
+            content.contains(LAUNCHD_LABEL),
+            "plist should contain label"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_install_unchanged_plist_skips_noop() -> Result<(), Box<dyn std::error::Error>> {
+        let home = tempfile::tempdir()?;
+
+        // First install creates the plist.
+        install(&NoopServiceManager, home.path())?;
+        let plist = plist_path_for(home.path());
+        let content_before = std::fs::read_to_string(&plist)?;
+
+        // Second install with same binary — no daemon running → skip.
+        install(&NoopServiceManager, home.path())?;
+        let content_after = std::fs::read_to_string(&plist)?;
+
+        assert_eq!(
+            content_before, content_after,
+            "plist should not change on repeated install"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_install_unchanged_plist_build_id_mismatch_noop()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let home = tempfile::tempdir()?;
+
+        // First install.
+        install(&NoopServiceManager, home.path())?;
+
+        // Start mock daemon returning a different build_id on the canonical socket.
+        let capsule_dir = home.path().join(".capsule");
+        std::fs::create_dir_all(&capsule_dir)?;
+        let socket = capsule_dir.join("capsule.sock");
+        start_mock_daemon(&socket, "different:99999".to_owned())?;
+        std::thread::sleep(Duration::from_millis(50));
+
+        // Second install detects mismatch → kickstart via Noop succeeds.
+        install(&NoopServiceManager, home.path())?;
+
+        // Plist content should be unchanged (kickstart, not rewrite).
+        let plist = plist_path_for(home.path());
+        assert!(plist.is_file(), "plist should still exist");
+        Ok(())
+    }
+
+    #[test]
+    fn test_install_changed_plist_reloads_noop() -> Result<(), Box<dyn std::error::Error>> {
+        let home = tempfile::tempdir()?;
+        let plist = plist_path_for(home.path());
+
+        // Create an old plist with different content.
+        if let Some(parent) = plist.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&plist, "old content")?;
+
+        // Install should replace it.
+        install(&NoopServiceManager, home.path())?;
+
+        let content = std::fs::read_to_string(&plist)?;
+        assert_ne!(content, "old content", "plist should be updated");
+        assert!(
+            content.contains(LAUNCHD_LABEL),
+            "plist should contain label"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_uninstall_removes_plist_noop() -> Result<(), Box<dyn std::error::Error>> {
+        let home = tempfile::tempdir()?;
+
+        // Install first.
+        install(&NoopServiceManager, home.path())?;
+        let plist = plist_path_for(home.path());
+        assert!(plist.is_file(), "plist should exist before uninstall");
+
+        // Uninstall removes plist.
+        uninstall(&NoopServiceManager, home.path())?;
+        assert!(!plist.exists(), "plist should be removed after uninstall");
+        Ok(())
+    }
+
+    #[test]
+    fn test_uninstall_missing_plist_noop() -> Result<(), Box<dyn std::error::Error>> {
+        let home = tempfile::tempdir()?;
+
+        // Uninstall when plist doesn't exist — should succeed gracefully.
+        uninstall(&NoopServiceManager, home.path())?;
         Ok(())
     }
 }
