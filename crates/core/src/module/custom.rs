@@ -128,15 +128,27 @@ pub fn builtin_module_defs() -> Vec<ModuleDef> {
         ModuleDef {
             name: "bun".to_owned(),
             when: ModuleWhen {
-                files: vec!["bun.lockb".to_owned(), "bunfig.toml".to_owned()],
+                files: vec![
+                    "bun.lock".to_owned(),
+                    "bun.lockb".to_owned(),
+                    "bunfig.toml".to_owned(),
+                ],
                 env: vec![],
             },
-            source: vec![SourceDef {
-                env: None,
-                file: None,
-                command: Some(vec!["bun".to_owned(), "--version".to_owned()]),
-                regex: Some(RegexPattern::new_unchecked(r"(\d[\d.]*)".to_owned())),
-            }],
+            source: vec![
+                SourceDef {
+                    env: None,
+                    file: Some(".bun-version".to_owned()),
+                    command: None,
+                    regex: None,
+                },
+                SourceDef {
+                    env: None,
+                    file: None,
+                    command: Some(vec!["bun".to_owned(), "--version".to_owned()]),
+                    regex: Some(RegexPattern::new_unchecked(r"(\d[\d.]*)".to_owned())),
+                },
+            ],
             format: "v{value}".to_owned(),
             icon: Some("\u{e76f}".to_owned()),
             color: Some(Color::Red),
