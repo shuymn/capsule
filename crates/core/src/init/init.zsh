@@ -16,6 +16,7 @@ _capsule_init() {
     typeset -gi _CAPSULE_FD_IN=0
     typeset -gi _CAPSULE_FD_OUT=0
     typeset -g _CAPSULE_COPROC_PID=""
+    typeset -ga _CAPSULE_EXTRA_ENV=()
 
     # Fallback prompt
     typeset -g _CAPSULE_FALLBACK='%~ %# '
@@ -84,6 +85,19 @@ _capsule_start_coproc() {
     # Remove from the job table entirely.
     disown $_CAPSULE_COPROC_PID 2>/dev/null
 
+    # Read env var metadata line from connect (format: "E:VAR1,VAR2,...")
+    local _env_line
+    if IFS= read -rt 1 -u $_CAPSULE_FD_OUT _env_line 2>/dev/null; then
+        if [[ "$_env_line" == E:* ]]; then
+            local _names="${_env_line#E:}"
+            if [[ -n "$_names" ]]; then
+                _CAPSULE_EXTRA_ENV=("${(@s:,:)_names}")
+            else
+                _CAPSULE_EXTRA_ENV=()
+            fi
+        fi
+    fi
+
     return 0
 }
 
@@ -129,7 +143,14 @@ _capsule_send_request() {
     _capsule_ns "$_CAPSULE_LAST_EXIT"; msg+=$REPLY
     _capsule_ns "${_CAPSULE_DURATION_MS:-}"; msg+=$REPLY
     _capsule_ns "${KEYMAP:-main}"; msg+=$REPLY
-    _capsule_ns "PATH=${PATH}"; msg+=$REPLY
+    # Encode env vars: PATH is always sent; extra vars come from daemon HelloAck.
+    local _meta="PATH=${PATH}"
+    local _ev
+    for _ev in "${_CAPSULE_EXTRA_ENV[@]}"; do
+        local _val="${(P)_ev}"
+        [[ -n "$_val" ]] && _meta+=$'\0'"${_ev}=${_val}"
+    done
+    _capsule_ns "$_meta"; msg+=$REPLY
 
     print -nu $_CAPSULE_FD_IN "${msg}"$'\n'
 }
