@@ -13,6 +13,7 @@ publish = false
 [dependencies]
 capsule-protocol = { path = "../protocol" }
 capsule-sys = { path = "../sys" }
+regex-lite = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }

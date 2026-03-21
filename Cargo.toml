@@ -43,4 +43,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unicode-width = "0.2"
 tokio = { version = "1", features = ["rt", "net", "io-util", "io-std", "signal", "sync", "time", "process", "macros"] }
 time = { version = "0.3", features = ["local-offset"] }
+regex-lite = "0.1"
 tempfile = "3"

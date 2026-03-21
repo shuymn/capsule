@@ -31,7 +31,7 @@ use crate::{
     config::Config,
     module::{
         CmdDurationModule, DirectoryModule, GitModule, GitProvider, Module, RenderContext,
-        TimeModule, ToolchainInfo, detect_toolchain,
+        ResolvedToolchain, TimeModule, ToolchainInfo, detect_toolchains, resolve_toolchains,
     },
     render::{
         PromptLines, compose_segments,
@@ -81,7 +81,7 @@ struct FastOutputs {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SlowOutput {
     git: Option<String>,
-    toolchain: Option<ToolchainInfo>,
+    toolchains: Vec<ToolchainInfo>,
 }
 
 struct SharedState {
@@ -111,6 +111,7 @@ pub struct Server<G> {
     build_id: String,
     listener_mode: ListenerMode,
     config: Arc<Config>,
+    toolchains: Arc<Vec<ResolvedToolchain>>,
 }
 
 impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
@@ -124,19 +125,21 @@ impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
     /// * `listener_mode` — how the listener was obtained (carries socket
     ///   path for [`ListenerMode::Bound`])
     /// * `config` — prompt configuration
-    pub const fn new(
+    pub fn new(
         home_dir: PathBuf,
         git_provider: G,
         build_id: String,
         listener_mode: ListenerMode,
         config: Arc<Config>,
     ) -> Self {
+        let toolchains = Arc::new(resolve_toolchains(&config.toolchain));
         Self {
             home_dir,
             git_provider,
             build_id,
             listener_mode,
             config,
+            toolchains,
         }
     }
 
@@ -172,6 +175,7 @@ impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
             build_id: Arc::new(self.build_id),
             state: Arc::new(Mutex::new(SharedState::new())),
             config: self.config,
+            toolchains: self.toolchains,
         };
 
         match self.listener_mode {
@@ -190,6 +194,7 @@ struct AcceptCtx<G> {
     build_id: Arc<String>,
     state: Arc<Mutex<SharedState>>,
     config: Arc<Config>,
+    toolchains: Arc<Vec<ResolvedToolchain>>,
 }
 
 impl<G> AcceptCtx<G> {
@@ -203,6 +208,7 @@ impl<G> AcceptCtx<G> {
             git_provider: self.git_provider.clone(),
             build_id: Arc::clone(&self.build_id),
             config: Arc::clone(&self.config),
+            toolchains: Arc::clone(&self.toolchains),
         };
         tokio::spawn(async move {
             if let Err(e) = handle_connection(stream, ctx).await {
@@ -219,6 +225,7 @@ struct ConnectionCtx<G> {
     git_provider: G,
     build_id: Arc<String>,
     config: Arc<Config>,
+    toolchains: Arc<Vec<ResolvedToolchain>>,
 }
 
 impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
@@ -319,6 +326,7 @@ async fn handle_connection<G: GitProvider + Clone + Send + 'static>(
                     &ctx.home_dir,
                     ctx.git_provider.clone(),
                     Arc::clone(&ctx.config),
+                    Arc::clone(&ctx.toolchains),
                 )
                 .await?;
             }
@@ -355,6 +363,7 @@ async fn handle_request<G: GitProvider + Send + 'static>(
     home_dir: &Path,
     git_provider: G,
     config: Arc<Config>,
+    toolchains: Arc<Vec<ResolvedToolchain>>,
 ) -> Result<(), DaemonError> {
     let session_id = req.session_id;
     let generation = req.generation;
@@ -418,6 +427,7 @@ async fn handle_request<G: GitProvider + Send + 'static>(
     let sent_left1 = lines.left1;
     let sent_left2 = lines.left2;
     let slow_config = Arc::clone(&config);
+    let slow_toolchains = Arc::clone(&toolchains);
     tokio::spawn(async move {
         let cwd_for_slow = PathBuf::from(&cwd);
         let indicator_color = slow_config.git.indicator_color;
@@ -427,6 +437,7 @@ async fn handle_request<G: GitProvider + Send + 'static>(
                 git_provider,
                 indicator_color,
                 path_env.as_deref(),
+                &slow_toolchains,
             )
         })
         .await
@@ -498,45 +509,18 @@ fn run_slow_modules<G: GitProvider>(
     provider: G,
     indicator_color: Color,
     path_env: Option<&str>,
+    toolchain_defs: &[ResolvedToolchain],
 ) -> SlowOutput {
     let git_module = GitModule::with_indicator_color(provider, indicator_color);
     SlowOutput {
         git: git_module.render_for_cwd(cwd, path_env).map(|o| o.content),
-        toolchain: detect_toolchain(cwd, path_env),
+        toolchains: detect_toolchains(toolchain_defs, cwd, path_env),
     }
 }
 
 // ---------------------------------------------------------------------------
 // Prompt composition
 // ---------------------------------------------------------------------------
-
-/// Nerd Font icon for a toolchain name (Starship nerd-font-symbols preset).
-///
-/// Accepts `&Config` so user-defined toolchains can override icons.
-fn toolchain_icon(_config: &Config, name: &str) -> Option<&'static str> {
-    match name {
-        "rust" => Some("\u{f1617}"),
-        "node" => Some("\u{e718}"),
-        "go" => Some("\u{e627}"),
-        "python" => Some("\u{e235}"),
-        "ruby" => Some("\u{e791}"),
-        "bun" => Some("\u{e76f}"),
-        _ => None,
-    }
-}
-
-/// Starship-compatible theme color for a toolchain.
-///
-/// Accepts `&Config` so user-defined toolchains can override colors.
-fn toolchain_style(_config: &Config, name: &str) -> Style {
-    match name {
-        "node" => Style::new().fg(Color::Green).bold(),
-        "go" => Style::new().fg(Color::Cyan).bold(),
-        "python" => Style::new().fg(Color::Yellow).bold(),
-        "rust" | "ruby" | "bun" => Style::new().fg(Color::Red).bold(),
-        _ => Style::new().fg(Color::BrightBlack),
-    }
-}
 
 const CONNECTOR_STYLE: Style = Style::new();
 
@@ -599,15 +583,16 @@ fn compose_prompt(
         });
     }
 
-    if let Some(tc) = slow.and_then(|s| s.toolchain.as_ref()) {
-        let style = toolchain_style(config, tc.name);
-        let tc_icon = toolchain_icon(config, tc.name).map(|glyph| make_icon(glyph, style));
-        line1.push(Segment {
-            content: tc.version.clone(),
-            connector: Some(make_connector(&config.connectors.toolchain)),
-            icon: tc_icon,
-            content_style: Some(style),
-        });
+    if let Some(tcs) = slow.map(|s| &s.toolchains) {
+        for tc in tcs {
+            let tc_icon = tc.icon.as_deref().map(|glyph| make_icon(glyph, tc.style));
+            line1.push(Segment {
+                content: tc.version.clone(),
+                connector: Some(make_connector(&config.connectors.toolchain)),
+                icon: tc_icon,
+                content_style: Some(tc.style),
+            });
+        }
     }
 
     if let Some(ref dur) = fast.cmd_duration {
@@ -702,7 +687,19 @@ mod tests {
     fn make_slow_output() -> SlowOutput {
         SlowOutput {
             git: None,
-            toolchain: None,
+            toolchains: vec![],
+        }
+    }
+
+    fn make_toolchain_info(name: &str, version: &str) -> ToolchainInfo {
+        // Resolve from built-in defs to get correct icon and style
+        let defs = resolve_toolchains(&[]);
+        let resolved = defs.iter().find(|d| d.name == name);
+        ToolchainInfo {
+            name: name.to_owned(),
+            version: version.to_owned(),
+            icon: resolved.and_then(|d| d.icon.clone()),
+            style: resolved.map_or(Style::new().fg(Color::BrightBlack), |d| d.style),
         }
     }
 
@@ -897,10 +894,7 @@ mod tests {
     fn test_daemon_compose_prompt_with_toolchain_version() {
         let fast = make_fast_outputs();
         let slow = SlowOutput {
-            toolchain: Some(ToolchainInfo {
-                name: "rust",
-                version: "v1.82.0".to_owned(),
-            }),
+            toolchains: vec![make_toolchain_info("rust", "v1.82.0")],
             ..make_slow_output()
         };
         let lines = compose_prompt(&fast, Some(&slow), 80, &default_config());
@@ -925,10 +919,7 @@ mod tests {
     fn test_daemon_compose_prompt_toolchain_uses_theme_color() {
         let fast = make_fast_outputs();
         let slow = SlowOutput {
-            toolchain: Some(ToolchainInfo {
-                name: "rust",
-                version: "v1.82.0".to_owned(),
-            }),
+            toolchains: vec![make_toolchain_info("rust", "v1.82.0")],
             ..make_slow_output()
         };
         let lines = compose_prompt(&fast, Some(&slow), 80, &default_config());
@@ -946,6 +937,60 @@ mod tests {
         assert!(
             !lines.left1.contains("via"),
             "toolchain should not appear without slow output: {}",
+            lines.left1
+        );
+    }
+
+    #[test]
+    fn test_daemon_compose_prompt_multiple_toolchains() {
+        let fast = make_fast_outputs();
+        let slow = SlowOutput {
+            toolchains: vec![
+                make_toolchain_info("rust", "v1.82.0"),
+                make_toolchain_info("node", "v22.0.0"),
+            ],
+            ..make_slow_output()
+        };
+        let lines = compose_prompt(&fast, Some(&slow), 120, &default_config());
+        // Both versions should appear
+        assert!(
+            lines.left1.contains("v1.82.0"),
+            "should contain rust version: {}",
+            lines.left1
+        );
+        assert!(
+            lines.left1.contains("v22.0.0"),
+            "should contain node version: {}",
+            lines.left1
+        );
+        // Both should have "via" connector
+        let via_count = lines.left1.matches("via").count();
+        assert_eq!(
+            via_count, 2,
+            "should have two 'via' connectors: {}",
+            lines.left1
+        );
+        // Rust (bold red) should appear before node (bold green) — definition order
+        let rust_pos = lines.left1.find("v1.82.0");
+        let node_pos = lines.left1.find("v22.0.0");
+        assert!(
+            rust_pos < node_pos,
+            "rust should come before node: {}",
+            lines.left1
+        );
+    }
+
+    #[test]
+    fn test_daemon_compose_prompt_empty_toolchains_vec() {
+        let fast = make_fast_outputs();
+        let slow = SlowOutput {
+            toolchains: vec![],
+            ..make_slow_output()
+        };
+        let lines = compose_prompt(&fast, Some(&slow), 80, &default_config());
+        assert!(
+            !lines.left1.contains("via"),
+            "no 'via' connector with empty toolchains: {}",
             lines.left1
         );
     }
@@ -984,10 +1029,7 @@ mod tests {
         };
         let slow = SlowOutput {
             git: Some("main".to_owned()),
-            toolchain: Some(ToolchainInfo {
-                name: "rust",
-                version: "v1.82.0".to_owned(),
-            }),
+            toolchains: vec![make_toolchain_info("rust", "v1.82.0")],
         };
         let lines = compose_prompt(&fast, Some(&slow), 80, &default_config());
         assert!(

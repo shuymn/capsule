@@ -23,6 +23,9 @@ pub struct Config {
     pub cmd_duration: CmdDurationConfig,
     /// Connector words between segments.
     pub connectors: ConnectorConfig,
+    /// User-defined toolchain definitions (`[[toolchain]]` array).
+    #[serde(default)]
+    pub toolchain: Vec<ToolchainDef>,
 }
 
 /// Character prompt settings.
@@ -127,6 +130,30 @@ impl Default for CmdDurationConfig {
             color: Color::Yellow,
         }
     }
+}
+
+/// User-defined toolchain entry from `[[toolchain]]` in config.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ToolchainDef {
+    /// Toolchain identifier (e.g. `"zig"`, `"rust"`).
+    pub name: String,
+    /// Marker files whose presence triggers detection.
+    pub files: Vec<String>,
+    /// Optional file in `cwd` containing a version string.
+    #[serde(default)]
+    pub version_file: Option<String>,
+    /// Command + args to run for version detection (e.g. `["zig", "version"]`).
+    #[serde(default)]
+    pub command: Option<Vec<String>>,
+    /// Regex applied to command output; first capture group is the version.
+    #[serde(default)]
+    pub version_regex: Option<String>,
+    /// Nerd Font icon glyph.
+    #[serde(default)]
+    pub icon: Option<String>,
+    /// Foreground color (bold is always applied).
+    #[serde(default)]
+    pub color: Option<Color>,
 }
 
 /// Connector words between prompt segments.

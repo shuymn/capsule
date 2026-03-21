@@ -20,7 +20,10 @@ pub use directory::DirectoryModule;
 pub use git::{CommandGitProvider, GitError, GitModule, GitProvider, GitStatus};
 pub use status::StatusModule;
 pub use time::TimeModule;
-pub use toolchain::{ToolchainInfo, ToolchainModule, detect as detect_toolchain};
+pub use toolchain::{
+    ResolvedToolchain, ToolchainInfo, ToolchainModule, detect_all as detect_toolchains,
+    resolve_toolchains,
+};
 
 /// Speed classification for prompt modules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
