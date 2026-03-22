@@ -1,14 +1,16 @@
 # capsule
 
+English・[日本語](README.ja.md)
+
 `capsule` is a prompt engine for `zsh`, implemented in Rust. Runs on macOS and Linux.
-
-A persistent daemon handles rendering, caching, and slow module refreshes. `zsh` relays prompt requests through a coprocess, so the prompt renders immediately and updates asynchronously when background work completes.
-
-## Prompt
 
 <p align="center">
   <img src="assets/vhs/readme-prompt.gif" alt="capsule prompt demo">
 </p>
+
+A persistent daemon handles rendering, caching, and slow module refreshes. `zsh` relays prompt requests through a coprocess, so the prompt renders immediately and updates asynchronously when background work completes.
+
+## Prompt
 
 ```
 <directory> on <git branch> [indicators] via <toolchain> took <duration>
@@ -23,11 +25,11 @@ Line 1 truncates the directory first and drops trailing segments when it would o
 
 ## Installation
 
-Requirements: macOS or Linux, `zsh`, Rust `nightly` (pinned in `rust-toolchain.toml`).
+Requirements: macOS or Linux, `zsh`.
 
 ```bash
 # 1. Install the binary
-cargo install --git https://github.com/shuymn/capsule --package capsule-cli --locked
+brew install shuymn/tap/capsule
 
 # 2. Register with the system service manager (recommended)
 capsule daemon install   # macOS: launchd  |  Linux: systemd --user
