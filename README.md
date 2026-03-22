@@ -214,9 +214,27 @@ capsule connect             Coprocess relay (used by init script)
 capsule init zsh            Print shell integration script
 ```
 
+## Benchmark
+
+Prompt latency measured with `crates/prompt-bench`. *capsule* talks directly to the daemon socket; *starship* is invoked as a subprocess for comparison. "Fast" is the time to the first response (`RenderResult`); "Slow" includes the asynchronous `Update` with git/toolchain data.
+
+| Workload | Tool | Fast p50 ms | Fast p95 ms | Slow p50 ms | Slow p95 ms | vs starship |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| outside | capsule | 1.04 | 1.76 | - | - | x3.8 / - |
+| outside | starship | 3.91 | 4.25 | - | - | |
+| repo-small | capsule | 0.11 | 0.15 | 5.08 | 5.73 | x97.8 / x2.1 |
+| repo-small | starship | 10.76 | 12.01 | - | - | |
+| repo-medium | capsule | 0.11 | 0.15 | 4.91 | 6.30 | x89.9 / x2.0 |
+| repo-medium | starship | 9.89 | 11.34 | - | - | |
+| repo-toolchain | capsule | 0.10 | 0.30 | 4.60 | 11.02 | x105.8 / x2.3 |
+| repo-toolchain | starship | 10.58 | 10.98 | - | - | |
+
+30 iterations per workload, release build, macOS (Apple Silicon). See `docs/benchmarking.md` for methodology and reproduction steps.
+
 ## Repository Layout
 
 - `crates/cli`: CLI entrypoint and integration tests
 - `crates/core`: daemon, init script generation, prompt modules, rendering, configuration
+- `crates/prompt-bench`: benchmark harness comparing capsule and starship latency
 - `crates/protocol`: wire protocol, message codec, netstring framing
 - `crates/sys`: platform-specific FFI (launchd socket activation)

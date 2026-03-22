@@ -5,8 +5,17 @@ Use the prompt benchmark harness when you need a fair comparison between
 
 ## Design
 
+- Use a **release** `capsule` binary for measurements (default `--capsule-bin`
+  is `target/release/capsule`); debug builds are not representative for latency
+  comparisons
 - `capsule`: sends requests directly to the daemon Unix socket, measures
   RenderResult (fast) and Update (slow) latencies separately
+- The daemon **may omit** `Update` when slow modules leave the composed prompt
+  unchanged (common for the non-repository workload). The harness therefore uses a
+  **short** socket read timeout for the optional second line only (see
+  `UPDATE_WAIT_MS` in `capsule-prompt-bench`), so those cases do not stall for
+  seconds per iteration; keep that value above your expected slow-path latency if
+  you change workloads
 - `starship`: runs `starship prompt` as a subprocess
 - Each iteration uses a unique subdirectory to prevent daemon cache hits,
   ensuring slow modules (git, toolchain) run every time
@@ -44,7 +53,7 @@ task bench:prompt
 Direct invocation:
 
 ```bash
-uv run python tools/prompt_bench.py --iterations 30 --json-out target/prompt-bench.json
+cargo run -p capsule-prompt-bench --bin prompt-bench --release -- --iterations 30 --json-out target/prompt-bench.json
 ```
 
 ## Reporting Constraints

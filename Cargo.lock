@@ -114,6 +114,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "capsule-prompt-bench"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "capsule-protocol",
+ "clap",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "capsule-protocol"
 version = "0.1.0"
 dependencies = [

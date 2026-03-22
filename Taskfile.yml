@@ -124,7 +124,7 @@ tasks:
     summary: |
       Builds the release binary and runs the prompt benchmark.
       capsule is measured via direct daemon socket; starship via subprocess.
-      Requires uv, starship, and git to be installed locally.
+      Requires starship and git to be installed locally.
     cmds:
       - task: build:release
-      - uv run python tools/prompt_bench.py --capsule-bin target/release/capsule
+      - cargo run -p capsule-prompt-bench --bin prompt-bench --release -- --capsule-bin target/release/capsule
