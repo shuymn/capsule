@@ -142,18 +142,21 @@ async fn compute_slow_modules<G: GitProvider + Send + 'static>(
     let slow_timeout = Duration::from_millis(config.timeout.slow_ms);
     let deadline = tokio::time::Instant::now() + slow_timeout;
 
-    let git_cwd = facts.cwd().to_path_buf();
-    let git_style = config.git.prompt_style();
-    let indicator_style = config.git.indicator_prompt_style();
-    let color_map = config.color_map;
-    let git_path_env = facts.command_path_env().map(ToOwned::to_owned);
     let mut git_set = JoinSet::new();
-    git_set.spawn_blocking(move || {
-        let module = GitModule::with_styles(git_provider, git_style, indicator_style, color_map);
-        module
-            .render_for_cwd(&git_cwd, git_path_env.as_deref())
-            .map(|output| output.content)
-    });
+    if !config.git.disabled {
+        let git_cwd = facts.cwd().to_path_buf();
+        let git_style = config.git.prompt_style();
+        let indicator_style = config.git.indicator_prompt_style();
+        let color_map = config.color_map;
+        let git_path_env = facts.command_path_env().map(ToOwned::to_owned);
+        git_set.spawn_blocking(move || {
+            let module =
+                GitModule::with_styles(git_provider, git_style, indicator_style, color_map);
+            module
+                .render_for_cwd(&git_cwd, git_path_env.as_deref())
+                .map(|output| output.content)
+        });
+    }
 
     let slow_detect_input = DetectInput {
         modules,
@@ -971,6 +974,53 @@ mod tests {
             call_count.load(Ordering::SeqCst),
             2,
             "cache hit should still revalidate git in background"
+        );
+
+        harness.shutdown().await
+    }
+
+    #[tokio::test]
+    async fn test_daemon_skips_git_when_disabled() -> Result<(), Box<dyn std::error::Error>> {
+        let call_count = count_git_calls();
+        let provider = MockGitProvider {
+            status: Some(GitStatus {
+                branch: Some("main".to_owned()),
+                ..GitStatus::default()
+            }),
+            call_count: Some(Arc::clone(&call_count)),
+            ..MockGitProvider::default()
+        };
+        let config = Config {
+            git: crate::config::GitConfig {
+                disabled: true,
+                ..crate::config::GitConfig::default()
+            },
+            cache: CacheConfig {
+                slow: SlowCacheMode::Off,
+            },
+            ..Config::default()
+        };
+        let harness = TestHarness::start_with_config(provider, config).await?;
+        let (mut reader, mut writer) = harness.connect().await?;
+
+        writer
+            .write_message(&Message::Request(make_request("/tmp", 1, 80)))
+            .await?;
+
+        let resp = reader.read_message().await?;
+        assert!(
+            matches!(&resp, Some(Message::RenderResult(_))),
+            "expected RenderResult: {resp:?}"
+        );
+
+        // Caching is off so slow compute runs inline; no Update should arrive.
+        let update = tokio::time::timeout(Duration::from_millis(200), reader.read_message()).await;
+        assert!(update.is_err(), "no Update expected when git is disabled");
+
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            0,
+            "git provider should not be called when disabled"
         );
 
         harness.shutdown().await

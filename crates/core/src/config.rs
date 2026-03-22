@@ -160,6 +160,8 @@ impl DirectoryConfig {
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default)]
 pub struct GitConfig {
+    /// Whether the git module is disabled.
+    pub disabled: bool,
     /// Nerd Font icon glyph for git branch.
     pub icon: String,
     /// Color for the bracket indicators (bold is always applied).
@@ -173,6 +175,7 @@ pub struct GitConfig {
 impl Default for GitConfig {
     fn default() -> Self {
         Self {
+            disabled: false,
             icon: "\u{f418}".to_owned(),
             indicator_color: Color::Red,
             style: StyleConfig {
@@ -743,6 +746,28 @@ regex = "(unclosed"
         let config = load_config(&path);
         assert!(config.module.is_empty());
         Ok(())
+    }
+
+    #[test]
+    fn test_config_git_disabled() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r"
+[git]
+disabled = true
+",
+        )?;
+        let config = load_config(&path);
+        assert!(config.git.disabled);
+        Ok(())
+    }
+
+    #[test]
+    fn test_config_git_enabled_by_default() {
+        let config = Config::default();
+        assert!(!config.git.disabled);
     }
 
     #[test]
