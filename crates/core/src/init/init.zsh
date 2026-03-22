@@ -4,6 +4,19 @@
 _capsule_init() {
     emulate -L zsh
 
+    # Close stale pipe FDs inherited from a previous shell instance
+    # (e.g. exec $SHELL -l). zsh does not set close-on-exec for file
+    # descriptors allocated with {var}, so the pipe survives execve and
+    # the old capsule connect never receives EOF. Closing both pipe ends
+    # here breaks the pipe and lets it exit cleanly.
+    if [[ -n "$_CAPSULE_STALE_FDS" ]]; then
+        local -i _old_in=${_CAPSULE_STALE_FDS%% *}
+        local -i _old_out=${_CAPSULE_STALE_FDS#* }
+        (( _old_in > 2 )) && { exec {_old_in}>&-; } 2>/dev/null
+        (( _old_out > 2 )) && { exec {_old_out}<&-; } 2>/dev/null
+        unset _CAPSULE_STALE_FDS
+    fi
+
     # Load required modules
     zmodload zsh/datetime 2>/dev/null
 
@@ -81,6 +94,12 @@ _capsule_start_coproc() {
     # Remove from the job table entirely.
     disown $_CAPSULE_COPROC_PID 2>/dev/null
 
+    # Export pipe FD numbers so a post-exec shell can close them.
+    # zsh does not set close-on-exec on {var} file descriptors, so
+    # these survive execve; the new shell's _capsule_init closes them
+    # to deliver EOF to the old capsule connect.
+    export _CAPSULE_STALE_FDS="${_CAPSULE_FD_IN} ${_CAPSULE_FD_OUT}"
+
     # Read env var metadata line from connect (format: "E:VAR1,VAR2,...")
     local _env_line
     if IFS= read -rt 1 -u $_CAPSULE_FD_OUT _env_line 2>/dev/null; then
@@ -109,6 +128,7 @@ _capsule_cleanup_fds() {
         _CAPSULE_FD_IN=0
     fi
     _CAPSULE_COPROC_PID=""
+    unset _CAPSULE_STALE_FDS 2>/dev/null
 }
 
 _capsule_precmd() {
@@ -198,12 +218,6 @@ _capsule_preexec() {
     if (( ${+EPOCHREALTIME} )); then
         _CAPSULE_CMD_START=$EPOCHREALTIME
     fi
-    # The exec builtin replaces the process without firing zshexit;
-    # clean up coproc manually so capsule connect does not hang.
-    # Match exec with optional leading whitespace or variable assignments.
-    if [[ "$1" == (#s)[[:space:]]#(|*[[:space:]])exec[[:space:]]* ]]; then
-        _capsule_zshexit
-    fi
 }
 
 _capsule_async_callback() {
@@ -234,3 +248,8 @@ _capsule_async_callback() {
 }
 
 _capsule_init
+
+# Suppress "you have running jobs" on exit for capsule's coproc.
+# CHECK_JOBS (stopped-job warnings) remains active.
+# Must live outside _capsule_init because emulate -L zsh scopes option changes.
+setopt NO_CHECK_RUNNING_JOBS

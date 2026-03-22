@@ -81,21 +81,39 @@ mod tests {
     }
 
     #[test]
-    fn test_init_zsh_calls_init_at_end() {
+    fn test_init_zsh_no_function_defs_after_init() {
         let script = generate();
+        let marker = "\n_capsule_init\n";
+        assert!(script.contains(marker), "script should call _capsule_init");
+        let (_, after_init) = script.split_once(marker).unwrap_or(("", ""));
         assert!(
-            script.trim_end().ends_with("_capsule_init"),
-            "script should call _capsule_init as the last statement"
+            !after_init.contains("() {"),
+            "no function definitions should appear after _capsule_init"
         );
     }
 
     #[test]
-    fn test_init_zsh_no_global_setopt() {
+    fn test_init_zsh_suppresses_running_jobs_warning() {
         let script = generate();
-        // Global setopt was removed — all options are now local to functions.
         assert!(
-            !script.contains("setopt NO_CHECK_RUNNING_JOBS"),
-            "should not set global shell options"
+            script.contains("setopt NO_CHECK_RUNNING_JOBS"),
+            "should suppress running-job exit warnings for capsule's coproc"
+        );
+    }
+
+    #[test]
+    fn test_init_zsh_exports_stale_fds_for_exec_cleanup() {
+        let script = generate();
+        // zsh does not set close-on-exec on {var} file descriptors, so
+        // we export the FD numbers to let the next shell instance close
+        // them after exec replaces the process.
+        assert!(
+            script.contains("export _CAPSULE_STALE_FDS"),
+            "should export stale FD numbers for post-exec cleanup"
+        );
+        assert!(
+            script.contains("unset _CAPSULE_STALE_FDS"),
+            "should unset stale FDs after cleanup"
         );
     }
 }
