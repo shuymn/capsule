@@ -146,12 +146,18 @@ async fn compute_slow_modules<G: GitProvider + Send + 'static>(
     if !config.git.disabled {
         let git_cwd = facts.cwd().to_path_buf();
         let git_style = config.git.prompt_style();
+        let detached_hash_style = config.git.detached_hash_prompt_style();
         let indicator_style = config.git.indicator_prompt_style();
         let color_map = config.color_map;
         let git_path_env = facts.command_path_env().map(ToOwned::to_owned);
         git_set.spawn_blocking(move || {
-            let module =
-                GitModule::with_styles(git_provider, git_style, indicator_style, color_map);
+            let module = GitModule::with_styles(
+                git_provider,
+                git_style,
+                detached_hash_style,
+                indicator_style,
+                color_map,
+            );
             module
                 .render_for_cwd(&git_cwd, git_path_env.as_deref())
                 .map(|output| output.content)

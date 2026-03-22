@@ -105,6 +105,9 @@ icon = "\u{f418}"                # Nerd Font glyph
 indicator_color = "red"
 style = { fg = "magenta", bold = true }
 indicator_style = { bold = true }
+# detached HEAD shows: HEAD (short_sha) — `HEAD ` uses `style`, `(short_sha)` uses:
+# detached_hash_color = "green"
+# detached_hash_style = { bold = true }
 
 [time]
 enabled = true

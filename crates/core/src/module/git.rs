@@ -21,6 +21,8 @@ pub enum GitError {
 pub struct GitStatus {
     /// Current branch name, or `None` if detached.
     pub branch: Option<String>,
+    /// Full object id from `# branch.oid` (hex), set when git reports branch metadata.
+    pub head_oid: Option<String>,
     /// Number of staged changes.
     pub staged: usize,
     /// Number of unstaged modifications.
@@ -92,6 +94,7 @@ impl GitProvider for CommandGitProvider {
 pub struct GitModule<G> {
     provider: G,
     style: Style,
+    detached_hash_style: Style,
     indicator_style: Style,
     color_map: ColorMap,
 }
@@ -102,6 +105,7 @@ impl<G> GitModule<G> {
         Self {
             provider,
             style: Style::new().fg(Color::Magenta).bold(),
+            detached_hash_style: Style::new().fg(Color::Green).dimmed(),
             indicator_style: Style::new().fg(Color::Red).bold(),
             color_map: ColorMap::default(),
         }
@@ -111,12 +115,14 @@ impl<G> GitModule<G> {
     pub const fn with_styles(
         provider: G,
         style: Style,
+        detached_hash_style: Style,
         indicator_style: Style,
         color_map: ColorMap,
     ) -> Self {
         Self {
             provider,
             style,
+            detached_hash_style,
             indicator_style,
             color_map,
         }
@@ -137,7 +143,13 @@ impl<G: GitProvider> GitModule<G> {
                 return None;
             }
         };
-        let content = format_git_output(&status, self.style, self.indicator_style, self.color_map);
+        let content = format_git_output(
+            &status,
+            self.style,
+            self.detached_hash_style,
+            self.indicator_style,
+            self.color_map,
+        );
         if content.is_empty() {
             return None;
         }
@@ -168,7 +180,12 @@ impl<G: GitProvider> Module for GitModule<G> {
 fn parse_porcelain_v2(output: &str) -> GitStatus {
     let mut status = GitStatus::default();
     for line in output.lines() {
-        if let Some(rest) = line.strip_prefix("# branch.head ") {
+        if let Some(rest) = line.strip_prefix("# branch.oid ") {
+            let oid = rest.trim();
+            if !oid.is_empty() {
+                status.head_oid = Some(oid.to_owned());
+            }
+        } else if let Some(rest) = line.strip_prefix("# branch.head ") {
             status.branch = if rest == "(detached)" {
                 None
             } else {
@@ -224,9 +241,18 @@ fn parse_changed_entry(line: &str, status: &mut GitStatus) {
 // Formatting
 // ---------------------------------------------------------------------------
 
+/// Short hash length inside detached `HEAD (hash)` (common `git rev-parse --short` width).
+const DETACHED_OID_PREFIX_LEN: usize = 7;
+
+fn short_commit_prefix(full_oid: &str) -> &str {
+    let end = full_oid.len().min(DETACHED_OID_PREFIX_LEN);
+    full_oid.get(..end).unwrap_or("")
+}
+
 fn format_git_output(
     status: &GitStatus,
     style: Style,
+    detached_hash_style: Style,
     indicator_style: Style,
     color_map: ColorMap,
 ) -> String {
@@ -234,6 +260,13 @@ fn format_git_output(
 
     if let Some(ref branch) = status.branch {
         out.push_str(&style.paint_with(branch, color_map));
+    } else if let Some(ref oid) = status.head_oid {
+        let prefix = short_commit_prefix(oid);
+        if !prefix.is_empty() {
+            out.push_str(&style.paint_with("HEAD ", color_map));
+            let paren = format!("({prefix})");
+            out.push_str(&detached_hash_style.paint_with(&paren, color_map));
+        }
     }
 
     // Indicator order follows Starship defaults: = $ ✘ » ! + ? ⇕/⇡⇣
@@ -297,6 +330,10 @@ mod tests {
         Style::new().fg(Color::Red).bold()
     }
 
+    fn default_detached_hash_style() -> Style {
+        Style::new().fg(Color::Green).dimmed()
+    }
+
     fn default_color_map() -> ColorMap {
         ColorMap::default()
     }
@@ -321,6 +358,11 @@ mod tests {
         assert_eq!(status.modified, 1);
         assert_eq!(status.untracked, 1);
         assert_eq!(status.conflicted, 0);
+        assert_eq!(
+            status.head_oid,
+            Some("abc123def456".to_owned()),
+            "full oid from porcelain"
+        );
     }
 
     #[test]
@@ -328,6 +370,7 @@ mod tests {
         let output = "# branch.oid abc123\n# branch.head (detached)\n";
         let status = parse_porcelain_v2(output);
         assert_eq!(status.branch, None);
+        assert_eq!(status.head_oid, Some("abc123".to_owned()));
     }
 
     #[test]
@@ -372,6 +415,7 @@ mod tests {
         let output = format_git_output(
             &status,
             default_style(),
+            default_detached_hash_style(),
             default_indicator_style(),
             default_color_map(),
         );
@@ -402,6 +446,7 @@ mod tests {
         let output = format_git_output(
             &status,
             default_style(),
+            default_detached_hash_style(),
             default_indicator_style(),
             default_color_map(),
         );
@@ -419,6 +464,58 @@ mod tests {
     }
 
     #[test]
+    fn test_format_git_output_detached_clean_shows_short_oid() {
+        let status = GitStatus {
+            branch: None,
+            head_oid: Some("abcdef0123456789abcdef0123456789abcd".to_owned()),
+            ..GitStatus::default()
+        };
+        let output = format_git_output(
+            &status,
+            default_style(),
+            default_detached_hash_style(),
+            default_indicator_style(),
+            default_color_map(),
+        );
+        assert_eq!(display_width(&output), 14, "visible width: {output:?}");
+        assert!(
+            output.contains("HEAD ") && output.contains("(abcdef0)"),
+            "detached label should be HEAD (short oid); zsh escapes may split segments: {output:?}"
+        );
+        assert!(
+            contains_style_sequence(&output, &[1, 35]),
+            "HEAD should use branch style bold magenta: {output:?}"
+        );
+        assert!(
+            contains_style_sequence(&output, &[2, 32])
+                || contains_style_sequence(&output, &[32, 2]),
+            "(hash) should use dimmed green: {output:?}"
+        );
+    }
+
+    #[test]
+    fn test_format_git_output_detached_with_indicators() {
+        let status = GitStatus {
+            branch: None,
+            head_oid: Some("deadbeef".to_owned()),
+            modified: 1,
+            ..GitStatus::default()
+        };
+        let output = format_git_output(
+            &status,
+            default_style(),
+            default_detached_hash_style(),
+            default_indicator_style(),
+            default_color_map(),
+        );
+        let clean = strip_ansi_and_zsh(&output);
+        assert_eq!(
+            clean, "HEAD (deadbee) [!]",
+            "short oid shorter than 7 uses full hash inside parens: {output:?}"
+        );
+    }
+
+    #[test]
     fn test_format_git_output_no_branch() {
         let status = GitStatus {
             branch: None,
@@ -428,6 +525,7 @@ mod tests {
         let output = format_git_output(
             &status,
             default_style(),
+            default_detached_hash_style(),
             default_indicator_style(),
             default_color_map(),
         );
@@ -583,6 +681,7 @@ mod tests {
         let output = format_git_output(
             &status,
             default_style(),
+            default_detached_hash_style(),
             default_indicator_style(),
             default_color_map(),
         );
@@ -602,6 +701,7 @@ mod tests {
         let output = format_git_output(
             &status,
             default_style(),
+            default_detached_hash_style(),
             default_indicator_style(),
             default_color_map(),
         );
@@ -618,6 +718,7 @@ mod tests {
         let output = format_git_output(
             &status,
             default_style(),
+            default_detached_hash_style(),
             default_indicator_style(),
             default_color_map(),
         );
@@ -637,6 +738,7 @@ mod tests {
         let output = format_git_output(
             &status,
             default_style(),
+            default_detached_hash_style(),
             default_indicator_style(),
             default_color_map(),
         );
@@ -657,6 +759,7 @@ mod tests {
         let output = format_git_output(
             &status,
             default_style(),
+            default_detached_hash_style(),
             default_indicator_style(),
             default_color_map(),
         );
@@ -687,10 +790,12 @@ mod tests {
             untracked: 1,
             ahead: 1,
             behind: 0,
+            ..GitStatus::default()
         };
         let output = format_git_output(
             &status,
             default_style(),
+            default_detached_hash_style(),
             default_indicator_style(),
             default_color_map(),
         );
@@ -713,9 +818,11 @@ mod tests {
         let output = format_git_output(
             &status,
             Style::new().fg(Color::Cyan),
+            Style::new().fg(Color::Green),
             Style::new().fg(Color::Yellow),
             ColorMap {
                 cyan: 96,
+                green: 32,
                 yellow: 93,
                 ..ColorMap::default()
             },

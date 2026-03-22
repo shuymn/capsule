@@ -156,6 +156,18 @@ impl DirectoryConfig {
     }
 }
 
+const fn default_git_detached_hash_color() -> Color {
+    Color::Green
+}
+
+const fn default_git_detached_hash_style() -> StyleConfig {
+    StyleConfig {
+        fg: None,
+        bold: Some(true),
+        dimmed: None,
+    }
+}
+
 /// Git module settings.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default)]
@@ -170,6 +182,12 @@ pub struct GitConfig {
     pub style: StyleConfig,
     /// Structured style override for status indicators.
     pub indicator_style: StyleConfig,
+    /// Foreground for the `(hash)` segment in detached `HEAD (hash)` output.
+    #[serde(default = "default_git_detached_hash_color")]
+    pub detached_hash_color: Color,
+    /// Style for `(hash)` in detached output (`HEAD ` uses `style`).
+    #[serde(default = "default_git_detached_hash_style")]
+    pub detached_hash_style: StyleConfig,
 }
 
 impl Default for GitConfig {
@@ -184,6 +202,8 @@ impl Default for GitConfig {
                 dimmed: None,
             },
             indicator_style: StyleConfig::bold(),
+            detached_hash_color: Color::Green,
+            detached_hash_style: default_git_detached_hash_style(),
         }
     }
 }
@@ -198,6 +218,12 @@ impl GitConfig {
     pub fn indicator_prompt_style(&self) -> Style {
         self.indicator_style
             .resolve(Style::new().fg(self.indicator_color))
+    }
+
+    #[must_use]
+    pub fn detached_hash_prompt_style(&self) -> Style {
+        self.detached_hash_style
+            .resolve(Style::new().fg(self.detached_hash_color))
     }
 }
 
