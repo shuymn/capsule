@@ -88,11 +88,7 @@ pub(super) fn compose_prompt(
     }
 
     if let Some(git) = slow.and_then(|output| output.git.as_deref()) {
-        line1.push(
-            config
-                .git
-                .to_segment(git, &config.connectors.git, connector_style),
-        );
+        line1.push(config.git.to_segment(git, connector_style));
     }
 
     for module in &fast.custom_modules {
@@ -105,21 +101,13 @@ pub(super) fn compose_prompt(
     }
 
     if let Some(duration) = &fast.cmd_duration {
-        line1.push(config.cmd_duration.to_segment(
-            duration,
-            &config.connectors.cmd_duration,
-            connector_style,
-        ));
+        line1.push(config.cmd_duration.to_segment(duration, connector_style));
     }
 
     let mut line2 = Vec::with_capacity(2);
 
     if let Some(time) = &fast.time {
-        line2.push(
-            config
-                .time
-                .to_segment(time, &config.connectors.time, connector_style),
-        );
+        line2.push(config.time.to_segment(time, connector_style));
     }
 
     if let Some(character) = &fast.character {
@@ -573,9 +561,9 @@ mod tests {
             ..make_slow_output()
         };
         let mut config = default_config();
-        config.connectors.git = "branch".to_owned();
-        config.connectors.time = "time".to_owned();
-        config.connectors.cmd_duration = "duration".to_owned();
+        config.git.connector = "branch".to_owned();
+        config.time.connector = "time".to_owned();
+        config.cmd_duration.connector = "duration".to_owned();
         let lines = compose_prompt(&fast, Some(&slow), 80, &config);
         assert!(
             lines.left1.contains("branch"),

@@ -231,6 +231,8 @@ pub struct GitConfig {
     pub disabled: bool,
     /// Nerd Font icon glyph for git branch.
     pub icon: String,
+    /// Connector word before the git segment (e.g., `"on"`).
+    pub connector: String,
     /// Color for the bracket indicators (bold is always applied).
     pub indicator_color: Color,
     /// Structured style override for the branch text and icon.
@@ -250,6 +252,7 @@ impl Default for GitConfig {
         Self {
             disabled: false,
             icon: "\u{f418}".to_owned(),
+            connector: "on".to_owned(),
             indicator_color: Color::Red,
             style: StyleConfig {
                 fg: Some(Color::Magenta),
@@ -284,16 +287,11 @@ impl GitConfig {
     /// Build a [`Segment`] for git status output (already styled by the
     /// git module).
     #[must_use]
-    pub(crate) fn to_segment(
-        &self,
-        git_output: &str,
-        connector: &str,
-        connector_style: Style,
-    ) -> Segment {
+    pub(crate) fn to_segment(&self, git_output: &str, connector_style: Style) -> Segment {
         Segment {
             content: git_output.to_owned(),
             connector: Some(Connector {
-                word: connector.to_owned(),
+                word: self.connector.clone(),
                 style: connector_style,
             }),
             icon: Some(Icon {
@@ -348,6 +346,8 @@ pub struct TimeConfig {
     pub disabled: bool,
     /// Time format.
     pub format: TimeFormat,
+    /// Connector word before the time segment (e.g., `"at"`).
+    pub connector: String,
     /// Foreground color for the time segment.
     pub color: Color,
     /// Structured style override for the time segment.
@@ -359,6 +359,7 @@ impl Default for TimeConfig {
         Self {
             disabled: false,
             format: TimeFormat::WithSeconds,
+            connector: "at".to_owned(),
             color: Color::Yellow,
             style: StyleConfig::bold(),
         }
@@ -379,16 +380,11 @@ impl TimeConfig {
 
     /// Build a [`Segment`] for the time display.
     #[must_use]
-    pub(crate) fn to_segment(
-        &self,
-        time_str: &str,
-        connector: &str,
-        connector_style: Style,
-    ) -> Segment {
+    pub(crate) fn to_segment(&self, time_str: &str, connector_style: Style) -> Segment {
         Segment {
             content: time_str.to_owned(),
             connector: Some(Connector {
-                word: connector.to_owned(),
+                word: self.connector.clone(),
                 style: connector_style,
             }),
             icon: None,
@@ -405,6 +401,8 @@ pub struct CmdDurationConfig {
     pub disabled: bool,
     /// Minimum duration in milliseconds before showing the segment.
     pub threshold_ms: u64,
+    /// Connector word before the duration segment (e.g., `"took"`).
+    pub connector: String,
     /// Foreground color for the duration segment.
     pub color: Color,
     /// Structured style override for the duration segment.
@@ -416,6 +414,7 @@ impl Default for CmdDurationConfig {
         Self {
             disabled: false,
             threshold_ms: 2000,
+            connector: "took".to_owned(),
             color: Color::Yellow,
             style: StyleConfig::bold(),
         }
@@ -430,16 +429,11 @@ impl CmdDurationConfig {
 
     /// Build a [`Segment`] for the command duration display.
     #[must_use]
-    pub(crate) fn to_segment(
-        &self,
-        duration_str: &str,
-        connector: &str,
-        connector_style: Style,
-    ) -> Segment {
+    pub(crate) fn to_segment(&self, duration_str: &str, connector_style: Style) -> Segment {
         Segment {
             content: duration_str.to_owned(),
             connector: Some(Connector {
-                word: connector.to_owned(),
+                word: self.connector.clone(),
                 style: connector_style,
             }),
             icon: None,
@@ -574,29 +568,12 @@ impl Default for TimeoutConfig {
     }
 }
 
-/// Connector words between prompt segments.
-#[derive(Debug, Clone, serde::Deserialize)]
+/// Shared style for connector words between prompt segments.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(default)]
 pub struct ConnectorConfig {
-    /// Connector before git segment.
-    pub git: String,
-    /// Connector before time segment.
-    pub time: String,
-    /// Connector before `cmd_duration` segment.
-    pub cmd_duration: String,
     /// Structured style override for all connector words.
     pub style: StyleConfig,
-}
-
-impl Default for ConnectorConfig {
-    fn default() -> Self {
-        Self {
-            git: "on".to_owned(),
-            time: "at".to_owned(),
-            cmd_duration: "took".to_owned(),
-            style: StyleConfig::default(),
-        }
-    }
 }
 
 impl ConnectorConfig {
@@ -812,16 +789,18 @@ color = "blue"
         std::fs::write(
             &path,
             r#"
-[connectors]
-git = "branch"
-time = "time"
+[git]
+connector = "branch"
+
+[time]
+connector = "time"
 "#,
         )?;
         let config = load_config(&path);
-        assert_eq!(config.connectors.git, "branch");
-        assert_eq!(config.connectors.time, "time");
+        assert_eq!(config.git.connector, "branch");
+        assert_eq!(config.time.connector, "time");
         // Non-overridden connectors keep defaults
-        assert_eq!(config.connectors.cmd_duration, "took");
+        assert_eq!(config.cmd_duration.connector, "took");
         Ok(())
     }
 
@@ -1150,10 +1129,11 @@ env = "NODE_VERSION"
 glyph = ""
 [git]
 icon = ""
-[connectors]
-git = ""
-time = ""
-cmd_duration = ""
+connector = ""
+[time]
+connector = ""
+[cmd_duration]
+connector = ""
 "#,
         )?;
         let result = read_config(&path)?;
@@ -1161,9 +1141,9 @@ cmd_duration = ""
         // Empty strings are valid — they should be preserved, not replaced with defaults
         assert_eq!(config.character.glyph, "");
         assert_eq!(config.git.icon, "");
-        assert_eq!(config.connectors.git, "");
-        assert_eq!(config.connectors.time, "");
-        assert_eq!(config.connectors.cmd_duration, "");
+        assert_eq!(config.git.connector, "");
+        assert_eq!(config.time.connector, "");
+        assert_eq!(config.cmd_duration.connector, "");
         Ok(())
     }
 
