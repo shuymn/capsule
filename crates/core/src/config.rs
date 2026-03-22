@@ -674,18 +674,33 @@ pub enum ConfigLoadError {
 
 /// Resolve the config file path.
 ///
-/// Uses `$XDG_CONFIG_HOME/capsule/config.toml` if set, otherwise
-/// `~/.capsule/config.toml`.
-///
 /// Returns `None` if neither `$XDG_CONFIG_HOME` nor `$HOME` is set.
+///
+/// Resolution order:
+/// 1. `$XDG_CONFIG_HOME/capsule/config.toml` (if `XDG_CONFIG_HOME` is set)
+/// 2. `$HOME/.config/capsule/config.toml`
+/// 3. `$HOME/.capsule/config.toml`
+///
+/// When neither candidate file exists, returns `$HOME/.config/capsule/config.toml`
+/// so that the daemon's hot-reload watcher can detect a newly created file.
 #[must_use]
 pub fn resolve_config_path() -> Option<PathBuf> {
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         return Some(PathBuf::from(xdg).join("capsule/config.toml"));
     }
-    std::env::var("HOME")
-        .ok()
-        .map(|home| PathBuf::from(home).join(".capsule/config.toml"))
+    let home = PathBuf::from(std::env::var("HOME").ok()?);
+
+    let xdg_default = home.join(".config/capsule/config.toml");
+    if xdg_default.exists() {
+        return Some(xdg_default);
+    }
+
+    let dotdir = home.join(".capsule/config.toml");
+    if dotdir.exists() {
+        return Some(dotdir);
+    }
+
+    Some(xdg_default)
 }
 
 /// Load configuration from the given path.
