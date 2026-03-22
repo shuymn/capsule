@@ -6,7 +6,7 @@
 use anstyle::{AnsiColor, Color as AnstyleColor, Effects, Style as AnstyleStyle};
 
 /// Terminal foreground colors.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Color {
     /// Red (ANSI 31).

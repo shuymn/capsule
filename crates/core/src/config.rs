@@ -38,14 +38,17 @@ pub struct Config {
 }
 
 /// A partially specified prompt style override.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct StyleConfig {
     /// Optional symbolic foreground color.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub fg: Option<Color>,
     /// Optional bold override.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub bold: Option<bool>,
     /// Optional dimmed override.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub dimmed: Option<bool>,
 }
 
@@ -407,7 +410,7 @@ impl CmdDurationConfig {
 }
 
 /// A regex pattern validated at deserialization time.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegexPattern(String);
 
 impl RegexPattern {
@@ -424,6 +427,15 @@ impl RegexPattern {
     }
 }
 
+impl serde::Serialize for RegexPattern {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
 impl<'de> serde::Deserialize<'de> for RegexPattern {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -437,7 +449,7 @@ impl<'de> serde::Deserialize<'de> for RegexPattern {
 }
 
 /// User-defined prompt module entry from `[[module]]` in config.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct ModuleDef {
     /// Module identifier (e.g. `"aws"`, `"terraform"`).
     pub name: String,
@@ -450,16 +462,16 @@ pub struct ModuleDef {
     #[serde(default = "default_module_format")]
     pub format: String,
     /// Nerd Font icon glyph.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
     /// Display style (fg, bold, dimmed).
     #[serde(default)]
     pub style: StyleConfig,
     /// Connector word before this segment.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connector: Option<String>,
     /// Optional arbitration metadata for collapsing competing modules.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arbitration: Option<Arbitration>,
 }
 
@@ -468,7 +480,7 @@ fn default_module_format() -> String {
 }
 
 /// Arbitration rule for collapsing competing modules into a single winner.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct Arbitration {
     /// Group identifier used to decide which modules compete.
     pub group: String,
@@ -477,31 +489,33 @@ pub struct Arbitration {
 }
 
 /// Conditions that trigger a module.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct ModuleWhen {
     /// Marker files whose presence in cwd triggers the module.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<String>,
     /// Environment variables whose presence triggers the module.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub env: Vec<String>,
 }
 
 /// A single value source within a module definition.
 ///
 /// Exactly one of `env`, `file`, or `command` should be set.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct SourceDef {
     /// Read value from an environment variable.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<String>,
     /// Read value from a file in cwd.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
     /// Run a command and use its stdout.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<Vec<String>>,
     /// Regex applied to the source output; first capture group is the value.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub regex: Option<RegexPattern>,
 }
 
