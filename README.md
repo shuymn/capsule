@@ -6,6 +6,10 @@ A persistent daemon handles rendering, caching, and slow module refreshes. `zsh`
 
 ## Prompt
 
+<p align="center">
+  <img src="assets/vhs/readme-prompt.gif" alt="capsule prompt demo">
+</p>
+
 ```
 <directory> on <git branch> [indicators] via <toolchain> took <duration>
 at <time> ❯
