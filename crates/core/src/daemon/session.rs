@@ -5,11 +5,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use capsule_protocol::SessionId;
+use capsule_protocol::{PromptGeneration, SessionId};
 
 /// State for a connected client session.
 pub(super) struct Session {
-    last_generation: Option<u64>,
+    last_generation: Option<PromptGeneration>,
     last_seen: Instant,
 }
 
@@ -22,7 +22,7 @@ impl Session {
     }
 
     /// Returns the last processed generation, if any.
-    pub(super) const fn last_generation(&self) -> Option<u64> {
+    pub(super) const fn last_generation(&self) -> Option<PromptGeneration> {
         self.last_generation
     }
 }
@@ -53,7 +53,7 @@ impl SessionMap {
     ///
     /// Updates the session's generation and `last_seen` timestamp if so.
     /// Returns `true` if the request should be processed.
-    pub(super) fn check_generation(&mut self, id: SessionId, generation: u64) -> bool {
+    pub(super) fn check_generation(&mut self, id: SessionId, generation: PromptGeneration) -> bool {
         let session = self.get_or_create(id);
         match session.last_generation {
             Some(last) if generation <= last => false,
@@ -82,6 +82,8 @@ impl SessionMap {
 
 #[cfg(test)]
 mod tests {
+    use capsule_protocol::PromptGeneration;
+
     use super::*;
 
     fn test_sid() -> SessionId {
@@ -95,46 +97,46 @@ mod tests {
     #[test]
     fn test_session_first_request_accepted() {
         let mut map = SessionMap::new();
-        assert!(map.check_generation(test_sid(), 1));
+        assert!(map.check_generation(test_sid(), PromptGeneration::new(1)));
     }
 
     #[test]
     fn test_session_first_request_generation_zero_accepted() {
         let mut map = SessionMap::new();
-        assert!(map.check_generation(test_sid(), 0));
+        assert!(map.check_generation(test_sid(), PromptGeneration::new(0)));
     }
 
     #[test]
     fn test_session_increasing_generation_accepted() {
         let mut map = SessionMap::new();
-        assert!(map.check_generation(test_sid(), 1));
-        assert!(map.check_generation(test_sid(), 2));
-        assert!(map.check_generation(test_sid(), 5));
+        assert!(map.check_generation(test_sid(), PromptGeneration::new(1)));
+        assert!(map.check_generation(test_sid(), PromptGeneration::new(2)));
+        assert!(map.check_generation(test_sid(), PromptGeneration::new(5)));
     }
 
     #[test]
     fn test_session_same_generation_rejected() {
         let mut map = SessionMap::new();
-        assert!(map.check_generation(test_sid(), 3));
-        assert!(!map.check_generation(test_sid(), 3));
+        assert!(map.check_generation(test_sid(), PromptGeneration::new(3)));
+        assert!(!map.check_generation(test_sid(), PromptGeneration::new(3)));
     }
 
     #[test]
     fn test_session_older_generation_rejected() {
         let mut map = SessionMap::new();
-        assert!(map.check_generation(test_sid(), 5));
-        assert!(!map.check_generation(test_sid(), 3));
-        assert!(!map.check_generation(test_sid(), 1));
+        assert!(map.check_generation(test_sid(), PromptGeneration::new(5)));
+        assert!(!map.check_generation(test_sid(), PromptGeneration::new(3)));
+        assert!(!map.check_generation(test_sid(), PromptGeneration::new(1)));
     }
 
     #[test]
     fn test_session_independent_sessions() {
         let mut map = SessionMap::new();
-        assert!(map.check_generation(test_sid(), 5));
+        assert!(map.check_generation(test_sid(), PromptGeneration::new(5)));
         // Different session is independent
-        assert!(map.check_generation(other_sid(), 1));
+        assert!(map.check_generation(other_sid(), PromptGeneration::new(1)));
         // Original session still rejects old generations
-        assert!(!map.check_generation(test_sid(), 3));
+        assert!(!map.check_generation(test_sid(), PromptGeneration::new(3)));
     }
 
     #[test]
@@ -143,15 +145,15 @@ mod tests {
         let session = map.get_or_create(test_sid());
         assert_eq!(session.last_generation(), None);
 
-        map.check_generation(test_sid(), 42);
+        map.check_generation(test_sid(), PromptGeneration::new(42));
         let session = map.get_or_create(test_sid());
-        assert_eq!(session.last_generation(), Some(42));
+        assert_eq!(session.last_generation(), Some(PromptGeneration::new(42)));
     }
 
     #[test]
     fn test_session_prune_stale_removes_old() {
         let mut map = SessionMap::new();
-        map.check_generation(test_sid(), 1);
+        map.check_generation(test_sid(), PromptGeneration::new(1));
         std::thread::sleep(Duration::from_millis(5));
         map.prune_stale(Duration::from_millis(1));
         // Session should be pruned — re-creating gives a fresh session
@@ -162,9 +164,9 @@ mod tests {
     #[test]
     fn test_session_prune_stale_keeps_active() {
         let mut map = SessionMap::new();
-        map.check_generation(test_sid(), 1);
+        map.check_generation(test_sid(), PromptGeneration::new(1));
         map.prune_stale(Duration::from_mins(1));
         let session = map.get_or_create(test_sid());
-        assert_eq!(session.last_generation(), Some(1));
+        assert_eq!(session.last_generation(), Some(PromptGeneration::new(1)));
     }
 }

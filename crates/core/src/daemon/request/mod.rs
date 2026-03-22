@@ -1,8 +1,8 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use capsule_protocol::{
-    BuildId, HelloAck, Message, MessageReader, MessageWriter, PROTOCOL_VERSION, RenderResult,
-    Request, Update,
+    BuildId, ConfigGeneration, DepHash, HelloAck, Message, MessageReader, MessageWriter,
+    PROTOCOL_VERSION, PromptGeneration, RenderResult, Request, Update,
 };
 use tokio::{
     net::UnixStream,
@@ -18,6 +18,10 @@ use crate::module::{
     CustomModuleInfo, DetectedModuleCandidate, GitModule, GitProvider, ModuleSpeed, RequestFacts,
     ResolvedModule, ResolvedSource, arbitrate_detected_modules, required_env_var_names,
 };
+
+mod pipeline;
+
+use pipeline::{CollectedFacts, ConfigSnapshot, GatedPromptRequest};
 
 /// Per-connection context, cloned from the accept loop for each spawned handler.
 pub(super) struct ConnectionCtx<G> {
@@ -114,12 +118,12 @@ struct DetectInput<'a> {
 
 fn cache_key_for_request(
     cwd: &str,
-    config_generation: u64,
+    config_generation: ConfigGeneration,
     modules: &[ResolvedModule],
     facts: &RequestFacts,
 ) -> CacheKey {
     let deps = facts.matching_dependency_inputs(modules, ModuleSpeed::Slow);
-    let dep_hash = deps.compute_dep_hash(facts);
+    let dep_hash = DepHash::new(deps.compute_dep_hash(facts));
     CacheKey::new(cwd.to_owned(), config_generation, dep_hash)
 }
 
@@ -202,7 +206,7 @@ fn spawn_slow_revalidation<G: GitProvider + Send + 'static>(
     daemon_stats: Arc<DaemonStats>,
     cache_key: CacheKey,
     session_id: capsule_protocol::SessionId,
-    generation: u64,
+    generation: PromptGeneration,
     fast: prompt::FastOutputs,
     sent_left1: String,
     sent_left2: String,
@@ -254,7 +258,7 @@ struct SlowUpdateTarget {
     writer: Arc<Mutex<MessageWriter<tokio::net::unix::OwnedWriteHalf>>>,
     receiver: watch::Receiver<Option<Arc<prompt::SlowOutput>>>,
     session_id: capsule_protocol::SessionId,
-    generation: u64,
+    generation: PromptGeneration,
     sent_left1: String,
     sent_left2: String,
     fast: prompt::FastOutputs,
@@ -340,6 +344,10 @@ fn matching_modules_to_candidates(
         .collect()
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "request pipeline is staged with pipeline::* types; further extraction is optional"
+)]
 async fn handle_request<G: GitProvider + Send + 'static>(
     req: Request,
     ctx: RequestCtx<G>,
@@ -348,13 +356,28 @@ async fn handle_request<G: GitProvider + Send + 'static>(
 
     ctx.stats.requests_total.fetch_add(1, Ordering::Relaxed);
 
-    let session_id = req.session_id;
-    let generation = req.generation;
-    let cwd = req.cwd.clone();
-    let cols = req.cols;
-    let (config, modules, config_generation) = {
+    let Request {
+        session_id,
+        generation,
+        cwd,
+        cols,
+        last_exit_code,
+        duration_ms,
+        keymap,
+        env_vars,
+        version: _,
+    } = req;
+
+    let config_snap = {
         let mut reloadable = ctx.config.lock().await;
-        reloadable.snapshot(&ctx.state, &ctx.stats).await
+        let snapshot = reloadable.snapshot(&ctx.state, &ctx.stats).await;
+        drop(reloadable);
+        let (config, modules, config_generation) = snapshot;
+        ConfigSnapshot {
+            config,
+            modules,
+            config_generation,
+        }
     };
 
     {
@@ -367,41 +390,67 @@ async fn handle_request<G: GitProvider + Send + 'static>(
         }
         if !state.sessions.check_generation(session_id, generation) {
             ctx.stats.stale_discards.fetch_add(1, Ordering::Relaxed);
-            tracing::debug!(session_id = %session_id, generation, "stale generation, discarding");
+            tracing::debug!(
+                session_id = %session_id,
+                generation = generation.get(),
+                "stale generation, discarding"
+            );
             return Ok(());
         }
     }
 
-    let facts = Arc::new(
-        RequestFacts::collect(PathBuf::from(&cwd), req.env_vars).with_forwarded_path_env(),
-    );
-    let cache_key = cache_key_for_request(&cwd, config_generation, &modules, facts.as_ref());
-    let render_ctx = crate::module::RenderContext {
-        cwd: facts.cwd(),
-        home_dir: ctx.home_dir.as_ref().as_path(),
-        last_exit_code: req.last_exit_code,
-        duration_ms: req.duration_ms,
-        keymap: &req.keymap,
+    let gated = GatedPromptRequest {
+        session_id,
+        generation,
+        cwd,
         cols,
+        last_exit_code,
+        duration_ms,
+        keymap,
+    };
+
+    let facts = Arc::new(
+        RequestFacts::collect(PathBuf::from(&gated.cwd), env_vars).with_forwarded_path_env(),
+    );
+    let cache_key = cache_key_for_request(
+        &gated.cwd,
+        config_snap.config_generation,
+        &config_snap.modules,
+        facts.as_ref(),
+    );
+    let collected = CollectedFacts { facts, cache_key };
+
+    let render_ctx = crate::module::RenderContext {
+        cwd: collected.facts.cwd(),
+        home_dir: ctx.home_dir.as_ref().as_path(),
+        last_exit_code: gated.last_exit_code,
+        duration_ms: gated.duration_ms,
+        keymap: &gated.keymap,
+        cols: gated.cols,
     };
 
     // Parallel fast custom module detection (runs concurrently with built-in
     // fast modules which are computed synchronously below).
     let fast_custom = detect_custom_modules(&DetectInput {
-        modules: &modules,
-        facts: Arc::clone(&facts),
+        modules: &config_snap.modules,
+        facts: Arc::clone(&collected.facts),
         speed: ModuleSpeed::Fast,
-        timeout: Duration::from_millis(config.timeout.fast_ms),
+        timeout: Duration::from_millis(config_snap.config.timeout.fast_ms),
         stats: None,
     })
     .await;
 
-    let fast = prompt::run_fast_modules(&render_ctx, &config, facts.read_only(), fast_custom);
+    let fast = prompt::run_fast_modules(
+        &render_ctx,
+        &config_snap.config,
+        collected.facts.read_only(),
+        fast_custom,
+    );
 
-    let cache_enabled = config.cache.slow != crate::config::SlowCacheMode::Off;
+    let cache_enabled = config_snap.config.cache.slow != crate::config::SlowCacheMode::Off;
     let cached_slow = if cache_enabled {
         let mut state = ctx.state.lock().await;
-        state.cache.get(&cache_key).map(|v| {
+        state.cache.get(&collected.cache_key).map(|v| {
             ctx.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
             v.clone()
         })
@@ -412,18 +461,24 @@ async fn handle_request<G: GitProvider + Send + 'static>(
         ctx.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
     }
 
-    let lines = prompt::compose_prompt(&fast, cached_slow.as_deref(), usize::from(cols), &config);
+    let lines = prompt::compose_prompt(
+        &fast,
+        cached_slow.as_deref(),
+        usize::from(gated.cols),
+        &config_snap.config,
+    );
+
     let result = RenderResult {
         version: PROTOCOL_VERSION,
-        session_id,
-        generation,
+        session_id: gated.session_id,
+        generation: gated.generation,
         left1: lines.left1.clone(),
         left2: lines.left2.clone(),
     };
     tracing::debug!(
-        session_id = %session_id,
-        generation,
-        cwd = %cwd,
+        session_id = %gated.session_id,
+        generation = gated.generation.get(),
+        cwd = %gated.cwd,
         "sending RenderResult"
     );
     write_message(&ctx.writer, &Message::RenderResult(result)).await?;
@@ -435,19 +490,19 @@ async fn handle_request<G: GitProvider + Send + 'static>(
         spawn_slow_revalidation(
             cached,
             ctx.git_provider,
-            Arc::clone(&facts),
-            Arc::clone(&modules),
-            Arc::clone(&config),
+            Arc::clone(&collected.facts),
+            Arc::clone(&config_snap.modules),
+            Arc::clone(&config_snap.config),
             Arc::clone(&ctx.state),
             Arc::clone(&ctx.writer),
             Arc::clone(&ctx.stats),
-            cache_key,
-            session_id,
-            generation,
+            collected.cache_key,
+            gated.session_id,
+            gated.generation,
             fast.clone(),
             lines.left1,
             lines.left2,
-            cols,
+            gated.cols,
         );
 
         return Ok(());
@@ -455,8 +510,9 @@ async fn handle_request<G: GitProvider + Send + 'static>(
 
     let sent_left1 = lines.left1;
     let sent_left2 = lines.left2;
-    let slow_config = Arc::clone(&config);
-    let slow_modules = Arc::clone(&modules);
+    let slow_config = Arc::clone(&config_snap.config);
+    let slow_modules = Arc::clone(&config_snap.modules);
+    let CollectedFacts { facts, cache_key } = collected;
     let state = Arc::clone(&ctx.state);
     let writer = Arc::clone(&ctx.writer);
     let should_start_compute = {
@@ -477,12 +533,12 @@ async fn handle_request<G: GitProvider + Send + 'static>(
             state: Arc::clone(&state),
             writer: Arc::clone(&writer),
             receiver,
-            session_id,
-            generation,
+            session_id: gated.session_id,
+            generation: gated.generation,
             sent_left1: sent_left1.clone(),
             sent_left2: sent_left2.clone(),
             fast: fast.clone(),
-            cols,
+            cols: gated.cols,
             config: Arc::clone(&slow_config),
         }));
         should_start
@@ -533,7 +589,7 @@ async fn try_send_slow_update(
     state: &Arc<Mutex<SharedState>>,
     writer: &Arc<Mutex<MessageWriter<tokio::net::unix::OwnedWriteHalf>>>,
     session_id: capsule_protocol::SessionId,
-    generation: u64,
+    generation: PromptGeneration,
     fast: &prompt::FastOutputs,
     slow: &prompt::SlowOutput,
     sent_left1: &str,
@@ -560,7 +616,7 @@ async fn try_send_slow_update(
 
     tracing::debug!(
         session_id = %session_id,
-        generation,
+        generation = generation.get(),
         "sending Update (slow modules changed prompt)"
     );
     let update = Update {
@@ -625,7 +681,8 @@ mod tests {
     };
 
     use capsule_protocol::{
-        BuildId, Message, MessageReader, MessageWriter, PROTOCOL_VERSION, Request, SessionId,
+        BuildId, Message, MessageReader, MessageWriter, PROTOCOL_VERSION, PromptGeneration,
+        Request, SessionId,
     };
     use tokio::{
         net::unix::{OwnedReadHalf, OwnedWriteHalf},
@@ -679,7 +736,7 @@ mod tests {
         Request {
             version: PROTOCOL_VERSION,
             session_id,
-            generation,
+            generation: PromptGeneration::new(generation),
             cwd: cwd.to_owned(),
             cols,
             last_exit_code: 0,
@@ -732,7 +789,7 @@ mod tests {
         match resp {
             Some(Message::RenderResult(rr)) => {
                 assert_eq!(rr.session_id, test_sid());
-                assert_eq!(rr.generation, 1);
+                assert_eq!(rr.generation, PromptGeneration::new(1));
                 assert!(
                     rr.left1.contains("/tmp"),
                     "left1 should contain directory: {}",
@@ -773,7 +830,7 @@ mod tests {
         match update {
             Some(Message::Update(u)) => {
                 assert_eq!(u.session_id, test_sid());
-                assert_eq!(u.generation, 1);
+                assert_eq!(u.generation, PromptGeneration::new(1));
                 assert!(
                     u.left1.contains("main"),
                     "update left1 should contain branch: {}",
@@ -796,7 +853,9 @@ mod tests {
             .await?;
         let r1 = reader.read_message().await?;
         match &r1 {
-            Some(Message::RenderResult(rr)) => assert_eq!(rr.generation, 5),
+            Some(Message::RenderResult(rr)) => {
+                assert_eq!(rr.generation, PromptGeneration::new(5));
+            }
             other => return Err(format!("expected RenderResult(gen=5), got {other:?}").into()),
         }
 
@@ -809,7 +868,9 @@ mod tests {
 
         let r2 = reader.read_message().await?;
         match &r2 {
-            Some(Message::RenderResult(rr)) => assert_eq!(rr.generation, 6),
+            Some(Message::RenderResult(rr)) => {
+                assert_eq!(rr.generation, PromptGeneration::new(6));
+            }
             other => return Err(format!("expected RenderResult(gen=6), got {other:?}").into()),
         }
 
@@ -942,8 +1003,8 @@ mod tests {
         while !saw_gen1 || !saw_gen2 {
             match reader.read_message().await? {
                 Some(Message::RenderResult(rr)) => {
-                    saw_gen1 |= rr.generation == 1;
-                    saw_gen2 |= rr.generation == 2;
+                    saw_gen1 |= rr.generation == PromptGeneration::new(1);
+                    saw_gen2 |= rr.generation == PromptGeneration::new(2);
                 }
                 other => {
                     return Err(
@@ -955,7 +1016,7 @@ mod tests {
 
         match tokio::time::timeout(Duration::from_secs(5), reader.read_message()).await?? {
             Some(Message::Update(update)) => {
-                assert_eq!(update.generation, 2);
+                assert_eq!(update.generation, PromptGeneration::new(2));
                 assert!(update.left1.contains("main"));
             }
             other => return Err(format!("expected Update for generation 2, got {other:?}").into()),
@@ -1005,7 +1066,7 @@ mod tests {
         if let Ok(Ok(Some(Message::Update(update)))) =
             tokio::time::timeout(Duration::from_millis(50), reader.read_message()).await
         {
-            assert_eq!(update.generation, 1);
+            assert_eq!(update.generation, PromptGeneration::new(1));
         }
 
         writer
@@ -1298,7 +1359,7 @@ mod tests {
         match resp {
             Some(Message::RenderResult(rr)) => {
                 assert_eq!(rr.session_id, test_sid());
-                assert_eq!(rr.generation, 1);
+                assert_eq!(rr.generation, PromptGeneration::new(1));
             }
             other => return Err(format!("expected RenderResult, got {other:?}").into()),
         }
@@ -1318,7 +1379,7 @@ mod tests {
         let resp = reader.read_message().await?;
         match resp {
             Some(Message::RenderResult(rr)) => {
-                assert_eq!(rr.generation, 1);
+                assert_eq!(rr.generation, PromptGeneration::new(1));
             }
             other => return Err(format!("expected RenderResult, got {other:?}").into()),
         }
@@ -1362,7 +1423,11 @@ mod tests {
 
         match tokio::time::timeout(Duration::from_secs(5), reader.read_message()).await?? {
             Some(Message::Update(u)) => {
-                assert_eq!(u.generation, 2, "only latest generation should get Update");
+                assert_eq!(
+                    u.generation,
+                    PromptGeneration::new(2),
+                    "only latest generation should get Update"
+                );
             }
             other => return Err(format!("expected Update for gen=2, got {other:?}").into()),
         }
@@ -1420,14 +1485,14 @@ mod tests {
             .await?;
         match reader.read_message().await? {
             Some(Message::RenderResult(rr)) => {
-                assert_eq!(rr.generation, 2);
+                assert_eq!(rr.generation, PromptGeneration::new(2));
             }
             other => return Err(format!("expected RenderResult, got {other:?}").into()),
         }
 
         match tokio::time::timeout(Duration::from_secs(5), reader.read_message()).await?? {
             Some(Message::Update(update)) => {
-                assert_eq!(update.generation, 2);
+                assert_eq!(update.generation, PromptGeneration::new(2));
                 assert!(
                     update.left1.contains("feature"),
                     "Update should contain branch: {}",
@@ -1539,7 +1604,8 @@ mod tests {
         match update {
             Some(Message::Update(u)) => {
                 assert_eq!(
-                    u.generation, 4,
+                    u.generation,
+                    PromptGeneration::new(4),
                     "only the latest generation should receive Update"
                 );
             }

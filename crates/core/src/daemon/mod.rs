@@ -25,7 +25,7 @@ use std::{
 };
 
 use cache::BoundedCache;
-use capsule_protocol::BuildId;
+use capsule_protocol::{BuildId, ConfigGeneration, DepHash};
 use listener::ListenerMode;
 use session::SessionMap;
 use tokio::{
@@ -61,12 +61,12 @@ pub enum DaemonError {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) struct CacheKey {
     cwd: String,
-    config_generation: u64,
-    dep_hash: u64,
+    config_generation: ConfigGeneration,
+    dep_hash: DepHash,
 }
 
 impl CacheKey {
-    const fn new(cwd: String, config_generation: u64, dep_hash: u64) -> Self {
+    const fn new(cwd: String, config_generation: ConfigGeneration, dep_hash: DepHash) -> Self {
         Self {
             cwd,
             config_generation,
@@ -102,13 +102,13 @@ impl SharedState {
 pub(super) struct ReloadableConfig {
     path: Option<PathBuf>,
     modified_at: Option<SystemTime>,
-    generation: u64,
+    generation: ConfigGeneration,
     config: Arc<Config>,
     modules: Arc<Vec<ResolvedModule>>,
 }
 
 impl ReloadableConfig {
-    pub(super) const fn generation(&self) -> u64 {
+    pub(super) const fn generation(&self) -> ConfigGeneration {
         self.generation
     }
 
@@ -121,7 +121,7 @@ impl ReloadableConfig {
         Self {
             path,
             modified_at,
-            generation: 0,
+            generation: ConfigGeneration::new(0),
             config,
             modules,
         }
@@ -131,7 +131,7 @@ impl ReloadableConfig {
         &mut self,
         state: &Arc<Mutex<SharedState>>,
         metrics: &stats::DaemonStats,
-    ) -> (Arc<Config>, Arc<Vec<ResolvedModule>>, u64) {
+    ) -> (Arc<Config>, Arc<Vec<ResolvedModule>>, ConfigGeneration) {
         if let Err(error) = self.reload_if_needed(state, metrics).await {
             metrics
                 .config_reload_errors
@@ -171,7 +171,7 @@ impl ReloadableConfig {
                 self.config = Arc::new(config);
                 self.modules = Arc::new(resolve_modules(&self.config.module));
                 self.modified_at = observed_mtime;
-                self.generation = self.generation.saturating_add(1);
+                self.generation = ConfigGeneration::new(self.generation.get().saturating_add(1));
                 metrics
                     .config_reloads
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);

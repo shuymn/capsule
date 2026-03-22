@@ -213,9 +213,6 @@ pub fn uninstall(sm: &impl ServiceManager, home: &Path) -> anyhow::Result<()> {
 pub(super) fn daemon_needs_restart(socket_path: &Path) -> bool {
     matches!(
         crate::connect::negotiate_build_id(socket_path),
-        Ok(crate::connect::NegotiationResult {
-            build_id_ok: false,
-            ..
-        })
+        Ok(ref n) if n.needs_daemon_restart(),
     )
 }

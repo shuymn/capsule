@@ -10,7 +10,9 @@ use std::{
     time::Duration,
 };
 
-use capsule_protocol::{Hello, Message, MessageReader, MessageWriter, PROTOCOL_VERSION};
+use capsule_protocol::{
+    Hello, Message, MessageReader, MessageWriter, PROTOCOL_VERSION, PromptGeneration,
+};
 use common::{DaemonProcess, make_request, test_session_id, wait_for_socket_accept};
 
 // ---------------------------------------------------------------------------
@@ -43,7 +45,7 @@ async fn test_e2e_full_flow() -> Result<(), Box<dyn std::error::Error>> {
     match &resp1 {
         Some(Message::RenderResult(rr)) => {
             assert_eq!(rr.session_id, test_session_id());
-            assert_eq!(rr.generation, 1);
+            assert_eq!(rr.generation, PromptGeneration::new(1));
             assert!(
                 rr.left1.contains("dir_a"),
                 "left1 should contain dir_a: {}",
@@ -60,7 +62,7 @@ async fn test_e2e_full_flow() -> Result<(), Box<dyn std::error::Error>> {
     let resp2 = tokio::time::timeout(Duration::from_secs(5), reader.read_message()).await??;
     match &resp2 {
         Some(Message::RenderResult(rr)) => {
-            assert_eq!(rr.generation, 2);
+            assert_eq!(rr.generation, PromptGeneration::new(2));
             assert!(
                 rr.left1.contains("dir_b"),
                 "left1 should contain dir_b: {}",

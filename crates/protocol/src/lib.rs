@@ -6,10 +6,12 @@
 #![warn(clippy::pedantic, clippy::nursery, clippy::cargo)]
 
 pub mod codec;
+pub mod generation;
 pub mod message;
 pub mod netstring;
 
 pub use codec::{MessageReader, MessageWriter};
+pub use generation::{ConfigGeneration, DepHash, PromptGeneration};
 pub use message::{
     BuildId, Hello, HelloAck, Message, PROTOCOL_VERSION, RenderResult, Request, SessionId,
     StatusRequest, StatusResponse, Update,

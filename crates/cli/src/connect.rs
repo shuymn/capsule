@@ -14,7 +14,8 @@ use std::{
 
 use anyhow::Context as _;
 use capsule_protocol::{
-    Hello, Message, MessageReader, MessageWriter, PROTOCOL_VERSION, Request, SessionId,
+    Hello, Message, MessageReader, MessageWriter, PROTOCOL_VERSION, PromptGeneration, Request,
+    SessionId,
 };
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
@@ -38,12 +39,12 @@ pub fn run() -> anyhow::Result<()> {
 
     ensure_daemon(&socket_path)?;
 
-    let negotiation = negotiate_build_id(&socket_path).unwrap_or(NegotiationResult {
-        build_id_ok: false,
-        env_var_names: vec![],
-    });
+    let negotiation =
+        negotiate_build_id(&socket_path).unwrap_or(BuildIdNegotiation::Incompatible {
+            env_var_names: vec![],
+        });
 
-    if !negotiation.build_id_ok {
+    if negotiation.needs_daemon_restart() {
         restart_daemon(&socket_path, &lock_path()?)?;
     }
 
@@ -51,7 +52,7 @@ pub fn run() -> anyhow::Result<()> {
     // env vars to include in requests. Format: `E:<comma-separated names>\n`
     // The shell reads this one-time line before entering the relay loop.
     {
-        let names = negotiation.env_var_names.join(",");
+        let names = negotiation.env_var_names().join(",");
         let mut stdout = std::io::stdout().lock();
         let _ = writeln!(stdout, "E:{names}");
         let _ = stdout.flush();
@@ -114,22 +115,50 @@ fn ensure_daemon(socket_path: &Path) -> anyhow::Result<()> {
     anyhow::bail!("daemon failed to start within 1s")
 }
 
-/// Result of build ID negotiation.
-pub struct NegotiationResult {
-    /// Whether build IDs match (true = compatible, false = stale daemon).
-    pub build_id_ok: bool,
-    /// Environment variable names the daemon requested from the shell.
-    pub env_var_names: Vec<String>,
+/// Outcome of comparing this binary's build ID with the running daemon.
+#[derive(Debug)]
+pub enum BuildIdNegotiation {
+    /// No local build fingerprint was computed; skip the check and use the daemon as-is.
+    Unchecked {
+        /// Environment variable names the daemon requested from the shell.
+        env_var_names: Vec<String>,
+    },
+    /// Daemon reported a matching build (or no build ID on the wire).
+    Compatible {
+        /// Environment variable names the daemon requested from the shell.
+        env_var_names: Vec<String>,
+    },
+    /// Empty or malformed `HelloAck`, wrong message type, or build ID mismatch.
+    Incompatible {
+        /// Environment variable names parsed from the ack when present (often empty).
+        env_var_names: Vec<String>,
+    },
+}
+
+impl BuildIdNegotiation {
+    /// Environment variable names to forward from the shell on each request.
+    #[must_use]
+    pub const fn env_var_names(&self) -> &[String] {
+        match self {
+            Self::Unchecked { env_var_names }
+            | Self::Compatible { env_var_names }
+            | Self::Incompatible { env_var_names } => env_var_names.as_slice(),
+        }
+    }
+
+    /// Whether the connect path should restart the daemon before relaying.
+    #[must_use]
+    pub const fn needs_daemon_restart(&self) -> bool {
+        matches!(self, Self::Incompatible { .. })
+    }
 }
 
 /// Negotiate build ID with the daemon and retrieve env var requirements.
 ///
-/// Returns negotiation result including build ID check and env var names,
-/// or an error on I/O failure.
-pub fn negotiate_build_id(socket_path: &Path) -> anyhow::Result<NegotiationResult> {
+/// Returns negotiation outcome and env var names, or an error on I/O failure.
+pub fn negotiate_build_id(socket_path: &Path) -> anyhow::Result<BuildIdNegotiation> {
     let Some(my_build_id) = crate::build_id::compute() else {
-        return Ok(NegotiationResult {
-            build_id_ok: true,
+        return Ok(BuildIdNegotiation::Unchecked {
             env_var_names: vec![],
         });
     };
@@ -157,22 +186,25 @@ pub fn negotiate_build_id(socket_path: &Path) -> anyhow::Result<NegotiationResul
         buf.pop();
     }
     if buf.is_empty() {
-        return Ok(NegotiationResult {
-            build_id_ok: false,
+        return Ok(BuildIdNegotiation::Incompatible {
             env_var_names: vec![],
         });
     }
 
     match Message::from_wire(&buf) {
         Ok(Message::HelloAck(ack)) => {
-            let build_id_ok = ack.build_id.is_none_or(|id| id == my_build_id);
-            Ok(NegotiationResult {
-                build_id_ok,
-                env_var_names: ack.env_var_names,
+            let compatible = ack.build_id.is_none_or(|id| id == my_build_id);
+            Ok(if compatible {
+                BuildIdNegotiation::Compatible {
+                    env_var_names: ack.env_var_names,
+                }
+            } else {
+                BuildIdNegotiation::Incompatible {
+                    env_var_names: ack.env_var_names,
+                }
             })
         }
-        _ => Ok(NegotiationResult {
-            build_id_ok: false,
+        _ => Ok(BuildIdNegotiation::Incompatible {
             env_var_names: vec![],
         }),
     }
@@ -198,6 +230,22 @@ fn restart_daemon(socket_path: &Path, lock_path: &Path) -> anyhow::Result<()> {
     }
 
     ensure_daemon(socket_path)
+}
+
+/// Tab-prefixed line sent from connect back to the zsh glue for render/update rows.
+#[derive(Clone, Copy, Debug)]
+enum ShellTabLineKind {
+    RenderResult,
+    Update,
+}
+
+impl ShellTabLineKind {
+    const fn as_prefix(self) -> &'static [u8] {
+        match self {
+            Self::RenderResult => b"R",
+            Self::Update => b"U",
+        }
+    }
 }
 
 /// Maximum reconnection attempts before giving up.
@@ -299,12 +347,24 @@ async fn translate_daemon_to_stdout<R: tokio::io::AsyncRead + Unpin + Send>(
         let msg = reader.read_message().await?;
         match msg {
             Some(Message::RenderResult(rr)) => {
-                format_tab_response(&mut line_buf, b"R", rr.generation, &rr.left1, &rr.left2);
+                format_tab_response(
+                    &mut line_buf,
+                    ShellTabLineKind::RenderResult,
+                    rr.generation.get(),
+                    &rr.left1,
+                    &rr.left2,
+                );
                 stdout.write_all(&line_buf).await?;
                 stdout.flush().await?;
             }
             Some(Message::Update(u)) => {
-                format_tab_response(&mut line_buf, b"U", u.generation, &u.left1, &u.left2);
+                format_tab_response(
+                    &mut line_buf,
+                    ShellTabLineKind::Update,
+                    u.generation.get(),
+                    &u.left1,
+                    &u.left2,
+                );
                 stdout.write_all(&line_buf).await?;
                 stdout.flush().await?;
             }
@@ -317,14 +377,14 @@ async fn translate_daemon_to_stdout<R: tokio::io::AsyncRead + Unpin + Send>(
 /// Format a tab-separated response line: `<type>\t<gen>\t<left1>\t<left2>\n`
 fn format_tab_response(
     buf: &mut Vec<u8>,
-    msg_type: &[u8],
+    kind: ShellTabLineKind,
     generation: u64,
     left1: &str,
     left2: &str,
 ) {
     use std::io::Write as _;
     buf.clear();
-    buf.extend_from_slice(msg_type);
+    buf.extend_from_slice(kind.as_prefix());
     buf.push(b'\t');
     let _ = write!(buf, "{generation}");
     buf.push(b'\t');
@@ -371,7 +431,7 @@ fn parse_shell_request(line: &[u8], session_id: SessionId) -> anyhow::Result<Req
     let f_keymap = &line[tabs[4] + 1..tabs[5]];
     let f_env = &line[tabs[5] + 1..];
 
-    let generation = parse_utf8::<u64>(f_gen, "generation")?;
+    let generation = PromptGeneration::new(parse_utf8::<u64>(f_gen, "generation")?);
     let last_exit_code = parse_utf8::<i32>(f_exit, "last_exit_code")?;
     let duration_ms = if f_dur.is_empty() {
         None
@@ -463,6 +523,8 @@ fn is_socket_error(e: &std::io::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use capsule_protocol::PromptGeneration;
+
     use super::*;
 
     fn test_session_id() -> SessionId {
@@ -475,7 +537,7 @@ mod tests {
         let req = parse_shell_request(line, test_session_id())?;
         assert_eq!(req.version, PROTOCOL_VERSION);
         assert_eq!(req.session_id, test_session_id());
-        assert_eq!(req.generation, 42);
+        assert_eq!(req.generation, PromptGeneration::new(42));
         assert_eq!(req.last_exit_code, 0);
         assert_eq!(req.duration_ms, Some(1500));
         assert_eq!(req.cwd, "/home/user");
@@ -492,7 +554,7 @@ mod tests {
     fn test_parse_shell_request_empty_duration() -> Result<(), Box<dyn std::error::Error>> {
         let line = b"1\t127\t\t/tmp\t80\tmain\t";
         let req = parse_shell_request(line, test_session_id())?;
-        assert_eq!(req.generation, 1);
+        assert_eq!(req.generation, PromptGeneration::new(1));
         assert_eq!(req.last_exit_code, 127);
         assert_eq!(req.duration_ms, None);
         assert_eq!(req.cwd, "/tmp");
@@ -534,14 +596,20 @@ mod tests {
     #[test]
     fn test_format_tab_response() {
         let mut buf = Vec::new();
-        format_tab_response(&mut buf, b"R", 42, "~/project  main", "\u{276f}");
+        format_tab_response(
+            &mut buf,
+            ShellTabLineKind::RenderResult,
+            42,
+            "~/project  main",
+            "\u{276f}",
+        );
         assert_eq!(buf, b"R\t42\t~/project  main\t\xe2\x9d\xaf\n");
     }
 
     #[test]
     fn test_format_tab_response_update() {
         let mut buf = Vec::new();
-        format_tab_response(&mut buf, b"U", 1, "info", "prompt");
+        format_tab_response(&mut buf, ShellTabLineKind::Update, 1, "info", "prompt");
         assert_eq!(buf, b"U\t1\tinfo\tprompt\n");
     }
 

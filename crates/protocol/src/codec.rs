@@ -79,7 +79,10 @@ impl<W: AsyncWrite + Unpin + Send> MessageWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::{Hello, HelloAck, RenderResult, Request, SessionId, Update};
+    use crate::{
+        PromptGeneration,
+        message::{Hello, HelloAck, RenderResult, Request, SessionId, Update},
+    };
 
     fn sample_session_id() -> SessionId {
         SessionId::from_bytes([0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef])
@@ -89,7 +92,7 @@ mod tests {
         Request {
             version: 1,
             session_id: sample_session_id(),
-            generation: 1,
+            generation: PromptGeneration::new(1),
             cwd: "/tmp".to_owned(),
             cols: 80,
             last_exit_code: 0,
@@ -103,7 +106,7 @@ mod tests {
         RenderResult {
             version: 1,
             session_id: sample_session_id(),
-            generation: 1,
+            generation: PromptGeneration::new(1),
             left1: "/tmp".to_owned(),
             left2: "❯ ".to_owned(),
         }
@@ -113,7 +116,7 @@ mod tests {
         Update {
             version: 1,
             session_id: sample_session_id(),
-            generation: 1,
+            generation: PromptGeneration::new(1),
             left1: "/tmp  main".to_owned(),
             left2: "❯ ".to_owned(),
         }

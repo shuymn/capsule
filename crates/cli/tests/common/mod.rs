@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use capsule_protocol::{PROTOCOL_VERSION, Request, SessionId};
+use capsule_protocol::{PROTOCOL_VERSION, PromptGeneration, Request, SessionId};
 
 pub(crate) struct DaemonProcess {
     child: Option<Child>,
@@ -106,7 +106,7 @@ pub(crate) fn make_request(cwd: &str, generation: u64) -> Request {
     Request {
         version: PROTOCOL_VERSION,
         session_id: test_session_id(),
-        generation,
+        generation: PromptGeneration::new(generation),
         cwd: cwd.to_owned(),
         cols: 80,
         last_exit_code: 0,

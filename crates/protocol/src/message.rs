@@ -3,7 +3,11 @@
 //! The wire format is a sequence of netstring-encoded fields terminated by `\n`.
 //! Each message type has a fixed field order and a type discriminator.
 
-use crate::{ProtocolError, netstring};
+use crate::{
+    ProtocolError,
+    generation::{ConfigGeneration, PromptGeneration},
+    netstring,
+};
 
 /// Protocol version for v1.
 pub const PROTOCOL_VERSION: u8 = 1;
@@ -141,7 +145,7 @@ pub struct Request {
     /// Session identifier.
     pub session_id: SessionId,
     /// Monotonically increasing generation counter.
-    pub generation: u64,
+    pub generation: PromptGeneration,
     /// Current working directory.
     pub cwd: String,
     /// Terminal width in columns.
@@ -169,7 +173,7 @@ pub struct RenderResult {
     /// Session identifier.
     pub session_id: SessionId,
     /// Generation this response corresponds to.
-    pub generation: u64,
+    pub generation: PromptGeneration,
     /// Info line (line 1 of the prompt).
     pub left1: String,
     /// Input line (line 2 of the prompt).
@@ -186,7 +190,7 @@ pub struct Update {
     /// Session identifier.
     pub session_id: SessionId,
     /// Generation this update corresponds to.
-    pub generation: u64,
+    pub generation: PromptGeneration,
     /// Updated info line.
     pub left1: String,
     /// Updated input line.
@@ -258,7 +262,7 @@ pub struct StatusResponse {
     pub connections_total: u64,
     pub connections_active: u64,
     // Config
-    pub config_generation: u64,
+    pub config_generation: ConfigGeneration,
     pub config_reloads: u64,
     pub config_reload_errors: u64,
 }
@@ -293,12 +297,12 @@ fn encode_header(
     version: u8,
     type_tag: MessageType,
     sid: SessionId,
-    generation: u64,
+    generation: PromptGeneration,
 ) {
     netstring::encode_into(buf, version.to_string().as_bytes());
     netstring::encode_into(buf, type_tag.as_bytes());
     netstring::encode_into(buf, sid.to_string().as_bytes());
-    netstring::encode_into(buf, generation.to_string().as_bytes());
+    netstring::encode_into(buf, generation.get().to_string().as_bytes());
 }
 
 impl Request {
@@ -439,7 +443,7 @@ impl StatusResponse {
             self.sessions_pruned,
             self.connections_total,
             self.connections_active,
-            self.config_generation,
+            self.config_generation.get(),
             self.config_reloads,
             self.config_reload_errors,
         ] {
@@ -617,7 +621,7 @@ impl Request {
         Ok(Self {
             version,
             session_id: SessionId::from_hex(fields[2])?,
-            generation: parse_field::<u64>(fields[3], "generation")?,
+            generation: PromptGeneration::from_wire(parse_field::<u64>(fields[3], "generation")?)?,
             cwd: field_to_string(fields[4], "cwd")?,
             cols: parse_field::<u16>(fields[5], "cols")?,
             last_exit_code: parse_field::<i32>(fields[6], "last_exit_code")?,
@@ -641,7 +645,7 @@ impl RenderResult {
         Ok(Self {
             version,
             session_id: SessionId::from_hex(fields[2])?,
-            generation: parse_field::<u64>(fields[3], "generation")?,
+            generation: PromptGeneration::from_wire(parse_field::<u64>(fields[3], "generation")?)?,
             left1: field_to_string(fields[4], "left1")?,
             left2: field_to_string(fields[5], "left2")?,
             // fields[6] = right1 (ignored)
@@ -663,7 +667,7 @@ impl Update {
         Ok(Self {
             version,
             session_id: SessionId::from_hex(fields[2])?,
-            generation: parse_field::<u64>(fields[3], "generation")?,
+            generation: PromptGeneration::from_wire(parse_field::<u64>(fields[3], "generation")?)?,
             left1: field_to_string(fields[4], "left1")?,
             left2: field_to_string(fields[5], "left2")?,
             // fields[6] = right1 (ignored)
@@ -744,7 +748,10 @@ impl StatusResponse {
             sessions_pruned: parse_field(fields[16], "sessions_pruned")?,
             connections_total: parse_field(fields[17], "connections_total")?,
             connections_active: parse_field(fields[18], "connections_active")?,
-            config_generation: parse_field(fields[19], "config_generation")?,
+            config_generation: ConfigGeneration::from_wire(parse_field(
+                fields[19],
+                "config_generation",
+            )?)?,
             config_reloads: parse_field(fields[20], "config_reloads")?,
             config_reload_errors: parse_field(fields[21], "config_reload_errors")?,
             // fields[22] = reserved
@@ -764,7 +771,7 @@ mod tests {
         Request {
             version: PROTOCOL_VERSION,
             session_id: sample_session_id(),
-            generation: 42,
+            generation: PromptGeneration::new(42),
             cwd: "/home/user/project".to_owned(),
             cols: 120,
             last_exit_code: 0,
@@ -778,7 +785,7 @@ mod tests {
         RenderResult {
             version: PROTOCOL_VERSION,
             session_id: sample_session_id(),
-            generation: 42,
+            generation: PromptGeneration::new(42),
             left1: "~/project  main".to_owned(),
             left2: "❯ ".to_owned(),
         }
@@ -788,7 +795,7 @@ mod tests {
         Update {
             version: PROTOCOL_VERSION,
             session_id: sample_session_id(),
-            generation: 42,
+            generation: PromptGeneration::new(42),
             left1: "~/project  main *2".to_owned(),
             left2: "❯ ".to_owned(),
         }
@@ -931,7 +938,7 @@ mod tests {
         let rr = RenderResult {
             version: PROTOCOL_VERSION,
             session_id: sample_session_id(),
-            generation: 0,
+            generation: PromptGeneration::new(0),
             left1: String::new(),
             left2: String::new(),
         };
@@ -1040,7 +1047,7 @@ mod tests {
     #[test]
     fn test_from_wire_invalid_generation() {
         let mut req = sample_request();
-        req.generation = 0;
+        req.generation = PromptGeneration::new(0);
         let mut wire = req.to_wire();
         // Corrupt the generation field: replace "0" with "abc"
         // Easier: build manually with invalid generation
@@ -1227,7 +1234,7 @@ mod tests {
             sessions_pruned: 7,
             connections_total: 50,
             connections_active: 2,
-            config_generation: 1,
+            config_generation: ConfigGeneration::new(1),
             config_reloads: 1,
             config_reload_errors: 0,
         };
