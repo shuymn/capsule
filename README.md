@@ -1,6 +1,6 @@
 # capsule
 
-`capsule` is a macOS-only prompt engine for `zsh`, implemented in Rust.
+`capsule` is a prompt engine for `zsh`, implemented in Rust. Runs on macOS and Linux.
 
 A persistent daemon handles rendering, caching, and slow module refreshes. `zsh` relays prompt requests through a coprocess, so the prompt renders immediately and updates asynchronously when background work completes.
 
@@ -19,14 +19,14 @@ Line 1 truncates the directory first and drops trailing segments when it would o
 
 ## Installation
 
-Requirements: macOS, `zsh`, Rust `nightly` (pinned in `rust-toolchain.toml`).
+Requirements: macOS or Linux, `zsh`, Rust `nightly` (pinned in `rust-toolchain.toml`).
 
 ```bash
 # 1. Install the binary
 cargo install --git https://github.com/shuymn/capsule --package capsule-cli --locked
 
-# 2. Register with launchd (recommended)
-capsule daemon install
+# 2. Register with the system service manager (recommended)
+capsule daemon install   # macOS: launchd  |  Linux: systemd --user
 
 # 3. Add to .zshrc
 eval "$(capsule init zsh)"
@@ -160,8 +160,8 @@ Modules without `arbitration` always render.
 
 ```
 capsule daemon              Start the daemon
-capsule daemon install      Register launchd service
-capsule daemon uninstall    Remove launchd service
+capsule daemon install      Register service (launchd on macOS, systemd on Linux)
+capsule daemon uninstall    Remove service
 capsule connect             Coprocess relay (used by init script)
 capsule init zsh            Print shell integration script
 capsule preset              Print built-in module definitions as TOML
@@ -173,4 +173,4 @@ capsule preset              Print built-in module definitions as TOML
 - `crates/core`: daemon, prompt modules, rendering, configuration
 - `crates/prompt-bench`: benchmark harness
 - `crates/protocol`: wire protocol and message codec
-- `crates/sys`: platform-specific FFI (launchd socket activation)
+- `crates/sys`: platform-specific FFI (launchd on macOS, systemd socket activation on Linux)
