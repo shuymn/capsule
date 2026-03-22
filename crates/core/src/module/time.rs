@@ -1,6 +1,7 @@
 //! Time module — displays the current local time.
 
 use super::{Module, ModuleOutput, ModuleSpeed, RenderContext};
+use crate::sealed;
 
 /// Displays the current local time in `HH:MM:SS` or `HH:MM` format.
 #[derive(Debug)]
@@ -51,6 +52,8 @@ impl TimeModule {
         }
     }
 }
+
+impl sealed::Sealed for TimeModule {}
 
 impl Module for TimeModule {
     fn name(&self) -> &'static str {

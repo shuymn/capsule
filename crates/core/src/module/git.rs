@@ -3,7 +3,10 @@
 use std::{path::Path, process::Command};
 
 use super::{Module, ModuleOutput, ModuleSpeed, RenderContext};
-use crate::render::style::{Color, ColorMap, Style};
+use crate::{
+    render::style::{Color, ColorMap, Style},
+    sealed,
+};
 
 /// Errors that can occur when querying git.
 #[derive(Debug, thiserror::Error)]
@@ -39,7 +42,7 @@ pub struct GitStatus {
 }
 
 /// Provides git repository information.
-pub trait GitProvider {
+pub trait GitProvider: sealed::Sealed {
     /// Query the git status of the repository at `cwd`.
     ///
     /// `path_env` overrides the `PATH` environment variable for the spawned
@@ -58,6 +61,8 @@ pub trait GitProvider {
 #[derive(Debug, Clone)]
 #[allow(clippy::module_name_repetitions)]
 pub struct CommandGitProvider;
+
+impl sealed::Sealed for CommandGitProvider {}
 
 impl GitProvider for CommandGitProvider {
     fn status(&self, cwd: &Path, path_env: Option<&str>) -> Result<Option<GitStatus>, GitError> {
@@ -139,6 +144,8 @@ impl<G: GitProvider> GitModule<G> {
         Some(ModuleOutput { content })
     }
 }
+
+impl<G: GitProvider> sealed::Sealed for GitModule<G> {}
 
 impl<G: GitProvider> Module for GitModule<G> {
     fn name(&self) -> &'static str {
@@ -441,6 +448,8 @@ mod tests {
     struct MockGitProvider {
         result: Option<GitStatus>,
     }
+
+    impl sealed::Sealed for MockGitProvider {}
 
     impl GitProvider for MockGitProvider {
         fn status(

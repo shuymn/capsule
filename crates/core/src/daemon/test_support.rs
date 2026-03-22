@@ -19,6 +19,7 @@ use super::{
 use crate::{
     config::{Config, ModuleDef, ModuleWhen, SourceDef},
     module::{GitError, GitProvider, GitStatus},
+    sealed,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -27,6 +28,8 @@ pub(super) struct MockGitProvider {
     pub(super) delay: Duration,
     pub(super) call_count: Option<Arc<AtomicUsize>>,
 }
+
+impl sealed::Sealed for MockGitProvider {}
 
 impl GitProvider for MockGitProvider {
     fn status(&self, _cwd: &Path, _path_env: Option<&str>) -> Result<Option<GitStatus>, GitError> {

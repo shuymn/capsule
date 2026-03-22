@@ -2,6 +2,8 @@
 
 #![warn(clippy::pedantic, clippy::nursery, clippy::cargo)]
 
+mod sealed;
+
 pub mod config;
 pub mod daemon;
 pub mod init;

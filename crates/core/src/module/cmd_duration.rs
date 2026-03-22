@@ -1,6 +1,7 @@
 //! Command duration module — displays how long the last command took.
 
 use super::{Module, ModuleOutput, ModuleSpeed, RenderContext};
+use crate::sealed;
 
 /// Default threshold in milliseconds below which duration is not shown.
 const DEFAULT_THRESHOLD_MS: u64 = 2000;
@@ -35,6 +36,8 @@ impl CmdDurationModule {
         Self { threshold_ms }
     }
 }
+
+impl sealed::Sealed for CmdDurationModule {}
 
 impl Module for CmdDurationModule {
     fn name(&self) -> &'static str {

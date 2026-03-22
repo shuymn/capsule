@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use super::{Module, ModuleOutput, ModuleSpeed, RenderContext};
+use crate::sealed;
 
 /// Displays the current working directory.
 ///
@@ -19,6 +20,8 @@ impl DirectoryModule {
         Self
     }
 }
+
+impl sealed::Sealed for DirectoryModule {}
 
 impl Module for DirectoryModule {
     fn name(&self) -> &'static str {

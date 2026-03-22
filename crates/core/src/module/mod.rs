@@ -26,6 +26,8 @@ pub use git::{CommandGitProvider, GitError, GitModule, GitProvider, GitStatus};
 pub use status::StatusModule;
 pub use time::TimeModule;
 
+use crate::sealed;
+
 /// Speed classification for prompt modules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModuleSpeed {
@@ -60,7 +62,7 @@ pub struct ModuleOutput {
 }
 
 /// A prompt module that produces a segment of the prompt.
-pub trait Module {
+pub trait Module: sealed::Sealed {
     /// Module name for identification.
     fn name(&self) -> &'static str;
 

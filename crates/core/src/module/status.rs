@@ -1,6 +1,7 @@
 //! Status module — displays the exit code of the last command.
 
 use super::{Module, ModuleOutput, ModuleSpeed, RenderContext};
+use crate::sealed;
 
 /// Displays the exit code when the last command failed (non-zero exit).
 ///
@@ -16,6 +17,8 @@ impl StatusModule {
         Self
     }
 }
+
+impl sealed::Sealed for StatusModule {}
 
 impl Module for StatusModule {
     fn name(&self) -> &'static str {

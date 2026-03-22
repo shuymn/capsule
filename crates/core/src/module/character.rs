@@ -1,6 +1,7 @@
 //! Character module — displays the prompt character.
 
 use super::{Module, ModuleOutput, ModuleSpeed, RenderContext};
+use crate::sealed;
 
 /// Prompt character (always `❯`; color varies by exit status in composition).
 const PROMPT_CHAR: &str = "❯";
@@ -20,6 +21,8 @@ impl CharacterModule {
         Self
     }
 }
+
+impl sealed::Sealed for CharacterModule {}
 
 impl Module for CharacterModule {
     fn name(&self) -> &'static str {
