@@ -1,0 +1,86 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            cross: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606 # v1.15.4
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.cross
+        uses: taiki-e/install-action@06203676c62f0d3c765be3f2fcfbebbcb02d09f5 # v2.69.6
+        with:
+          tool: cross
+
+      - name: Build release binary
+        run: $CARGO_CMD build --package capsule-cli --release --locked --target "$TARGET"
+        env:
+          CARGO_CMD: ${{ matrix.cross && 'cross' || 'cargo' }}
+          TARGET: ${{ matrix.target }}
+
+      - name: Create archive
+        run: tar -czf "capsule-${GITHUB_REF_NAME}-${TARGET}.tar.gz" -C "target/${TARGET}/release" capsule
+        env:
+          TARGET: ${{ matrix.target }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: capsule-${{ matrix.target }}
+          path: capsule-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
+
+  release:
+    name: Release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        run: |
+          gh release create "$TAG_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$TAG_NAME" \
+            --generate-notes \
+            "artifacts/capsule-aarch64-apple-darwin/capsule-${TAG_NAME}-aarch64-apple-darwin.tar.gz" \
+            "artifacts/capsule-x86_64-unknown-linux-gnu/capsule-${TAG_NAME}-x86_64-unknown-linux-gnu.tar.gz" \
+            "artifacts/capsule-aarch64-unknown-linux-gnu/capsule-${TAG_NAME}-aarch64-unknown-linux-gnu.tar.gz"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
