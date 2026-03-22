@@ -90,45 +90,37 @@ Configuration is loaded from `$XDG_CONFIG_HOME/capsule/config.toml` (fallback `~
 ```toml
 [character]
 glyph = "❯"
-success_color = "green"
-error_color = "red"
-# success_style = { bold = true }
-# error_style = {}
+success_style = { fg = "green" }
+error_style = { fg = "red" }
 
 [directory]
-color = "cyan"
-style = { bold = true }
+style = { fg = "cyan", bold = true }
 # read_only_style = { fg = "red" }
 
 [git]
 icon = "\u{f418}"                # Nerd Font glyph
-indicator_color = "red"
+connector = "on"                 # "on main"
 style = { fg = "magenta", bold = true }
-indicator_style = { bold = true }
+indicator_style = { fg = "red", bold = true }
 # detached HEAD shows: HEAD (short_sha) — `HEAD ` uses `style`, `(short_sha)` uses:
-# detached_hash_color = "green"
-# detached_hash_style = { bold = true }
+# detached_hash_style = { fg = "green", bold = true }
 
 [time]
-enabled = true
 format = "HH:MM:SS"             # or "HH:MM"
-color = "yellow"
-style = { bold = true }
+connector = "at"                 # "at 12:34:56"
+style = { fg = "yellow", bold = true }
 
 [cmd_duration]
 threshold_ms = 2000
-color = "yellow"
-style = { bold = true }
+connector = "took"               # "took 2.5s"
+style = { fg = "yellow", bold = true }
 ```
 
 ### Connectors and timeouts
 
 ```toml
 [connectors]
-git = "on"                       # "on main"
-time = "at"                      # "at 12:34:56"
-cmd_duration = "took"            # "took 2.5s"
-# style = {}
+# style = {}                     # shared style for all connector words
 
 [timeout]
 fast_ms = 500                    # env/file sources
@@ -173,8 +165,10 @@ when.files = ["Cargo.toml"]          # trigger when these files exist in cwd
 # when.env = ["RUST_VERSION"]        # or when env vars are set
 format = "v{value}"                  # {value} is replaced by the resolved source
 icon = "🦀"
-color = "red"
 connector = "via"                    # "via 🦀 v1.82.0"
+
+[module.style]
+fg = "red"
 
 # Sources are tried in order; the first match wins.
 [[module.source]]

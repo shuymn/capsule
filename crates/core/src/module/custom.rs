@@ -154,7 +154,7 @@ mod tests {
         *,
     };
     use crate::{
-        config::{ModuleDef, RegexPattern, SourceDef},
+        config::{ModuleDef, RegexPattern, SourceDef, StyleConfig},
         render::style::Color,
     };
 
@@ -212,7 +212,11 @@ mod tests {
             }],
             format: "{value}".to_owned(),
             icon: None,
-            color: Some(Color::Yellow),
+            style: StyleConfig {
+                fg: Some(Color::Yellow),
+                bold: None,
+                dimmed: None,
+            },
             connector: None,
             arbitration: None,
         }];
@@ -239,7 +243,11 @@ mod tests {
             }],
             format: "{value}".to_owned(),
             icon: Some("R".to_owned()),
-            color: Some(Color::Blue),
+            style: StyleConfig {
+                fg: Some(Color::Blue),
+                bold: None,
+                dimmed: None,
+            },
             connector: None,
             arbitration: None,
         }];
@@ -267,7 +275,11 @@ mod tests {
             }],
             format: "v{value}".to_owned(),
             icon: Some("Z".to_owned()),
-            color: Some(Color::Yellow),
+            style: StyleConfig {
+                fg: Some(Color::Yellow),
+                bold: None,
+                dimmed: None,
+            },
             connector: Some("via".to_owned()),
             arbitration: None,
         }];
@@ -292,7 +304,7 @@ mod tests {
             }],
             format: "{value}".to_owned(),
             icon: None,
-            color: None,
+            style: StyleConfig::default(),
             connector: None,
             arbitration: Some(arbitration("javascript", 30)),
         }];
@@ -318,7 +330,7 @@ mod tests {
             }],
             format: "{value}".to_owned(),
             icon: None,
-            color: None,
+            style: StyleConfig::default(),
             connector: None,
             arbitration: None,
         }];
@@ -348,7 +360,7 @@ mod tests {
             ],
             format: "{value}".to_owned(),
             icon: None,
-            color: None,
+            style: StyleConfig::default(),
             connector: None,
             arbitration: None,
         }];
@@ -370,7 +382,7 @@ mod tests {
             }],
             format: "{value}".to_owned(),
             icon: None,
-            color: None,
+            style: StyleConfig::default(),
             connector: None,
             arbitration: None,
         }]);
@@ -400,7 +412,11 @@ mod tests {
             }],
             format: "{value}".to_owned(),
             icon: None,
-            color: Some(Color::Yellow),
+            style: StyleConfig {
+                fg: Some(Color::Yellow),
+                bold: None,
+                dimmed: None,
+            },
             connector: None,
             arbitration: None,
         }]);
@@ -429,7 +445,7 @@ mod tests {
             }],
             format: "{value}".to_owned(),
             icon: None,
-            color: None,
+            style: StyleConfig::default(),
             connector: None,
             arbitration: None,
         }]);
@@ -461,7 +477,7 @@ mod tests {
             }],
             format: "v{value}".to_owned(),
             icon: None,
-            color: None,
+            style: StyleConfig::default(),
             connector: Some("via".to_owned()),
             arbitration: None,
         }]);
@@ -492,7 +508,7 @@ mod tests {
             }],
             format: "v{value}".to_owned(),
             icon: None,
-            color: None,
+            style: StyleConfig::default(),
             connector: None,
             arbitration: None,
         }]);
@@ -531,7 +547,7 @@ mod tests {
             ],
             format: "{value}".to_owned(),
             icon: None,
-            color: None,
+            style: StyleConfig::default(),
             connector: None,
             arbitration: None,
         }]);
@@ -564,7 +580,7 @@ mod tests {
             }],
             format: "v{value}".to_owned(),
             icon: None,
-            color: None,
+            style: StyleConfig::default(),
             connector: None,
             arbitration: None,
         }]);
@@ -591,7 +607,7 @@ mod tests {
             }],
             format: "{value}".to_owned(),
             icon: None,
-            color: None,
+            style: StyleConfig::default(),
             connector: None,
             arbitration: None,
         }]);
@@ -620,7 +636,7 @@ mod tests {
             }],
             format: "{value}".to_owned(),
             icon: None,
-            color: None,
+            style: StyleConfig::default(),
             connector: None,
             arbitration: None,
         }]);
@@ -647,7 +663,7 @@ mod tests {
             }],
             format: "{value}".to_owned(),
             icon: None,
-            color: None,
+            style: StyleConfig::default(),
             connector: None,
             arbitration: None,
         }]);
@@ -676,7 +692,7 @@ mod tests {
             }],
             format: "{value}".to_owned(),
             icon: None,
-            color: None,
+            style: StyleConfig::default(),
             connector: None,
             arbitration: None,
         }]);
@@ -737,7 +753,7 @@ mod tests {
                 }],
                 format: "{value}".to_owned(),
                 icon: None,
-                color: None,
+                style: StyleConfig::default(),
                 connector: None,
                 arbitration: Some(arbitration("runtime", 20)),
             },
@@ -752,7 +768,7 @@ mod tests {
                 }],
                 format: "{value}".to_owned(),
                 icon: None,
-                color: None,
+                style: StyleConfig::default(),
                 connector: None,
                 arbitration: Some(arbitration("runtime", 10)),
             },
@@ -786,7 +802,7 @@ mod tests {
                 }],
                 format: "{value}".to_owned(),
                 icon: None,
-                color: None,
+                style: StyleConfig::default(),
                 connector: None,
                 arbitration: Some(arbitration("runtime", 10)),
             },
@@ -801,7 +817,7 @@ mod tests {
                 }],
                 format: "{value}".to_owned(),
                 icon: None,
-                color: None,
+                style: StyleConfig::default(),
                 connector: None,
                 arbitration: Some(arbitration("runtime", 10)),
             },
@@ -835,7 +851,7 @@ mod tests {
                 }],
                 format: "{value}".to_owned(),
                 icon: None,
-                color: None,
+                style: StyleConfig::default(),
                 connector: None,
                 arbitration: Some(arbitration("runtime", 10)),
             },
@@ -850,7 +866,7 @@ mod tests {
                 }],
                 format: "{value}".to_owned(),
                 icon: None,
-                color: None,
+                style: StyleConfig::default(),
                 connector: None,
                 arbitration: None,
             },
@@ -896,7 +912,7 @@ mod tests {
             ],
             format: "{value}".to_owned(),
             icon: None,
-            color: None,
+            style: StyleConfig::default(),
             connector: None,
             arbitration: None,
         }]);
@@ -932,7 +948,7 @@ mod tests {
             }],
             format: "{value}".to_owned(),
             icon: None,
-            color: None,
+            style: StyleConfig::default(),
             connector: None,
             arbitration: None,
         }]);
@@ -990,7 +1006,7 @@ mod tests {
             }],
             format: "{value}".to_owned(),
             icon: None,
-            color: None,
+            style: StyleConfig::default(),
             connector: None,
             arbitration: None,
         }]);
@@ -1063,7 +1079,7 @@ mod tests {
             }],
             format: "{value}".to_owned(),
             icon: None,
-            color: None,
+            style: StyleConfig::default(),
             connector: None,
             arbitration: None,
         }]);
@@ -1098,7 +1114,7 @@ mod tests {
             }],
             format: "v{value}".to_owned(),
             icon: None,
-            color: None,
+            style: StyleConfig::default(),
             connector: None,
             arbitration: None,
         }]);
@@ -1133,7 +1149,7 @@ mod tests {
             }],
             format: "{value}".to_owned(),
             icon: None,
-            color: None,
+            style: StyleConfig::default(),
             connector: None,
             arbitration: None,
         }]);
@@ -1159,7 +1175,7 @@ mod tests {
             }],
             format: "prefix-{value}-suffix".to_owned(),
             icon: None,
-            color: None,
+            style: StyleConfig::default(),
             connector: None,
             arbitration: None,
         }]);
@@ -1197,7 +1213,7 @@ mod tests {
             }],
             format: "{value}".to_owned(),
             icon: None,
-            color: None,
+            style: StyleConfig::default(),
             connector: None,
             arbitration: None,
         }]);
@@ -1230,7 +1246,7 @@ mod tests {
             }],
             format: "v{value}".to_owned(),
             icon: None,
-            color: None,
+            style: StyleConfig::default(),
             connector: None,
             arbitration: None,
         }]);

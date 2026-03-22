@@ -88,13 +88,9 @@ pub struct CharacterConfig {
     pub disabled: bool,
     /// The prompt character glyph.
     pub glyph: String,
-    /// Color when last command succeeded.
-    pub success_color: Color,
-    /// Color when last command failed.
-    pub error_color: Color,
-    /// Structured style override for the success glyph.
+    /// Style for the success glyph (last command succeeded).
     pub success_style: StyleConfig,
-    /// Structured style override for the error glyph.
+    /// Style for the error glyph (last command failed).
     pub error_style: StyleConfig,
 }
 
@@ -103,10 +99,16 @@ impl Default for CharacterConfig {
         Self {
             disabled: false,
             glyph: "\u{276f}".to_owned(),
-            success_color: Color::Green,
-            error_color: Color::Red,
-            success_style: StyleConfig::default(),
-            error_style: StyleConfig::default(),
+            success_style: StyleConfig {
+                fg: Some(Color::Green),
+                bold: None,
+                dimmed: None,
+            },
+            error_style: StyleConfig {
+                fg: Some(Color::Red),
+                bold: None,
+                dimmed: None,
+            },
         }
     }
 }
@@ -114,13 +116,12 @@ impl Default for CharacterConfig {
 impl CharacterConfig {
     #[must_use]
     pub fn success_prompt_style(&self) -> Style {
-        self.success_style
-            .resolve(Style::new().fg(self.success_color))
+        self.success_style.resolve(Style::new())
     }
 
     #[must_use]
     pub fn error_prompt_style(&self) -> Style {
-        self.error_style.resolve(Style::new().fg(self.error_color))
+        self.error_style.resolve(Style::new())
     }
 
     /// Build a [`Segment`] for the character glyph, styled by exit code.
@@ -146,11 +147,9 @@ impl CharacterConfig {
 pub struct DirectoryConfig {
     /// Whether the directory module is disabled.
     pub disabled: bool,
-    /// Foreground color for the directory path (bold is always applied).
-    pub color: Color,
-    /// Structured style override for the directory path.
+    /// Style for the directory path.
     pub style: StyleConfig,
-    /// Structured style override for the readonly lock indicator.
+    /// Style for the readonly lock indicator.
     pub read_only_style: StyleConfig,
 }
 
@@ -158,8 +157,11 @@ impl Default for DirectoryConfig {
     fn default() -> Self {
         Self {
             disabled: false,
-            color: Color::Cyan,
-            style: StyleConfig::bold(),
+            style: StyleConfig {
+                fg: Some(Color::Cyan),
+                bold: Some(true),
+                dimmed: None,
+            },
             read_only_style: StyleConfig {
                 fg: Some(Color::Red),
                 bold: None,
@@ -172,7 +174,7 @@ impl Default for DirectoryConfig {
 impl DirectoryConfig {
     #[must_use]
     pub fn prompt_style(&self) -> Style {
-        self.style.resolve(Style::new().fg(self.color))
+        self.style.resolve(Style::new())
     }
 
     #[must_use]
@@ -211,18 +213,6 @@ impl DirectoryConfig {
     }
 }
 
-const fn default_git_detached_hash_color() -> Color {
-    Color::Green
-}
-
-const fn default_git_detached_hash_style() -> StyleConfig {
-    StyleConfig {
-        fg: None,
-        bold: Some(true),
-        dimmed: None,
-    }
-}
-
 /// Git module settings.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default)]
@@ -233,17 +223,11 @@ pub struct GitConfig {
     pub icon: String,
     /// Connector word before the git segment (e.g., `"on"`).
     pub connector: String,
-    /// Color for the bracket indicators (bold is always applied).
-    pub indicator_color: Color,
-    /// Structured style override for the branch text and icon.
+    /// Style for the branch text and icon.
     pub style: StyleConfig,
-    /// Structured style override for status indicators.
+    /// Style for status indicators (e.g., `[!+]`).
     pub indicator_style: StyleConfig,
-    /// Foreground for the `(hash)` segment in detached `HEAD (hash)` output.
-    #[serde(default = "default_git_detached_hash_color")]
-    pub detached_hash_color: Color,
-    /// Style for `(hash)` in detached output (`HEAD ` uses `style`).
-    #[serde(default = "default_git_detached_hash_style")]
+    /// Style for `(hash)` in detached `HEAD (hash)` output.
     pub detached_hash_style: StyleConfig,
 }
 
@@ -253,15 +237,21 @@ impl Default for GitConfig {
             disabled: false,
             icon: "\u{f418}".to_owned(),
             connector: "on".to_owned(),
-            indicator_color: Color::Red,
             style: StyleConfig {
                 fg: Some(Color::Magenta),
                 bold: Some(true),
                 dimmed: None,
             },
-            indicator_style: StyleConfig::bold(),
-            detached_hash_color: Color::Green,
-            detached_hash_style: default_git_detached_hash_style(),
+            indicator_style: StyleConfig {
+                fg: Some(Color::Red),
+                bold: Some(true),
+                dimmed: None,
+            },
+            detached_hash_style: StyleConfig {
+                fg: Some(Color::Green),
+                bold: Some(true),
+                dimmed: None,
+            },
         }
     }
 }
@@ -274,14 +264,12 @@ impl GitConfig {
 
     #[must_use]
     pub fn indicator_prompt_style(&self) -> Style {
-        self.indicator_style
-            .resolve(Style::new().fg(self.indicator_color))
+        self.indicator_style.resolve(Style::new())
     }
 
     #[must_use]
     pub fn detached_hash_prompt_style(&self) -> Style {
-        self.detached_hash_style
-            .resolve(Style::new().fg(self.detached_hash_color))
+        self.detached_hash_style.resolve(Style::new())
     }
 
     /// Build a [`Segment`] for git status output (already styled by the
@@ -348,9 +336,7 @@ pub struct TimeConfig {
     pub format: TimeFormat,
     /// Connector word before the time segment (e.g., `"at"`).
     pub connector: String,
-    /// Foreground color for the time segment.
-    pub color: Color,
-    /// Structured style override for the time segment.
+    /// Style for the time segment.
     pub style: StyleConfig,
 }
 
@@ -360,8 +346,11 @@ impl Default for TimeConfig {
             disabled: false,
             format: TimeFormat::WithSeconds,
             connector: "at".to_owned(),
-            color: Color::Yellow,
-            style: StyleConfig::bold(),
+            style: StyleConfig {
+                fg: Some(Color::Yellow),
+                bold: Some(true),
+                dimmed: None,
+            },
         }
     }
 }
@@ -375,7 +364,7 @@ impl TimeConfig {
 
     #[must_use]
     pub fn prompt_style(&self) -> Style {
-        self.style.resolve(Style::new().fg(self.color))
+        self.style.resolve(Style::new())
     }
 
     /// Build a [`Segment`] for the time display.
@@ -403,9 +392,7 @@ pub struct CmdDurationConfig {
     pub threshold_ms: u64,
     /// Connector word before the duration segment (e.g., `"took"`).
     pub connector: String,
-    /// Foreground color for the duration segment.
-    pub color: Color,
-    /// Structured style override for the duration segment.
+    /// Style for the duration segment.
     pub style: StyleConfig,
 }
 
@@ -415,8 +402,11 @@ impl Default for CmdDurationConfig {
             disabled: false,
             threshold_ms: 2000,
             connector: "took".to_owned(),
-            color: Color::Yellow,
-            style: StyleConfig::bold(),
+            style: StyleConfig {
+                fg: Some(Color::Yellow),
+                bold: Some(true),
+                dimmed: None,
+            },
         }
     }
 }
@@ -424,7 +414,7 @@ impl Default for CmdDurationConfig {
 impl CmdDurationConfig {
     #[must_use]
     pub fn prompt_style(&self) -> Style {
-        self.style.resolve(Style::new().fg(self.color))
+        self.style.resolve(Style::new())
     }
 
     /// Build a [`Segment`] for the command duration display.
@@ -488,9 +478,9 @@ pub struct ModuleDef {
     /// Nerd Font icon glyph.
     #[serde(default)]
     pub icon: Option<String>,
-    /// Foreground color (bold is always applied).
+    /// Display style (fg, bold, dimmed).
     #[serde(default)]
-    pub color: Option<Color>,
+    pub style: StyleConfig,
     /// Connector word before this segment.
     #[serde(default)]
     pub connector: Option<String>,
@@ -729,8 +719,8 @@ threshold_ms = 5000
         assert_eq!(config.character.glyph, "$");
         assert_eq!(config.cmd_duration.threshold_ms, 5000);
         // Non-overridden fields keep defaults
-        assert_eq!(config.character.success_color, Color::Green);
-        assert_eq!(config.directory.color, Color::Cyan);
+        assert_eq!(config.character.success_style.fg, Some(Color::Green));
+        assert_eq!(config.directory.style.fg, Some(Color::Cyan));
         Ok(())
     }
 
@@ -761,24 +751,26 @@ disabled = true
     }
 
     #[test]
-    fn test_config_color_deserialization() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_config_style_fg_deserialization() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
         std::fs::write(
             &path,
             r#"
-[character]
-success_color = "magenta"
-error_color = "yellow"
+[character.success_style]
+fg = "magenta"
 
-[directory]
-color = "blue"
+[character.error_style]
+fg = "yellow"
+
+[directory.style]
+fg = "blue"
 "#,
         )?;
         let config = load_config(&path);
-        assert_eq!(config.character.success_color, Color::Magenta);
-        assert_eq!(config.character.error_color, Color::Yellow);
-        assert_eq!(config.directory.color, Color::Blue);
+        assert_eq!(config.character.success_style.fg, Some(Color::Magenta));
+        assert_eq!(config.character.error_style.fg, Some(Color::Yellow));
+        assert_eq!(config.directory.style.fg, Some(Color::Blue));
         Ok(())
     }
 
@@ -903,12 +895,14 @@ disabled = true
             r#"
 [git]
 icon = ""
-indicator_color = "yellow"
+
+[git.indicator_style]
+fg = "yellow"
 "#,
         )?;
         let config = load_config(&path);
         assert_eq!(config.git.icon, "");
-        assert_eq!(config.git.indicator_color, Color::Yellow);
+        assert_eq!(config.git.indicator_style.fg, Some(Color::Yellow));
         Ok(())
     }
 
@@ -1019,8 +1013,10 @@ name = "zig"
 when.files = ["build.zig"]
 format = "v{value}"
 icon = "Z"
-color = "yellow"
 connector = "via"
+
+[module.style]
+fg = "yellow"
 
 [[module.source]]
 command = ["zig", "version"]
@@ -1034,7 +1030,7 @@ regex = '(\d[\d.]*)'
         assert_eq!(m.when.files, ["build.zig"]);
         assert_eq!(m.format, "v{value}");
         assert_eq!(m.icon.as_deref(), Some("Z"));
-        assert_eq!(m.color, Some(Color::Yellow));
+        assert_eq!(m.style.fg, Some(Color::Yellow));
         assert_eq!(m.connector.as_deref(), Some("via"));
         assert_eq!(m.source.len(), 1);
         assert!(m.source[0].is_command());

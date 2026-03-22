@@ -33,10 +33,9 @@ fn compile_module_def(def: ModuleDef) -> ResolvedModule {
     } else {
         ModuleSpeed::Slow
     };
-    let style = def.color.map_or_else(
-        || Style::new().fg(Color::BrightBlack),
-        |color| Style::new().fg(color).bold(),
-    );
+    let style = def
+        .style
+        .resolve(Style::new().fg(Color::BrightBlack).bold());
 
     ResolvedModule {
         name: def.name,

@@ -527,7 +527,7 @@ mod tests {
     fn test_daemon_compose_prompt_custom_character_colors() {
         let fast = make_fast_outputs();
         let mut config = default_config();
-        config.character.success_color = Color::Magenta;
+        config.character.success_style.fg = Some(Color::Magenta);
         let lines = compose_prompt(&fast, None, 80, &config);
         assert!(
             lines.left2.contains("\x1b[35m"),
@@ -540,7 +540,7 @@ mod tests {
     fn test_daemon_compose_prompt_custom_directory_color() {
         let fast = make_fast_outputs();
         let mut config = default_config();
-        config.directory.color = Color::Green;
+        config.directory.style.fg = Some(Color::Green);
         let lines = compose_prompt(&fast, None, 80, &config);
         assert!(
             contains_style_sequence(&lines.left1, &[1, 32]),
@@ -625,7 +625,7 @@ mod tests {
             ..make_fast_outputs()
         };
         let mut config = default_config();
-        config.cmd_duration.color = Color::Red;
+        config.cmd_duration.style.fg = Some(Color::Red);
         let lines = compose_prompt(&fast, None, 80, &config);
         assert!(
             contains_style_sequence(&lines.left1, &[1, 31])

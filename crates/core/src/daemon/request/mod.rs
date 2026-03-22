@@ -703,10 +703,10 @@ mod tests {
     };
     use crate::{
         config::{
-            CacheConfig, Config, ModuleDef, ModuleWhen, SlowCacheMode, SourceDef, TimeoutConfig,
+            CacheConfig, Config, ModuleDef, ModuleWhen, SlowCacheMode, SourceDef, StyleConfig,
+            TimeoutConfig,
         },
         module::GitStatus,
-        test_utils::contains_style_sequence,
     };
 
     const HOT_RELOAD_WAIT: Duration = Duration::from_millis(20);
@@ -1092,7 +1092,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let config_path = dir.path().join("config.toml");
-        write_config(&config_path, "[git]\nindicator_color = \"red\"\n")?;
+        write_config(&config_path, "[git.indicator_style]\nfg = \"red\"\n")?;
 
         let call_count = count_git_calls();
         let provider = MockGitProvider {
@@ -1117,7 +1117,7 @@ mod tests {
             .await?;
         let _ = reader.read_message().await?;
 
-        rewrite_config(&config_path, "[git]\nindicator_color = \"green\"\n").await?;
+        rewrite_config(&config_path, "[git.indicator_style]\nfg = \"green\"\n").await?;
         sleep(Duration::from_millis(160)).await;
         if let Ok(Ok(Some(Message::Update(update)))) =
             tokio::time::timeout(Duration::from_millis(50), reader.read_message()).await
@@ -1143,7 +1143,7 @@ mod tests {
             Some(Message::Update(update)) => {
                 assert!(update.left1.contains("main"));
                 assert!(
-                    contains_style_sequence(&update.left1, &[1, 32]),
+                    update.left1.contains("\x1b[32m"),
                     "updated prompt should use reloaded git style: {}",
                     update.left1
                 );
@@ -1182,7 +1182,7 @@ mod tests {
                 }],
                 format: "{value}".to_owned(),
                 icon: None,
-                color: None,
+                style: StyleConfig::default(),
                 connector: Some("via".to_owned()),
                 arbitration: None,
             }],
@@ -1280,7 +1280,7 @@ mod tests {
                 }],
                 format: "{value}".to_owned(),
                 icon: None,
-                color: None,
+                style: StyleConfig::default(),
                 connector: None,
                 arbitration: None,
             }],
@@ -1505,7 +1505,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let config_path = dir.path().join("config.toml");
-        write_config(&config_path, "[git]\nindicator_color = \"red\"\n")?;
+        write_config(&config_path, "[git.indicator_style]\nfg = \"red\"\n")?;
 
         let call_count = count_git_calls();
         let provider = MockGitProvider {
@@ -1531,7 +1531,7 @@ mod tests {
         let _ = reader.read_message().await?;
 
         tokio::time::sleep(Duration::from_millis(20)).await;
-        std::fs::write(&config_path, "[git]\nindicator_color = \"green\"\n")?;
+        std::fs::write(&config_path, "[git.indicator_style]\nfg = \"green\"\n")?;
 
         tokio::time::sleep(Duration::from_millis(300)).await;
         let _ = tokio::time::timeout(Duration::from_millis(100), reader.read_message()).await;
@@ -1555,7 +1555,7 @@ mod tests {
                     update.left1
                 );
                 assert!(
-                    contains_style_sequence(&update.left1, &[1, 32]),
+                    update.left1.contains("\x1b[32m"),
                     "Update should use green style from reloaded config: {}",
                     update.left1
                 );
@@ -1699,7 +1699,7 @@ mod tests {
                 }],
                 format: "{value}".to_owned(),
                 icon: None,
-                color: None,
+                style: StyleConfig::default(),
                 connector: Some("via".to_owned()),
                 arbitration: None,
             }],
