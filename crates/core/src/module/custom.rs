@@ -162,7 +162,10 @@ pub(crate) struct ModuleDependencyInputs {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::{
+        path::{Path, PathBuf},
+        time::Duration,
+    };
 
     use super::*;
     use crate::{
@@ -1171,6 +1174,109 @@ mod tests {
         assert!(
             !sentinel.exists(),
             "shell metacharacters in command args must not be interpreted"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_detect_module_async_uses_first_completed_command_source()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("marker"), "")?;
+
+        let defs = resolve_modules(&[ModuleDef {
+            name: "runtime".to_owned(),
+            when: ModuleWhen {
+                files: vec!["marker".to_owned()],
+                env: vec![],
+            },
+            source: vec![
+                SourceDef {
+                    name: "value".to_owned(),
+                    env: None,
+                    file: None,
+                    command: Some(vec![
+                        "/bin/sh".to_owned(),
+                        "-c".to_owned(),
+                        "sleep 0.3; echo slow".to_owned(),
+                    ]),
+                    regex: None,
+                },
+                SourceDef {
+                    name: "value".to_owned(),
+                    env: None,
+                    file: None,
+                    command: Some(vec![
+                        "/bin/sh".to_owned(),
+                        "-c".to_owned(),
+                        "sleep 0.05; echo fast".to_owned(),
+                    ]),
+                    regex: None,
+                },
+            ],
+            format: "{value}".to_owned(),
+            icon: None,
+            style: StyleConfig::default(),
+            connector: None,
+            arbitration: None,
+        }]);
+        let module = defs.iter().find(|resolved| resolved.name == "runtime");
+        let Some(module) = module else {
+            return Err("runtime module missing".into());
+        };
+
+        let facts = RequestFacts::collect(dir.path().to_path_buf(), vec![]);
+        let started = tokio::time::Instant::now();
+        let detected = facts.detect_module_async(module).await;
+
+        assert_eq!(
+            detected.as_ref().map(|info| info.value.as_str()),
+            Some("fast")
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(200),
+            "async command resolution must not wait for slower fallbacks once a winner exists"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_detect_module_async_resolves_fast_file_source()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("marker"), "")?;
+        std::fs::write(dir.path().join(".runtime-version"), "2.3.4\n")?;
+
+        let defs = resolve_modules(&[ModuleDef {
+            name: "runtime".to_owned(),
+            when: ModuleWhen {
+                files: vec!["marker".to_owned()],
+                env: vec![],
+            },
+            source: vec![SourceDef {
+                name: "value".to_owned(),
+                env: None,
+                file: Some(".runtime-version".to_owned()),
+                command: None,
+                regex: None,
+            }],
+            format: "v{value}".to_owned(),
+            icon: None,
+            style: StyleConfig::default(),
+            connector: None,
+            arbitration: None,
+        }]);
+        let module = defs.iter().find(|resolved| resolved.name == "runtime");
+        let Some(module) = module else {
+            return Err("runtime module missing".into());
+        };
+
+        let facts = RequestFacts::collect(dir.path().to_path_buf(), vec![]);
+        let detected = facts.detect_module_async(module).await;
+
+        assert_eq!(
+            detected.as_ref().map(|info| info.value.as_str()),
+            Some("v2.3.4")
         );
         Ok(())
     }
