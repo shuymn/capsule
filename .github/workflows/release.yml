@@ -80,7 +80,8 @@ jobs:
       - name: Extract release notes
         run: |
           if [ -f crates/cli/CHANGELOG.md ]; then
-            awk '/^## \[[0-9]/{if(p) exit; p=1; next} p' crates/cli/CHANGELOG.md > /tmp/release-notes.md
+            version="${GITHUB_REF_NAME#v}"
+            awk "/^## \\[${version}\\]/{if(p) exit; p=1; next} /^## \\[/{if(p) exit} p" crates/cli/CHANGELOG.md > /tmp/release-notes.md
           else
             touch /tmp/release-notes.md
           fi
