@@ -299,7 +299,7 @@ async fn detect_custom_modules(input: &DetectInput<'_>) -> Vec<CustomModuleInfo>
     let mut deferred = Vec::new();
     for (slot, def) in matching.iter().copied() {
         if should_detect_inline(input.speed, def) {
-            slots[slot] = input.facts.detect_module(def);
+            slots[slot] = input.facts.detect_module(def).await;
         } else {
             deferred.push((slot, def.clone()));
         }
@@ -308,7 +308,7 @@ async fn detect_custom_modules(input: &DetectInput<'_>) -> Vec<CustomModuleInfo>
     if !deferred.is_empty() {
         for (slot, def) in deferred {
             let facts = Arc::clone(&input.facts);
-            join_set.spawn(async move { (slot, facts.detect_module_async(&def).await) });
+            join_set.spawn(async move { (slot, facts.detect_module(&def).await) });
         }
 
         let deadline = tokio::time::Instant::now() + input.timeout;

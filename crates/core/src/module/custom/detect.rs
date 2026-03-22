@@ -12,9 +12,8 @@ use super::{
 /// `path_env` overrides PATH for command execution (launchd support).
 ///
 /// Fast modules only try env/file sources. Slow modules try env/file first,
-/// then command sources on failure.
-#[must_use]
-pub fn detect_modules(
+/// then race all command sources and take the first successful result.
+pub async fn detect_modules(
     defs: &[ResolvedModule],
     cwd: &Path,
     env_vars: &[(String, String)],
@@ -23,15 +22,12 @@ pub fn detect_modules(
 ) -> Vec<CustomModuleInfo> {
     let facts = RequestFacts::collect(cwd.to_path_buf(), env_vars.to_vec())
         .with_command_path_env(path_env.map(ToOwned::to_owned));
-    let detected = facts
-        .matching_modules(defs, only_speed)
-        .into_iter()
-        .filter_map(|(_, module)| {
-            facts
-                .detect_module(module)
-                .map(|info| DetectedModuleCandidate::new(module, info))
-        })
-        .collect();
+    let mut detected = Vec::new();
+    for (_, module) in facts.matching_modules(defs, only_speed) {
+        if let Some(info) = facts.detect_module(module).await {
+            detected.push(DetectedModuleCandidate::new(module, info));
+        }
+    }
     arbitrate_detected_modules(detected)
 }
 

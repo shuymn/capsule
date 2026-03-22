@@ -1,7 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    process::Command,
 };
 
 use regex_lite::Regex;
@@ -155,58 +154,23 @@ impl RequestFacts {
 
     /// Detects a module by resolving each source group independently
     /// and formatting with all resolved variables.
-    #[must_use]
-    pub(crate) fn detect_module(&self, def: &ResolvedModule) -> Option<CustomModuleInfo> {
+    pub(crate) async fn detect_module(&self, def: &ResolvedModule) -> Option<CustomModuleInfo> {
         let mut values = HashMap::new();
         for group in &def.source_groups {
-            if let Some(raw) = self.resolve_group(group) {
+            if let Some(raw) = self.resolve_group(group).await {
                 values.insert(group.name.as_str(), raw);
             }
         }
         format_module(def, &values)
     }
 
-    pub(crate) async fn detect_module_async(
-        &self,
-        def: &ResolvedModule,
-    ) -> Option<CustomModuleInfo> {
-        let mut values = HashMap::new();
-        for group in &def.source_groups {
-            if let Some(raw) = self.resolve_group_async(group).await {
-                values.insert(group.name.as_str(), raw);
-            }
-        }
-        format_module(def, &values)
-    }
-
-    /// Resolves a source group using fast-first, slow-second semantics.
-    fn resolve_group(&self, group: &ResolvedSourceGroup) -> Option<String> {
-        for source in &group.sources {
-            if source.is_fast()
-                && let Some(raw) = self.resolve_source(source)
-            {
-                return Some(raw);
-            }
-        }
-
-        for source in &group.sources {
-            if !source.is_fast()
-                && let Some(raw) = self.resolve_source(source)
-            {
-                return Some(raw);
-            }
-        }
-
-        None
-    }
-
-    async fn resolve_group_async(&self, group: &ResolvedSourceGroup) -> Option<String> {
+    async fn resolve_group(&self, group: &ResolvedSourceGroup) -> Option<String> {
         let fast_sources: Vec<&ResolvedSource> = group
             .sources
             .iter()
             .filter(|source| source.is_fast())
             .collect();
-        if let Some(raw) = self.resolve_sources_async(&fast_sources).await {
+        if let Some(raw) = self.resolve_sources(&fast_sources).await {
             return Some(raw);
         }
 
@@ -215,13 +179,13 @@ impl RequestFacts {
             .iter()
             .filter(|source| !source.is_fast())
             .collect();
-        self.resolve_sources_async(&slow_sources).await
+        self.resolve_sources(&slow_sources).await
     }
 
-    async fn resolve_sources_async(&self, sources: &[&ResolvedSource]) -> Option<String> {
+    async fn resolve_sources(&self, sources: &[&ResolvedSource]) -> Option<String> {
         match sources {
             [] => None,
-            [source] => self.resolve_source_async(source).await,
+            [source] => self.resolve_source(source).await,
             _ => {
                 let mut join_set = JoinSet::new();
                 for source in sources {
@@ -230,7 +194,7 @@ impl RequestFacts {
                     let path_env = self.command_path_env().map(ToOwned::to_owned);
                     let source = (*source).clone();
                     join_set.spawn(async move {
-                        resolve_source_async_owned(cwd, env_vars, path_env, source).await
+                        resolve_source_owned(cwd, env_vars, path_env, source).await
                     });
                 }
 
@@ -250,38 +214,7 @@ impl RequestFacts {
         find_env_value(&self.env_vars, name)
     }
 
-    fn resolve_source(&self, source: &ResolvedSource) -> Option<String> {
-        match source {
-            ResolvedSource::Env { name, regex } => {
-                let value = self.env_value(name)?;
-                apply_regex(value, regex.as_ref())
-            }
-            ResolvedSource::File { path, regex } => {
-                let content = std::fs::read_to_string(self.cwd.join(path)).ok()?;
-                validate_file_content(&content, regex.as_ref())
-            }
-            ResolvedSource::Command { args, regex } => {
-                let (program, cmd_args) = args.split_first()?;
-                let mut command = Command::new(program);
-                command.args(cmd_args).current_dir(&self.cwd);
-                if let Some(path_env) = self.command_path_env() {
-                    command.env("PATH", path_env);
-                }
-                let output = command.output().ok()?;
-                if !output.status.success() {
-                    return None;
-                }
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let trimmed = stdout.trim();
-                if trimmed.is_empty() {
-                    return None;
-                }
-                apply_regex(trimmed, regex.as_ref())
-            }
-        }
-    }
-
-    async fn resolve_source_async(&self, source: &ResolvedSource) -> Option<String> {
+    async fn resolve_source(&self, source: &ResolvedSource) -> Option<String> {
         match source {
             ResolvedSource::Env { name, regex } => {
                 let value = self.env_value(name)?;
@@ -297,13 +230,8 @@ impl RequestFacts {
             }
             ResolvedSource::Command { args, regex } => {
                 let path_env = self.command_path_env().map(ToOwned::to_owned);
-                resolve_command_source_async(
-                    self.cwd.clone(),
-                    path_env,
-                    args.clone(),
-                    regex.clone(),
-                )
-                .await
+                resolve_command_source(self.cwd.clone(), path_env, args.clone(), regex.clone())
+                    .await
             }
         }
     }
@@ -354,7 +282,7 @@ fn push_unique(values: &mut Vec<String>, value: &str) {
     }
 }
 
-async fn resolve_command_source_async(
+async fn resolve_command_source(
     cwd: PathBuf,
     path_env: Option<String>,
     args: Vec<String>,
@@ -378,7 +306,7 @@ async fn resolve_command_source_async(
     apply_regex(trimmed, regex.as_ref())
 }
 
-async fn resolve_source_async_owned(
+async fn resolve_source_owned(
     cwd: PathBuf,
     env_vars: Vec<(String, String)>,
     path_env: Option<String>,
@@ -397,7 +325,7 @@ async fn resolve_source_async_owned(
             validate_file_content(&content, regex.as_ref())
         }
         ResolvedSource::Command { args, regex } => {
-            resolve_command_source_async(cwd, path_env, args, regex).await
+            resolve_command_source(cwd, path_env, args, regex).await
         }
     }
 }
