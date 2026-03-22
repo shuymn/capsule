@@ -10,11 +10,15 @@ on:
 
 jobs:
   lint:
-    name: Lint
-    runs-on: macos-latest
+    name: Lint (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
 
     steps:
       - name: Checkout code
@@ -31,18 +35,23 @@ jobs:
         uses: shuymn/github-actions/.github/actions/setup-task@417b9296c6693ab840d5bb5600a18581ab877752
 
       - name: Check formatting
+        if: matrix.os == 'ubuntu-latest'
         run: task fmt:check
 
       - name: Run Clippy
         run: task lint
 
   test:
-    name: Test
+    name: Test (${{ matrix.os }})
     needs: lint
     timeout-minutes: 10
     permissions:
       contents: read
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout code
@@ -62,12 +71,16 @@ jobs:
         run: task test
 
   build:
-    name: Build
+    name: Build (${{ matrix.os }})
     needs: test
-    runs-on: macos-latest
     timeout-minutes: 5
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout code
