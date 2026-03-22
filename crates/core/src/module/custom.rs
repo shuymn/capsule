@@ -20,7 +20,10 @@ use regex_lite::Regex;
 use super::ModuleSpeed;
 use crate::{
     config::{Arbitration, ModuleWhen},
-    render::style::Style,
+    render::{
+        segment::{Connector, Icon, Segment},
+        style::Style,
+    },
 };
 
 /// A compiled module definition ready for detection.
@@ -79,6 +82,27 @@ pub struct CustomModuleInfo {
     pub style: Style,
     /// Connector word.
     pub connector: Option<String>,
+}
+
+impl CustomModuleInfo {
+    /// Build a [`Segment`] from this custom module info.
+    #[must_use]
+    pub(crate) fn to_segment(&self, connector_style: Style) -> Segment {
+        let connector = self.connector.as_deref().map(|word| Connector {
+            word: word.to_owned(),
+            style: connector_style,
+        });
+        let icon = self.icon.as_deref().map(|glyph| Icon {
+            glyph: glyph.to_owned(),
+            style: self.style,
+        });
+        Segment {
+            content: self.value.clone(),
+            connector,
+            icon,
+            content_style: Some(self.style),
+        }
+    }
 }
 
 /// Candidate for arbitration, in definition order.

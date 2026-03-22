@@ -3,11 +3,7 @@ use crate::{
     module::{
         CmdDurationModule, CustomModuleInfo, DirectoryModule, Module, RenderContext, TimeModule,
     },
-    render::{
-        PromptLines, compose_segments,
-        segment::{Connector, Icon, Segment},
-        style::Style,
-    },
+    render::{PromptLines, compose_segments},
 };
 
 #[derive(Debug, Clone)]
@@ -70,41 +66,6 @@ pub(super) fn run_fast_modules(
     }
 }
 
-fn make_connector(word: &str, style: Style) -> Connector {
-    Connector {
-        word: word.to_owned(),
-        style,
-    }
-}
-
-fn make_icon(glyph: &str, style: Style) -> Icon {
-    Icon {
-        glyph: glyph.to_owned(),
-        style,
-    }
-}
-
-fn push_custom_module_segment(
-    segments: &mut Vec<Segment>,
-    module: &CustomModuleInfo,
-    connector_style: Style,
-) {
-    let connector = module
-        .connector
-        .as_deref()
-        .map(|word| make_connector(word, connector_style));
-    let icon = module
-        .icon
-        .as_deref()
-        .map(|glyph| make_icon(glyph, module.style));
-    segments.push(Segment {
-        content: module.value.clone(),
-        connector,
-        icon,
-        content_style: Some(module.style),
-    });
-}
-
 /// Prompt layout (Starship-compatible):
 /// - Info line (left1):  `[directory] on [git] via [toolchain] [cmd_duration]`
 /// - Input line (left2): `at [time] [character]`
@@ -115,87 +76,54 @@ pub(super) fn compose_prompt(
     config: &Config,
 ) -> PromptLines {
     let connector_style = config.connectors.prompt_style();
-    let dir_style = config.directory.prompt_style();
 
     let mut line1 = Vec::with_capacity(4);
 
     if let Some(dir) = &fast.directory {
-        if fast.read_only {
-            let lock_style = config.directory.read_only_prompt_style();
-            let content = format!(
-                "{} {}",
-                dir_style.paint_with(dir, config.color_map),
-                lock_style.paint_with("\u{f023}", config.color_map)
-            );
-            line1.push(Segment {
-                content,
-                connector: None,
-                icon: None,
-                content_style: None,
-            });
-        } else {
-            line1.push(Segment {
-                content: dir.clone(),
-                connector: None,
-                icon: None,
-                content_style: Some(dir_style),
-            });
-        }
+        line1.push(
+            config
+                .directory
+                .to_segment(dir, fast.read_only, config.color_map),
+        );
     }
 
     if let Some(git) = slow.and_then(|output| output.git.as_deref()) {
-        line1.push(Segment {
-            content: git.to_owned(),
-            connector: Some(make_connector(&config.connectors.git, connector_style)),
-            icon: Some(make_icon(&config.git.icon, config.git.prompt_style())),
-            content_style: None,
-        });
+        line1.push(
+            config
+                .git
+                .to_segment(git, &config.connectors.git, connector_style),
+        );
     }
 
     for module in &fast.custom_modules {
-        push_custom_module_segment(&mut line1, module, connector_style);
+        line1.push(module.to_segment(connector_style));
     }
     if let Some(custom_modules) = slow.map(|output| &output.custom_modules) {
         for module in custom_modules {
-            push_custom_module_segment(&mut line1, module, connector_style);
+            line1.push(module.to_segment(connector_style));
         }
     }
 
     if let Some(duration) = &fast.cmd_duration {
-        line1.push(Segment {
-            content: duration.clone(),
-            connector: Some(make_connector(
-                &config.connectors.cmd_duration,
-                connector_style,
-            )),
-            icon: None,
-            content_style: Some(config.cmd_duration.prompt_style()),
-        });
+        line1.push(config.cmd_duration.to_segment(
+            duration,
+            &config.connectors.cmd_duration,
+            connector_style,
+        ));
     }
 
     let mut line2 = Vec::with_capacity(2);
 
     if let Some(time) = &fast.time {
-        line2.push(Segment {
-            content: time.clone(),
-            connector: Some(make_connector(&config.connectors.time, connector_style)),
-            icon: None,
-            content_style: Some(config.time.prompt_style()),
-        });
+        line2.push(
+            config
+                .time
+                .to_segment(time, &config.connectors.time, connector_style),
+        );
     }
 
     if let Some(character) = &fast.character {
-        let char_style = if fast.last_exit_code == 0 {
-            config.character.success_prompt_style()
-        } else {
-            config.character.error_prompt_style()
-        };
-        line2.push(Segment {
-            content: character.clone(),
-            connector: None,
-            icon: None,
-            content_style: Some(char_style),
-        });
+        line2.push(config.character.to_segment(character, fast.last_exit_code));
     }
 
     compose_segments(&line1, &line2, cols, config.color_map)
@@ -205,7 +133,9 @@ pub(super) fn compose_prompt(
 mod tests {
     use super::*;
     use crate::{
-        config::Config, module::resolve_modules, render::style::Color,
+        config::Config,
+        module::resolve_modules,
+        render::style::{Color, Style},
         test_utils::contains_style_sequence,
     };
 

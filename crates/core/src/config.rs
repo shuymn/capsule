@@ -5,7 +5,10 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::render::style::{Color, ColorMap, Style};
+use crate::render::{
+    segment::{Connector, Icon, Segment},
+    style::{Color, ColorMap, Style},
+};
 
 /// Top-level configuration.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -119,6 +122,22 @@ impl CharacterConfig {
     pub fn error_prompt_style(&self) -> Style {
         self.error_style.resolve(Style::new().fg(self.error_color))
     }
+
+    /// Build a [`Segment`] for the character glyph, styled by exit code.
+    #[must_use]
+    pub(crate) fn to_segment(&self, glyph: &str, exit_code: i32) -> Segment {
+        let style = if exit_code == 0 {
+            self.success_prompt_style()
+        } else {
+            self.error_prompt_style()
+        };
+        Segment {
+            content: glyph.to_owned(),
+            connector: None,
+            icon: None,
+            content_style: Some(style),
+        }
+    }
 }
 
 /// Directory module settings.
@@ -159,6 +178,36 @@ impl DirectoryConfig {
     #[must_use]
     pub fn read_only_prompt_style(&self) -> Style {
         self.read_only_style.resolve(Style::new())
+    }
+
+    /// Build a [`Segment`] for the directory path.
+    ///
+    /// When `read_only` is true, the content is pre-styled (mixed styles for
+    /// path and lock icon), so `content_style` is `None`.
+    #[must_use]
+    pub(crate) fn to_segment(&self, dir: &str, read_only: bool, color_map: ColorMap) -> Segment {
+        if read_only {
+            let dir_style = self.prompt_style();
+            let lock_style = self.read_only_prompt_style();
+            let content = format!(
+                "{} {}",
+                dir_style.paint_with(dir, color_map),
+                lock_style.paint_with("\u{f023}", color_map)
+            );
+            Segment {
+                content,
+                connector: None,
+                icon: None,
+                content_style: None,
+            }
+        } else {
+            Segment {
+                content: dir.to_owned(),
+                connector: None,
+                icon: None,
+                content_style: Some(self.prompt_style()),
+            }
+        }
     }
 }
 
@@ -230,6 +279,29 @@ impl GitConfig {
     pub fn detached_hash_prompt_style(&self) -> Style {
         self.detached_hash_style
             .resolve(Style::new().fg(self.detached_hash_color))
+    }
+
+    /// Build a [`Segment`] for git status output (already styled by the
+    /// git module).
+    #[must_use]
+    pub(crate) fn to_segment(
+        &self,
+        git_output: &str,
+        connector: &str,
+        connector_style: Style,
+    ) -> Segment {
+        Segment {
+            content: git_output.to_owned(),
+            connector: Some(Connector {
+                word: connector.to_owned(),
+                style: connector_style,
+            }),
+            icon: Some(Icon {
+                glyph: self.icon.clone(),
+                style: self.prompt_style(),
+            }),
+            content_style: None,
+        }
     }
 }
 
@@ -304,6 +376,25 @@ impl TimeConfig {
     pub fn prompt_style(&self) -> Style {
         self.style.resolve(Style::new().fg(self.color))
     }
+
+    /// Build a [`Segment`] for the time display.
+    #[must_use]
+    pub(crate) fn to_segment(
+        &self,
+        time_str: &str,
+        connector: &str,
+        connector_style: Style,
+    ) -> Segment {
+        Segment {
+            content: time_str.to_owned(),
+            connector: Some(Connector {
+                word: connector.to_owned(),
+                style: connector_style,
+            }),
+            icon: None,
+            content_style: Some(self.prompt_style()),
+        }
+    }
 }
 
 /// Command duration module settings.
@@ -335,6 +426,25 @@ impl CmdDurationConfig {
     #[must_use]
     pub fn prompt_style(&self) -> Style {
         self.style.resolve(Style::new().fg(self.color))
+    }
+
+    /// Build a [`Segment`] for the command duration display.
+    #[must_use]
+    pub(crate) fn to_segment(
+        &self,
+        duration_str: &str,
+        connector: &str,
+        connector_style: Style,
+    ) -> Segment {
+        Segment {
+            content: duration_str.to_owned(),
+            connector: Some(Connector {
+                word: connector.to_owned(),
+                style: connector_style,
+            }),
+            icon: None,
+            content_style: Some(self.prompt_style()),
+        }
     }
 }
 
