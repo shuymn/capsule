@@ -1119,36 +1119,55 @@ mod tests {
 
         rewrite_config(&config_path, "[git.indicator_style]\nfg = \"green\"\n").await?;
         sleep(Duration::from_millis(160)).await;
+        let generation1 = PromptGeneration::new(1);
+        let generation2 = PromptGeneration::new(2);
         if let Ok(Ok(Some(Message::Update(update)))) =
             tokio::time::timeout(Duration::from_millis(50), reader.read_message()).await
         {
-            assert_eq!(update.generation, PromptGeneration::new(1));
+            assert_eq!(update.generation, generation1);
         }
 
         writer
             .write_message(&Message::Request(make_request("/tmp", 2, 80)))
             .await?;
-        match reader.read_message().await? {
-            Some(Message::RenderResult(rr)) => {
-                assert!(
-                    !rr.left1.contains("main"),
-                    "new config generation should not reuse stale slow cache: {}",
-                    rr.left1
-                );
+        loop {
+            match reader.read_message().await? {
+                Some(Message::RenderResult(rr)) => {
+                    assert_eq!(rr.generation, generation2);
+                    assert!(
+                        !rr.left1.contains("main"),
+                        "new config generation should not reuse stale slow cache: {}",
+                        rr.left1
+                    );
+                    break;
+                }
+                Some(Message::Update(update)) => {
+                    assert_eq!(
+                        update.generation, generation1,
+                        "only the prior generation may arrive before RenderResult(gen=2)"
+                    );
+                }
+                other => return Err(format!("expected RenderResult, got {other:?}").into()),
             }
-            other => return Err(format!("expected RenderResult, got {other:?}").into()),
         }
 
-        match tokio::time::timeout(Duration::from_secs(5), reader.read_message()).await?? {
-            Some(Message::Update(update)) => {
-                assert!(update.left1.contains("main"));
-                assert!(
-                    update.left1.contains("\x1b[32m"),
-                    "updated prompt should use reloaded git style: {}",
-                    update.left1
-                );
+        loop {
+            match tokio::time::timeout(Duration::from_secs(5), reader.read_message()).await?? {
+                Some(Message::Update(update)) => {
+                    if update.generation == generation1 {
+                        continue;
+                    }
+                    assert_eq!(update.generation, generation2);
+                    assert!(update.left1.contains("main"));
+                    assert!(
+                        update.left1.contains("\x1b[32m"),
+                        "updated prompt should use reloaded git style: {}",
+                        update.left1
+                    );
+                    break;
+                }
+                other => return Err(format!("expected Update, got {other:?}").into()),
             }
-            other => return Err(format!("expected Update, got {other:?}").into()),
         }
 
         assert_eq!(
