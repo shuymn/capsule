@@ -373,6 +373,7 @@ async fn translate_daemon_to_stdout<R: tokio::io::AsyncRead + Unpin + Send>(
                     rr.generation.get(),
                     &rr.left1,
                     &rr.left2,
+                    &rr.meta,
                 );
                 stdout.write_all(&line_buf).await?;
                 stdout.flush().await?;
@@ -384,6 +385,7 @@ async fn translate_daemon_to_stdout<R: tokio::io::AsyncRead + Unpin + Send>(
                     u.generation.get(),
                     &u.left1,
                     &u.left2,
+                    &u.meta,
                 );
                 stdout.write_all(&line_buf).await?;
                 stdout.flush().await?;
@@ -394,13 +396,21 @@ async fn translate_daemon_to_stdout<R: tokio::io::AsyncRead + Unpin + Send>(
     }
 }
 
-/// Format a tab-separated response line: `<type>\t<gen>\t<left1>\t<left2>\n`
+/// Format a tab-separated response line.
+///
+/// Without meta: `<type>\t<gen>\t<left1>\t<left2>\n`
+/// With meta:    `<type>\t<gen>\t<left1>\t<left2>\t<meta>\n`
+#[expect(
+    clippy::too_many_arguments,
+    reason = "meta is a single new field for vim mode"
+)]
 fn format_tab_response(
     buf: &mut Vec<u8>,
     kind: ShellTabLineKind,
     generation: u64,
     left1: &str,
     left2: &str,
+    meta: &str,
 ) {
     use std::io::Write as _;
     buf.clear();
@@ -411,6 +421,10 @@ fn format_tab_response(
     buf.extend_from_slice(left1.as_bytes());
     buf.push(b'\t');
     buf.extend_from_slice(left2.as_bytes());
+    if !meta.is_empty() {
+        buf.push(b'\t');
+        buf.extend_from_slice(meta.as_bytes());
+    }
     buf.push(b'\n');
 }
 
@@ -622,6 +636,7 @@ mod tests {
             42,
             "~/project  main",
             "\u{276f}",
+            "",
         );
         assert_eq!(buf, b"R\t42\t~/project  main\t\xe2\x9d\xaf\n");
     }
@@ -629,8 +644,28 @@ mod tests {
     #[test]
     fn test_format_tab_response_update() {
         let mut buf = Vec::new();
-        format_tab_response(&mut buf, ShellTabLineKind::Update, 1, "info", "prompt");
+        format_tab_response(&mut buf, ShellTabLineKind::Update, 1, "info", "prompt", "");
         assert_eq!(buf, b"U\t1\tinfo\tprompt\n");
+    }
+
+    #[test]
+    fn test_format_tab_response_with_meta() {
+        let mut buf = Vec::new();
+        let meta = "viins\x1e\x1b[32m❯\x1b[0m\x1fvicmd\x1e\x1b[32m❮\x1b[0m";
+        format_tab_response(
+            &mut buf,
+            ShellTabLineKind::RenderResult,
+            42,
+            "left1",
+            "left2",
+            meta,
+        );
+        assert!(buf.starts_with(b"R\t42\tleft1\tleft2\t"));
+        assert!(buf.ends_with(b"\n"));
+        assert!(
+            buf.windows(meta.len()).any(|w| w == meta.as_bytes()),
+            "output should contain meta"
+        );
     }
 
     #[test]

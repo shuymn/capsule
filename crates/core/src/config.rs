@@ -105,6 +105,34 @@ pub struct CharacterConfig {
     pub success_style: StyleConfig,
     /// Style for the error glyph (last command failed).
     pub error_style: StyleConfig,
+    /// Vi command mode override.
+    #[serde(default)]
+    pub vicmd: CharacterModeConfig,
+}
+
+/// Per-keymap character override (glyph and optional style).
+///
+/// When `style` is `Some`, it is used regardless of exit code.
+/// When `style` is `None`, the parent [`CharacterConfig`]'s
+/// `success_style` / `error_style` is used based on exit code.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(default)]
+pub struct CharacterModeConfig {
+    /// The glyph displayed in this mode (default: `❮`).
+    pub glyph: String,
+    /// Fixed style for this mode (exit code independent).
+    ///
+    /// `None` falls back to the parent's `success_style`/`error_style`.
+    pub style: Option<StyleConfig>,
+}
+
+impl Default for CharacterModeConfig {
+    fn default() -> Self {
+        Self {
+            glyph: "\u{276e}".to_owned(),
+            style: None,
+        }
+    }
 }
 
 impl Default for CharacterConfig {
@@ -112,8 +140,9 @@ impl Default for CharacterConfig {
         Self {
             disabled: false,
             glyph: "\u{276f}".to_owned(),
-            success_style: StyleConfig::fg(Color::Green),
-            error_style: StyleConfig::fg(Color::Red),
+            success_style: StyleConfig::fg_bold(Color::Green),
+            error_style: StyleConfig::fg_bold(Color::Red),
+            vicmd: CharacterModeConfig::default(),
         }
     }
 }
@@ -129,16 +158,38 @@ impl CharacterConfig {
         self.error_style.resolve(Style::new())
     }
 
-    /// Build a [`Segment`] for the character glyph, styled by exit code.
-    #[must_use]
-    pub(crate) fn to_segment(&self, glyph: &str, exit_code: i32) -> Segment {
-        let style = if exit_code == 0 {
+    /// Resolve prompt style based on the last command's exit code.
+    fn exit_style(&self, exit_code: i32) -> Style {
+        if exit_code == 0 {
             self.success_prompt_style()
         } else {
             self.error_prompt_style()
-        };
+        }
+    }
+
+    /// Build a [`Segment`] for the character glyph, styled by exit code.
+    #[must_use]
+    pub(crate) fn to_segment(&self, glyph: &str, exit_code: i32) -> Segment {
         Segment {
             content: glyph.to_owned(),
+            connector: None,
+            icon: None,
+            content_style: Some(self.exit_style(exit_code)),
+        }
+    }
+
+    /// Build a [`Segment`] for a keymap mode override.
+    ///
+    /// If the mode has its own `style`, it is used regardless of `exit_code`.
+    /// Otherwise, falls back to this config's `success_style`/`error_style`.
+    #[must_use]
+    pub(crate) fn mode_segment(&self, mode: &CharacterModeConfig, exit_code: i32) -> Segment {
+        let style = mode
+            .style
+            .as_ref()
+            .map_or_else(|| self.exit_style(exit_code), |s| s.resolve(Style::new()));
+        Segment {
+            content: mode.glyph.clone(),
             connector: None,
             icon: None,
             content_style: Some(style),
@@ -1176,6 +1227,121 @@ slow = "revalidate"
         )?;
         let config = load_config(&path);
         assert_eq!(config.cache.slow, SlowCacheMode::Revalidate);
+        Ok(())
+    }
+
+    #[test]
+    fn test_config_vicmd_default() {
+        let config = Config::default();
+        assert_eq!(
+            config.character.vicmd.glyph, "\u{276e}",
+            "default vicmd glyph should be ❮"
+        );
+        assert!(
+            config.character.vicmd.style.is_none(),
+            "default vicmd style should fall back to parent"
+        );
+    }
+
+    #[test]
+    fn test_config_vicmd_deserialization() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[character.vicmd]
+glyph = "❮"
+style = { fg = "green" }
+"#,
+        )?;
+        let config = load_config(&path);
+        assert_eq!(config.character.vicmd.glyph, "❮");
+        assert_eq!(
+            config
+                .character
+                .vicmd
+                .style
+                .as_ref()
+                .ok_or("style should be Some")?
+                .fg,
+            Some(Color::Green)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_config_vicmd_glyph_only() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[character.vicmd]
+glyph = "N"
+"#,
+        )?;
+        let config = load_config(&path);
+        assert_eq!(config.character.vicmd.glyph, "N");
+        assert!(
+            config.character.vicmd.style.is_none(),
+            "style should fall back to parent"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_mode_segment_with_fixed_style() {
+        let config = CharacterConfig::default();
+        let mode = CharacterModeConfig {
+            glyph: "❮".to_owned(),
+            style: Some(StyleConfig::fg(Color::Magenta)),
+        };
+        let seg_ok = config.mode_segment(&mode, 0);
+        let seg_err = config.mode_segment(&mode, 1);
+        assert_eq!(seg_ok.content, "❮");
+        assert_eq!(seg_ok.content_style, seg_err.content_style);
+    }
+
+    #[test]
+    fn test_mode_segment_fallback_to_parent_style() {
+        let config = CharacterConfig::default();
+        let mode = CharacterModeConfig {
+            glyph: "❮".to_owned(),
+            style: None,
+        };
+        let seg_ok = config.mode_segment(&mode, 0);
+        let seg_err = config.mode_segment(&mode, 1);
+        assert_ne!(
+            seg_ok.content_style, seg_err.content_style,
+            "fallback should use parent success/error styles"
+        );
+        assert_eq!(
+            seg_ok.content_style,
+            config.to_segment("x", 0).content_style
+        );
+        assert_eq!(
+            seg_err.content_style,
+            config.to_segment("x", 1).content_style
+        );
+    }
+
+    #[test]
+    fn test_config_vicmd_default_glyph_preserved() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[character.vicmd]
+style = { fg = "green" }
+"#,
+        )?;
+        let config = load_config(&path);
+        assert_eq!(
+            config.character.vicmd.glyph, "\u{276e}",
+            "default vicmd glyph should be ❮ when only style is specified"
+        );
         Ok(())
     }
 }

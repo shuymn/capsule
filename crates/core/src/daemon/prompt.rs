@@ -6,6 +6,11 @@ use crate::{
     render::{PromptLines, compose_segments},
 };
 
+/// ASCII Record Separator — delimits key from value in `char_meta` entries.
+const RS: char = '\x1e';
+/// ASCII Unit Separator — delimits entries in `char_meta`.
+const US: char = '\x1f';
+
 #[derive(Debug, Clone)]
 pub(super) struct FastOutputs {
     directory: Option<String>,
@@ -110,11 +115,26 @@ pub(super) fn compose_prompt(
         line2.push(config.time.to_segment(time, connector_style));
     }
 
-    if let Some(character) = &fast.character {
-        line2.push(config.character.to_segment(character, fast.last_exit_code));
+    let viins_seg = fast
+        .character
+        .as_deref()
+        .map(|glyph| config.character.to_segment(glyph, fast.last_exit_code));
+    if let Some(ref seg) = viins_seg {
+        line2.push(seg.clone());
     }
 
-    compose_segments(&line1, &line2, cols, config.color_map)
+    let mut result = compose_segments(&line1, &line2, cols, config.color_map);
+
+    if let Some(viins) = &viins_seg {
+        let vicmd_seg = config
+            .character
+            .mode_segment(&config.character.vicmd, fast.last_exit_code);
+        let viins_styled = viins.render(config.color_map);
+        let vicmd_styled = vicmd_seg.render(config.color_map);
+        result.char_meta = format!("viins{RS}{viins_styled}{US}vicmd{RS}{vicmd_styled}");
+    }
+
+    result
 }
 
 #[cfg(test)]
@@ -709,6 +729,74 @@ mod tests {
                 || contains_style_sequence(&lines.left2, &[95, 1]),
             "character should use bold remapped magenta: {}",
             lines.left2
+        );
+    }
+
+    #[test]
+    fn test_compose_prompt_char_meta_empty_when_character_disabled() {
+        let fast = FastOutputs {
+            character: None,
+            ..make_fast_outputs()
+        };
+        let lines = compose_prompt(&fast, None, 80, &default_config());
+        assert!(
+            lines.char_meta.is_empty(),
+            "char_meta should be empty when character is disabled"
+        );
+    }
+
+    #[test]
+    fn test_compose_prompt_char_meta_with_default_config() {
+        let fast = make_fast_outputs();
+        let lines = compose_prompt(&fast, None, 80, &default_config());
+        assert!(
+            !lines.char_meta.is_empty(),
+            "char_meta should be populated by default"
+        );
+        assert!(
+            lines.char_meta.contains("viins\x1e"),
+            "char_meta should contain viins entry"
+        );
+        assert!(
+            lines.char_meta.contains("\x1fvicmd\x1e"),
+            "char_meta should contain vicmd entry"
+        );
+    }
+
+    #[test]
+    fn test_compose_prompt_char_meta_with_custom_vicmd_style() {
+        let fast = make_fast_outputs();
+        let mut config = default_config();
+        config.character.vicmd = crate::config::CharacterModeConfig {
+            glyph: "❮".to_owned(),
+            style: Some(crate::config::StyleConfig::fg(Color::Green)),
+        };
+        let lines = compose_prompt(&fast, None, 80, &config);
+        assert!(
+            !lines.char_meta.is_empty(),
+            "char_meta should be populated when vicmd has custom style"
+        );
+    }
+
+    #[test]
+    fn test_compose_prompt_char_meta_viins_matches_left2() {
+        let fast = make_fast_outputs();
+        let lines = compose_prompt(&fast, None, 80, &default_config());
+        // Extract viins styled string from char_meta
+        let viins_entry = lines
+            .char_meta
+            .split('\x1f')
+            .find(|e| e.starts_with("viins\x1e"));
+        let viins_styled = viins_entry.map_or("", |e| &e["viins\x1e".len()..]);
+        assert!(
+            !viins_styled.is_empty(),
+            "viins styled string should not be empty"
+        );
+        assert!(
+            lines.left2.contains(viins_styled),
+            "viins styled string should appear in left2: left2={}, viins={}",
+            lines.left2,
+            viins_styled
         );
     }
 }

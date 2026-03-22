@@ -178,6 +178,10 @@ pub struct RenderResult {
     pub left1: String,
     /// Input line (line 2 of the prompt).
     pub left2: String,
+    /// Opaque metadata for shell-side features (e.g., vim mode character map).
+    ///
+    /// Empty when no metadata is needed (backward compatible).
+    pub meta: String,
 }
 
 /// Deferred update after slow modules complete.
@@ -195,6 +199,10 @@ pub struct Update {
     pub left1: String,
     /// Updated input line.
     pub left2: String,
+    /// Opaque metadata for shell-side features (e.g., vim mode character map).
+    ///
+    /// Empty when no metadata is needed (backward compatible).
+    pub meta: String,
 }
 
 /// Build ID handshake: client → daemon.
@@ -346,7 +354,7 @@ impl RenderResult {
         netstring::encode_into(&mut buf, self.left1.as_bytes());
         netstring::encode_into(&mut buf, self.left2.as_bytes());
         netstring::encode_into(&mut buf, b""); // right1 (reserved)
-        netstring::encode_into(&mut buf, b""); // meta (reserved)
+        netstring::encode_into(&mut buf, self.meta.as_bytes());
         buf
     }
 }
@@ -366,7 +374,7 @@ impl Update {
         netstring::encode_into(&mut buf, self.left1.as_bytes());
         netstring::encode_into(&mut buf, self.left2.as_bytes());
         netstring::encode_into(&mut buf, b""); // right1 (reserved)
-        netstring::encode_into(&mut buf, b""); // meta (reserved)
+        netstring::encode_into(&mut buf, self.meta.as_bytes());
         buf
     }
 }
@@ -649,7 +657,7 @@ impl RenderResult {
             left1: field_to_string(fields[4], "left1")?,
             left2: field_to_string(fields[5], "left2")?,
             // fields[6] = right1 (ignored)
-            // fields[7] = meta (ignored)
+            meta: field_to_string(fields[7], "meta")?,
         })
     }
 }
@@ -671,7 +679,7 @@ impl Update {
             left1: field_to_string(fields[4], "left1")?,
             left2: field_to_string(fields[5], "left2")?,
             // fields[6] = right1 (ignored)
-            // fields[7] = meta (ignored)
+            meta: field_to_string(fields[7], "meta")?,
         })
     }
 }
@@ -788,6 +796,7 @@ mod tests {
             generation: PromptGeneration::new(42),
             left1: "~/project  main".to_owned(),
             left2: "❯ ".to_owned(),
+            meta: String::new(),
         }
     }
 
@@ -798,6 +807,7 @@ mod tests {
             generation: PromptGeneration::new(42),
             left1: "~/project  main *2".to_owned(),
             left2: "❯ ".to_owned(),
+            meta: String::new(),
         }
     }
 
@@ -941,6 +951,19 @@ mod tests {
             generation: PromptGeneration::new(0),
             left1: String::new(),
             left2: String::new(),
+            meta: String::new(),
+        };
+        let wire = rr.to_wire();
+        let parsed = Message::from_wire(&wire)?;
+        assert_eq!(parsed, Message::RenderResult(rr));
+        Ok(())
+    }
+
+    #[test]
+    fn test_render_result_with_meta_round_trip() -> Result<(), ProtocolError> {
+        let rr = RenderResult {
+            meta: "viins\x1e\x1b[32m❯\x1b[0m\x1fvicmd\x1e\x1b[32m❮\x1b[0m".to_owned(),
+            ..sample_render_result()
         };
         let wire = rr.to_wire();
         let parsed = Message::from_wire(&wire)?;
@@ -953,6 +976,18 @@ mod tests {
     #[test]
     fn test_update_round_trip() -> Result<(), ProtocolError> {
         let upd = sample_update();
+        let wire = upd.to_wire();
+        let parsed = Message::from_wire(&wire)?;
+        assert_eq!(parsed, Message::Update(upd));
+        Ok(())
+    }
+
+    #[test]
+    fn test_update_with_meta_round_trip() -> Result<(), ProtocolError> {
+        let upd = Update {
+            meta: "viins\x1e\x1b[32m❯\x1b[0m\x1fvicmd\x1e\x1b[32m❮\x1b[0m".to_owned(),
+            ..sample_update()
+        };
         let wire = upd.to_wire();
         let parsed = Message::from_wire(&wire)?;
         assert_eq!(parsed, Message::Update(upd));

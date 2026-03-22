@@ -482,6 +482,7 @@ async fn handle_request<G: GitProvider + Send + 'static>(
         generation: gated.generation,
         left1: lines.left1.clone(),
         left2: lines.left2.clone(),
+        meta: lines.char_meta.clone(),
     };
     tracing::debug!(
         session_id = %gated.session_id,
@@ -633,6 +634,9 @@ async fn try_send_slow_update(
         generation,
         left1: new_lines.left1,
         left2: new_lines.left2,
+        // char_meta depends only on config + exit_code (not slow modules),
+        // so new_lines.char_meta is always correct here.
+        meta: new_lines.char_meta,
     };
     if let Err(error) = write_message(writer, &Message::Update(update)).await {
         tracing::debug!(session_id = %session_id, error = %error, "failed to send update");

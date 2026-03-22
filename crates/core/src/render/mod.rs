@@ -20,6 +20,11 @@ pub struct PromptLines {
     pub left1: String,
     /// Input line (line 2 of the prompt).
     pub left2: String,
+    /// Vim-mode character metadata for shell-side keymap switching.
+    ///
+    /// Format: `viins\x1estyled\x1fvicmd\x1estyled[\x1fmode\x1estyled]*`
+    /// Empty when no keymap modes are configured.
+    pub char_meta: String,
 }
 
 /// Compose [`Segment`]s into prompt lines with left-aligned layout.
@@ -38,6 +43,7 @@ pub(crate) fn compose_segments(
     PromptLines {
         left1: compose_line(line1, cols, color_map),
         left2: compose_line(line2, cols, color_map),
+        char_meta: String::new(),
     }
 }
 

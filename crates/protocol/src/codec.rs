@@ -109,6 +109,7 @@ mod tests {
             generation: PromptGeneration::new(1),
             left1: "/tmp".to_owned(),
             left2: "❯ ".to_owned(),
+            meta: String::new(),
         }
     }
 
@@ -119,6 +120,7 @@ mod tests {
             generation: PromptGeneration::new(1),
             left1: "/tmp  main".to_owned(),
             left2: "❯ ".to_owned(),
+            meta: String::new(),
         }
     }
 

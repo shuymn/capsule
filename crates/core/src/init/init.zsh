@@ -30,6 +30,11 @@ _capsule_init() {
     typeset -g _CAPSULE_COPROC_PID=""
     typeset -ga _CAPSULE_EXTRA_ENV=()
 
+    # Vim-mode character state
+    typeset -gA _CAPSULE_CHAR_MAP
+    typeset -g  _CAPSULE_CHAR_DEFAULT=""
+    typeset -g  _CAPSULE_CHAR_CURRENT=""
+
     # Fallback prompt
     typeset -g _CAPSULE_FALLBACK='%~ %# '
 
@@ -187,7 +192,7 @@ _capsule_precmd() {
     fi
 
     # Read response (consume stale Updates, wait for RenderResult)
-    # Response format: <type>\t<gen>\t<left1>\t<left2>
+    # Response format: <type>\t<gen>\t<left1>\t<left2>[\t<char_meta>]
     local line attempts=0 got_render=0
     local _left1 _left2
     while (( attempts < 3 )) && IFS= read -rt 1 -u $_CAPSULE_FD_OUT line 2>/dev/null; do
@@ -195,16 +200,23 @@ _capsule_precmd() {
         # Check message type (first field before tab)
         if [[ "${line%%$'\t'*}" == "R" ]]; then
             got_render=1
-            # Extract left1 and left2: skip type and gen fields
+            # Extract left1, left2, and optional char_meta: skip type and gen
             local _payload=${line#*$'\t'*$'\t'}
             _left1=${_payload%%$'\t'*}
-            _left2=${_payload#*$'\t'}
+            local _after_left1=${_payload#*$'\t'}
+            if [[ "$_after_left1" == *$'\t'* ]]; then
+                _left2=${_after_left1%%$'\t'*}
+                _capsule_parse_char_meta "${_after_left1#*$'\t'}"
+            else
+                _left2=$_after_left1
+                _capsule_parse_char_meta ""
+            fi
             break
         fi
     done
 
     if (( got_render )); then
-        PROMPT="${_left1}"$'\n'"${_left2} "
+        _capsule_apply_prompt "$_left1" "$_left2"
     else
         PROMPT=$_CAPSULE_FALLBACK
     fi
@@ -231,11 +243,18 @@ _capsule_async_callback() {
             local _rest=${line#*$'\t'}
             local -i _update_gen=${_rest%%$'\t'*}
             if (( _update_gen >= _CAPSULE_GENERATION )); then
-                # Extract left1 and left2: skip type and gen fields
                 local _payload=${line#*$'\t'*$'\t'}
                 local _left1=${_payload%%$'\t'*}
-                local _left2=${_payload#*$'\t'}
-                PROMPT="${_left1}"$'\n'"${_left2} "
+                local _after_left1=${_payload#*$'\t'}
+                local _left2
+                if [[ "$_after_left1" == *$'\t'* ]]; then
+                    _left2=${_after_left1%%$'\t'*}
+                    _capsule_parse_char_meta "${_after_left1#*$'\t'}"
+                else
+                    _left2=$_after_left1
+                    _capsule_parse_char_meta ""
+                fi
+                _capsule_apply_prompt "$_left1" "$_left2"
                 zle reset-prompt 2>/dev/null
             fi
         fi
@@ -246,6 +265,43 @@ _capsule_async_callback() {
         zle reset-prompt 2>/dev/null
     fi
 }
+
+_capsule_parse_char_meta() {
+    _CAPSULE_CHAR_MAP=()
+    _CAPSULE_CHAR_DEFAULT=""
+    [[ -z "$1" ]] && return
+    local _entry _key _val
+    local IFS=$'\x1f'
+    for _entry in ${=1}; do
+        _key=${_entry%%$'\x1e'*}
+        _val=${_entry#*$'\x1e'}
+        _CAPSULE_CHAR_MAP[$_key]=$_val
+    done
+    _CAPSULE_CHAR_DEFAULT=${_CAPSULE_CHAR_MAP[viins]:-${_CAPSULE_CHAR_MAP[main]:-}}
+    _CAPSULE_CHAR_CURRENT=$_CAPSULE_CHAR_DEFAULT
+}
+
+_capsule_apply_prompt() {
+    PROMPT="${1}"$'\n'"${2} "
+    if [[ -n "$_CAPSULE_CHAR_DEFAULT" && "${KEYMAP:-main}" == "vicmd" ]]; then
+        local _target=${_CAPSULE_CHAR_MAP[vicmd]:-$_CAPSULE_CHAR_DEFAULT}
+        PROMPT=${PROMPT/$_CAPSULE_CHAR_DEFAULT/$_target}
+        _CAPSULE_CHAR_CURRENT=$_target
+    fi
+}
+
+_capsule_zle_keymap_select() {
+    emulate -L zsh
+    if [[ -n "$_CAPSULE_CHAR_DEFAULT" ]]; then
+        local _new=${_CAPSULE_CHAR_MAP[$KEYMAP]:-$_CAPSULE_CHAR_DEFAULT}
+        if [[ "$_new" != "$_CAPSULE_CHAR_CURRENT" ]]; then
+            PROMPT=${PROMPT/$_CAPSULE_CHAR_CURRENT/$_new}
+            _CAPSULE_CHAR_CURRENT=$_new
+            zle reset-prompt
+        fi
+    fi
+}
+zle -N zle-keymap-select _capsule_zle_keymap_select
 
 _capsule_init
 
