@@ -126,7 +126,8 @@ icon = "🦀"
 connector = "via"
 style = { fg = "red" }
 
-# Sources with the same `name` form a fallback chain; first match wins.
+# If multiple sources share the same `name`, capsule resolves them
+# asynchronously and uses the first successful result that comes back.
 [[module.source]]
 name = "version"
 env = "RUST_VERSION"
