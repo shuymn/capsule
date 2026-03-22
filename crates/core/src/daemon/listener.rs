@@ -3,6 +3,7 @@
 //! [`ListenerSource`] describes where the listener comes from:
 //! - [`Bind`](ListenerSource::Bind) — traditional socket file bind (standalone mode)
 //! - [`Launchd`](ListenerSource::Launchd) — macOS `launch_activate_socket` (socket activation)
+//! - [`Systemd`](ListenerSource::Systemd) — Linux systemd `$LISTEN_FDS` socket activation
 
 use std::{os::unix::net::UnixListener, path::PathBuf};
 
@@ -19,6 +20,12 @@ pub enum ListenerSource {
     ///
     /// The socket name must match the `SockServiceName` in the launchd plist.
     Launchd(String),
+
+    /// Receive the socket from systemd via `$LISTEN_FDS` socket activation.
+    ///
+    /// Validates `$LISTEN_PID` and `$LISTEN_FDS`, then wraps fd 3 as a
+    /// non-blocking [`UnixListener`].
+    Systemd,
 }
 
 /// Acquire a [`UnixListener`] from the given [`ListenerSource`].
@@ -45,6 +52,7 @@ pub fn acquire_listener(source: &ListenerSource) -> Result<UnixListener, std::io
             Ok(listener)
         }
         ListenerSource::Launchd(name) => capsule_sys::launch_activate_socket(name),
+        ListenerSource::Systemd => capsule_sys::systemd_activated_socket(),
     }
 }
 
@@ -69,7 +77,7 @@ impl ListenerSource {
     pub fn mode(&self) -> ListenerMode {
         match self {
             Self::Bind(path) => ListenerMode::Bound(path.clone()),
-            Self::Launchd(_) => ListenerMode::Activated,
+            Self::Launchd(_) | Self::Systemd => ListenerMode::Activated,
         }
     }
 }

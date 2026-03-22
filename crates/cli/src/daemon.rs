@@ -16,7 +16,11 @@ use capsule_core::{
 };
 #[cfg(target_os = "macos")]
 pub use service::Launchd;
-pub use service::{install, uninstall};
+pub use service::ServiceManager;
+#[cfg(target_os = "linux")]
+pub use service::Systemd;
+#[cfg(target_os = "macos")]
+use service::launchd::LAUNCHD_SOCKET_NAME;
 pub use status::status;
 
 /// Initialize tracing subscriber if `CAPSULE_LOG` is set.
@@ -51,16 +55,14 @@ fn init_tracing() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// launchd socket name matching the plist `SockServiceName`.
-const LAUNCHD_SOCKET_NAME: &str = "Listeners";
-
 /// Run the daemon server.
 ///
 /// In standalone (bind) mode, acquires an exclusive file lock
 /// (`~/.capsule/capsule.lock`) to prevent multiple daemons. If another
 /// daemon holds the lock, returns immediately with `Ok(())`.
 ///
-/// In launchd mode, flock is skipped (launchd guarantees single instance).
+/// In socket-activation mode, the flock is skipped (the service manager
+/// guarantees single instance).
 ///
 /// # Errors
 ///
@@ -73,10 +75,20 @@ pub fn run() -> anyhow::Result<()> {
     let dir = capsule_dir()?;
     std::fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
 
-    // Try launchd socket activation first.
-    let launchd_source = ListenerSource::Launchd(LAUNCHD_SOCKET_NAME.to_owned());
-    if let Ok(listener) = acquire_listener(&launchd_source) {
-        return run_server(listener, launchd_source.mode());
+    // Try platform socket activation first.
+    #[cfg(target_os = "macos")]
+    {
+        let source = ListenerSource::Launchd(LAUNCHD_SOCKET_NAME.to_owned());
+        if let Ok(listener) = acquire_listener(&source) {
+            return run_server(listener, source.mode());
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let source = ListenerSource::Systemd;
+        if let Ok(listener) = acquire_listener(&source) {
+            return run_server(listener, source.mode());
+        }
     }
 
     // Standalone mode: flock before bind.
@@ -219,33 +231,23 @@ mod tests {
     use std::{
         fs::File,
         io::{BufRead as _, Write as _},
-        path::{Path, PathBuf},
+        path::Path,
         time::Duration,
     };
 
     use capsule_protocol::{BuildId, HelloAck, Message, PROTOCOL_VERSION};
 
-    use super::{
-        service::{
-            LAUNCHD_LABEL, ServiceManager, daemon_needs_restart, generate_plist, plist_path_for,
-            wait_until_daemon_ready,
-        },
-        *,
-    };
-
-    fn test_socket_path(home: &Path) -> PathBuf {
-        home.join(".capsule/capsule.sock")
-    }
+    use super::service::{ServiceManager, daemon_needs_restart, wait_until_daemon_ready};
 
     struct NoopServiceManager;
 
     impl ServiceManager for NoopServiceManager {
-        fn load(&self, _service_file: &Path) -> anyhow::Result<()> {
+        fn install(&self, _home: &Path, _socket_path: &Path) -> anyhow::Result<()> {
             Ok(())
         }
 
-        fn unload(&self) -> anyhow::Result<bool> {
-            Ok(true)
+        fn uninstall(&self, _home: &Path) -> anyhow::Result<()> {
+            Ok(())
         }
 
         fn restart(&self) -> anyhow::Result<()> {
@@ -335,93 +337,18 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_plist_contains_required_keys() {
-        let bin = PathBuf::from("/usr/local/bin/capsule");
-        let sock = PathBuf::from("/Users/test/.capsule/capsule.sock");
-        let plist = generate_plist(&bin, &sock, &[]);
-
-        assert!(plist.contains(LAUNCHD_LABEL), "plist should contain label");
-        assert!(
-            plist.contains("/usr/local/bin/capsule"),
-            "plist should contain binary path"
-        );
-        assert!(
-            plist.contains("daemon"),
-            "plist should contain 'daemon' argument"
-        );
-        assert!(
-            plist.contains(LAUNCHD_SOCKET_NAME),
-            "plist should contain socket name"
-        );
-        assert!(
-            plist.contains("/Users/test/.capsule/capsule.sock"),
-            "plist should contain socket path"
-        );
-        assert!(
-            plist.contains("SockPathMode"),
-            "plist should set socket permissions"
-        );
+    fn test_noop_install_succeeds() -> Result<(), Box<dyn std::error::Error>> {
+        let home = tempfile::tempdir()?;
+        let socket = home.path().join("capsule.sock");
+        NoopServiceManager.install(home.path(), &socket)?;
+        Ok(())
     }
 
     #[test]
-    fn test_generate_plist_no_inetd_compatibility() {
-        let bin = PathBuf::from("/usr/local/bin/capsule");
-        let sock = PathBuf::from("/Users/test/.capsule/capsule.sock");
-        let plist = generate_plist(&bin, &sock, &[]);
-
-        assert!(
-            !plist.contains("inetdCompatibility"),
-            "plist should not use inetdCompatibility"
-        );
-    }
-
-    #[test]
-    fn test_generate_plist_valid_xml() {
-        let bin = PathBuf::from("/usr/local/bin/capsule");
-        let sock = PathBuf::from("/Users/test/.capsule/capsule.sock");
-        let plist = generate_plist(&bin, &sock, &[]);
-
-        assert!(
-            plist.starts_with("<?xml"),
-            "plist should start with XML declaration"
-        );
-        assert!(plist.contains("</plist>"), "plist should be well-formed");
-    }
-
-    #[test]
-    fn test_generate_plist_without_env_has_no_environment_variables() {
-        let bin = PathBuf::from("/usr/local/bin/capsule");
-        let sock = PathBuf::from("/Users/test/.capsule/capsule.sock");
-        let plist = generate_plist(&bin, &sock, &[]);
-
-        assert!(
-            !plist.contains("EnvironmentVariables"),
-            "plist should not contain EnvironmentVariables when empty: {plist}"
-        );
-    }
-
-    #[test]
-    fn test_generate_plist_with_xdg_config_home() {
-        let bin = PathBuf::from("/usr/local/bin/capsule");
-        let sock = PathBuf::from("/Users/test/.capsule/capsule.sock");
-        let plist = generate_plist(
-            &bin,
-            &sock,
-            &[("XDG_CONFIG_HOME", "/Users/test/.config".to_owned())],
-        );
-
-        assert!(
-            plist.contains("EnvironmentVariables"),
-            "plist should contain EnvironmentVariables: {plist}"
-        );
-        assert!(
-            plist.contains("<key>XDG_CONFIG_HOME</key>"),
-            "plist should contain XDG_CONFIG_HOME key: {plist}"
-        );
-        assert!(
-            plist.contains("<string>/Users/test/.config</string>"),
-            "plist should contain XDG_CONFIG_HOME value: {plist}"
-        );
+    fn test_noop_uninstall_succeeds() -> Result<(), Box<dyn std::error::Error>> {
+        let home = tempfile::tempdir()?;
+        NoopServiceManager.uninstall(home.path())?;
+        Ok(())
     }
 
     #[test]
@@ -467,120 +394,6 @@ mod tests {
             "should not restart when daemon is unreachable"
         );
 
-        Ok(())
-    }
-
-    // -----------------------------------------------------------------------
-    // ServiceManager + install/uninstall flow tests (Noop variant)
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_install_fresh_creates_plist_noop() -> Result<(), Box<dyn std::error::Error>> {
-        let home = tempfile::tempdir()?;
-        let socket = test_socket_path(home.path());
-
-        install(&NoopServiceManager, home.path(), &socket)?;
-
-        let plist = plist_path_for(home.path());
-        assert!(plist.is_file(), "plist should be created");
-        let content = std::fs::read_to_string(&plist)?;
-        assert!(
-            content.contains(LAUNCHD_LABEL),
-            "plist should contain label"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn test_install_unchanged_plist_skips_noop() -> Result<(), Box<dyn std::error::Error>> {
-        let home = tempfile::tempdir()?;
-        let socket = test_socket_path(home.path());
-
-        // First install creates the plist.
-        install(&NoopServiceManager, home.path(), &socket)?;
-        let plist = plist_path_for(home.path());
-        let content_before = std::fs::read_to_string(&plist)?;
-
-        // Second install with same binary — no daemon running → skip.
-        install(&NoopServiceManager, home.path(), &socket)?;
-        let content_after = std::fs::read_to_string(&plist)?;
-
-        assert_eq!(
-            content_before, content_after,
-            "plist should not change on repeated install"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn test_install_unchanged_plist_build_id_mismatch_noop()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let home = tempfile::tempdir()?;
-        let socket = test_socket_path(home.path());
-
-        // First install.
-        install(&NoopServiceManager, home.path(), &socket)?;
-
-        // Start mock daemon returning a different build_id on the canonical socket.
-        std::fs::create_dir_all(home.path().join(".capsule"))?;
-        start_mock_daemon(&socket, Some(BuildId::new("different:99999".to_owned())))?;
-        std::thread::sleep(Duration::from_millis(50));
-
-        // Second install detects mismatch → kickstart via Noop succeeds.
-        install(&NoopServiceManager, home.path(), &socket)?;
-
-        // Plist content should be unchanged (kickstart, not rewrite).
-        let plist = plist_path_for(home.path());
-        assert!(plist.is_file(), "plist should still exist");
-        Ok(())
-    }
-
-    #[test]
-    fn test_install_changed_plist_reloads_noop() -> Result<(), Box<dyn std::error::Error>> {
-        let home = tempfile::tempdir()?;
-        let socket = test_socket_path(home.path());
-        let plist = plist_path_for(home.path());
-
-        // Create an old plist with different content.
-        if let Some(parent) = plist.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&plist, "old content")?;
-
-        // Install should replace it.
-        install(&NoopServiceManager, home.path(), &socket)?;
-
-        let content = std::fs::read_to_string(&plist)?;
-        assert_ne!(content, "old content", "plist should be updated");
-        assert!(
-            content.contains(LAUNCHD_LABEL),
-            "plist should contain label"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn test_uninstall_removes_plist_noop() -> Result<(), Box<dyn std::error::Error>> {
-        let home = tempfile::tempdir()?;
-        let socket = test_socket_path(home.path());
-
-        // Install first.
-        install(&NoopServiceManager, home.path(), &socket)?;
-        let plist = plist_path_for(home.path());
-        assert!(plist.is_file(), "plist should exist before uninstall");
-
-        // Uninstall removes plist.
-        uninstall(&NoopServiceManager, home.path())?;
-        assert!(!plist.exists(), "plist should be removed after uninstall");
-        Ok(())
-    }
-
-    #[test]
-    fn test_uninstall_missing_plist_noop() -> Result<(), Box<dyn std::error::Error>> {
-        let home = tempfile::tempdir()?;
-
-        // Uninstall when plist doesn't exist — should succeed gracefully.
-        uninstall(&NoopServiceManager, home.path())?;
         Ok(())
     }
 

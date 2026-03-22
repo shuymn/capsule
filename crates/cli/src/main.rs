@@ -20,18 +20,22 @@ fn main() -> anyhow::Result<()> {
             None => daemon::run(),
             Some(DaemonAction::Status { json }) => daemon::status(json),
             Some(DaemonAction::Install | DaemonAction::Uninstall) => {
-                #[cfg(not(target_os = "macos"))]
-                anyhow::bail!("capsule daemon install/uninstall requires macOS (launchd)");
+                use daemon::ServiceManager as _;
+
+                let home = daemon::home_dir()?;
+                let socket_path = daemon::socket_path()?;
+
                 #[cfg(target_os = "macos")]
-                {
-                    let home = daemon::home_dir()?;
-                    let socket_path = daemon::socket_path()?;
-                    let sm = daemon::Launchd::new(&socket_path)?;
-                    match action {
-                        Some(DaemonAction::Install) => daemon::install(&sm, &home, &socket_path),
-                        Some(DaemonAction::Uninstall) => daemon::uninstall(&sm, &home),
-                        _ => Ok(()),
-                    }
+                let sm = daemon::Launchd::new(&socket_path)?;
+                #[cfg(target_os = "linux")]
+                let sm = daemon::Systemd::new(&socket_path)?;
+                #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+                anyhow::bail!("service management is not supported on this platform");
+
+                match action {
+                    Some(DaemonAction::Install) => sm.install(&home, &socket_path),
+                    Some(DaemonAction::Uninstall) => sm.uninstall(&home),
+                    _ => Ok(()),
                 }
             }
         },
