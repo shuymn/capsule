@@ -67,6 +67,10 @@ jobs:
       - name: Set up Task
         uses: shuymn/github-actions/.github/actions/setup-task@417b9296c6693ab840d5bb5600a18581ab877752
 
+      - name: Install zsh
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install --yes zsh
+
       - name: Run tests
         run: task test
 
