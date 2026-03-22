@@ -3,13 +3,13 @@ use crate::{
     render::style::Color,
 };
 
-pub(super) const JS_RUNTIME_ARBITRATION_GROUP: &str = "node.js";
-pub(super) const BUN_ARBITRATION_PRIORITY: u32 = 10;
-pub(super) const NODE_ARBITRATION_PRIORITY: u32 = 20;
+const JS_RUNTIME_ARBITRATION_GROUP: &str = "node.js";
+const BUN_ARBITRATION_PRIORITY: u32 = 10;
+const NODE_ARBITRATION_PRIORITY: u32 = 20;
 
-/// Returns the built-in toolchain definitions as [`ModuleDef`]s.
+/// Returns preset toolchain module definitions as [`ModuleDef`]s.
 #[must_use]
-pub(super) fn builtin_module_defs() -> Vec<ModuleDef> {
+pub fn preset_module_defs() -> Vec<ModuleDef> {
     vec![
         ModuleDef {
             name: "rust".to_owned(),

@@ -1,29 +1,15 @@
 use regex_lite::Regex;
 
-use super::{super::ModuleSpeed, ResolvedModule, ResolvedSource, builtins::builtin_module_defs};
+use super::{super::ModuleSpeed, ResolvedModule, ResolvedSource};
 use crate::{
     config::{ModuleDef, SourceDef},
     render::style::{Color, Style},
 };
 
-/// Merges built-in modules with user-defined `[[module]]` entries and compiles
-/// regexes.
-///
-/// Order: built-in toolchains (as modules) first, then user additions.
-/// Same-name entries replace in-place (preserving position).
+/// Compiles `[[module]]` entries into resolved modules with validated regexes.
 #[must_use]
-pub fn resolve_modules(user_modules: &[ModuleDef]) -> Vec<ResolvedModule> {
-    let mut defs = builtin_module_defs();
-
-    for user_module in user_modules {
-        if let Some(existing) = defs.iter_mut().find(|def| def.name == user_module.name) {
-            *existing = user_module.clone();
-        } else {
-            defs.push(user_module.clone());
-        }
-    }
-
-    defs.into_iter().map(compile_module_def).collect()
+pub fn resolve_modules(modules: &[ModuleDef]) -> Vec<ResolvedModule> {
+    modules.iter().cloned().map(compile_module_def).collect()
 }
 
 fn compile_module_def(def: ModuleDef) -> ResolvedModule {

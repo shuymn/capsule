@@ -11,6 +11,7 @@ mod facts;
 
 use std::path::PathBuf;
 
+pub use builtins::preset_module_defs;
 pub use compile::resolve_modules;
 pub(crate) use detect::arbitrate_detected_modules;
 pub use detect::detect_modules;
@@ -147,12 +148,7 @@ pub(crate) struct ModuleDependencyInputs {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{
-        builtins::{
-            BUN_ARBITRATION_PRIORITY, JS_RUNTIME_ARBITRATION_GROUP, NODE_ARBITRATION_PRIORITY,
-        },
-        *,
-    };
+    use super::*;
     use crate::{
         config::{ModuleDef, RegexPattern, SourceDef, StyleConfig},
         render::style::Color,
@@ -165,39 +161,16 @@ mod tests {
         }
     }
 
-    fn js_runtime_arbitration(priority: u32) -> Arbitration {
-        arbitration(JS_RUNTIME_ARBITRATION_GROUP, priority)
-    }
-
     // -- resolve_modules ------------------------------------------------------
 
     #[test]
-    fn test_resolve_modules_builtin_only() {
+    fn test_resolve_modules_empty() {
         let resolved = resolve_modules(&[]);
-        assert_eq!(resolved.len(), 6);
-        assert_eq!(resolved[0].name, "rust");
-        // Built-in toolchains are slow (they have command sources)
-        assert_eq!(resolved[0].speed, ModuleSpeed::Slow);
+        assert!(resolved.is_empty());
     }
 
     #[test]
-    fn test_resolve_modules_builtin_arbitration_for_js_runtimes() {
-        let resolved = resolve_modules(&[]);
-        let bun = resolved.iter().find(|module| module.name == "bun");
-        let node = resolved.iter().find(|module| module.name == "node");
-
-        assert_eq!(
-            bun.and_then(|module| module.arbitration.as_ref()),
-            Some(&js_runtime_arbitration(BUN_ARBITRATION_PRIORITY))
-        );
-        assert_eq!(
-            node.and_then(|module| module.arbitration.as_ref()),
-            Some(&js_runtime_arbitration(NODE_ARBITRATION_PRIORITY))
-        );
-    }
-
-    #[test]
-    fn test_resolve_modules_user_module_appended() {
+    fn test_resolve_modules_single_module() {
         let user = vec![ModuleDef {
             name: "aws".to_owned(),
             when: ModuleWhen {
@@ -217,42 +190,14 @@ mod tests {
             arbitration: None,
         }];
         let resolved = resolve_modules(&user);
-        assert_eq!(resolved.len(), 7);
-        assert_eq!(resolved[6].name, "aws");
-        assert_eq!(resolved[6].speed, ModuleSpeed::Fast);
-        assert_eq!(resolved[6].arbitration, None);
-    }
-
-    #[test]
-    fn test_resolve_modules_user_module_overrides_builtin() {
-        let user = vec![ModuleDef {
-            name: "rust".to_owned(),
-            when: ModuleWhen {
-                files: vec!["Cargo.toml".to_owned()],
-                env: vec![],
-            },
-            source: vec![SourceDef {
-                env: Some("RUST_VERSION".to_owned()),
-                file: None,
-                command: None,
-                regex: None,
-            }],
-            format: "{value}".to_owned(),
-            icon: Some("R".to_owned()),
-            style: StyleConfig::fg(Color::Blue),
-            connector: None,
-            arbitration: None,
-        }];
-        let resolved = resolve_modules(&user);
-        assert_eq!(resolved.len(), 6, "count unchanged");
-        assert_eq!(resolved[0].name, "rust", "still first");
-        assert_eq!(resolved[0].icon.as_deref(), Some("R"));
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].name, "aws");
         assert_eq!(resolved[0].speed, ModuleSpeed::Fast);
         assert_eq!(resolved[0].arbitration, None);
     }
 
     #[test]
-    fn test_resolve_modules_user_module_with_command() {
+    fn test_resolve_modules_module_with_command() {
         let user = vec![ModuleDef {
             name: "zig".to_owned(),
             when: ModuleWhen {
@@ -272,11 +217,11 @@ mod tests {
             arbitration: None,
         }];
         let resolved = resolve_modules(&user);
-        assert_eq!(resolved.len(), 7);
-        assert_eq!(resolved[6].name, "zig");
-        assert_eq!(resolved[6].connector.as_deref(), Some("via"));
-        assert_eq!(resolved[6].format, "v{value}");
-        assert_eq!(resolved[6].speed, ModuleSpeed::Slow);
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].name, "zig");
+        assert_eq!(resolved[0].connector.as_deref(), Some("via"));
+        assert_eq!(resolved[0].format, "v{value}");
+        assert_eq!(resolved[0].speed, ModuleSpeed::Slow);
     }
 
     #[test]
@@ -690,40 +635,6 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_modules_builtin_node_when_package_json_only()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempfile::tempdir()?;
-        std::fs::write(dir.path().join("package.json"), "{}")?;
-        std::fs::write(dir.path().join(".node-version"), "22.0.0\n")?;
-
-        let defs = resolve_modules(&[]);
-        let results = detect_modules(&defs, dir.path(), &[], None, ModuleSpeed::Slow);
-
-        assert_eq!(results.len(), 1, "only node should be detected");
-        assert_eq!(results[0].name, "node");
-        assert_eq!(results[0].value, "v22.0.0");
-        Ok(())
-    }
-
-    #[test]
-    fn test_detect_modules_builtin_bun_wins_over_node_in_same_group()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempfile::tempdir()?;
-        std::fs::write(dir.path().join("package.json"), "{}")?;
-        std::fs::write(dir.path().join(".node-version"), "22.0.0\n")?;
-        std::fs::write(dir.path().join("bun.lock"), "")?;
-        std::fs::write(dir.path().join(".bun-version"), "1.2.3\n")?;
-
-        let defs = resolve_modules(&[]);
-        let results = detect_modules(&defs, dir.path(), &[], None, ModuleSpeed::Slow);
-
-        assert_eq!(results.len(), 1, "bun should win arbitration over node");
-        assert_eq!(results[0].name, "bun");
-        assert_eq!(results[0].value, "v1.2.3");
-        Ok(())
-    }
-
-    #[test]
     fn test_detect_modules_same_group_keeps_lower_priority_user_module() {
         let defs = resolve_modules(&[
             ModuleDef {
@@ -871,38 +782,59 @@ mod tests {
     fn test_request_facts_matching_dependency_inputs_only_include_matching_modules()
     -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
+        // Create marker files for the "node" module but not for "terraform"
         std::fs::write(dir.path().join("package.json"), "{}")?;
         std::fs::write(dir.path().join(".node-version"), "22.0.0\n")?;
 
-        let defs = resolve_modules(&[ModuleDef {
-            name: "terraform".to_owned(),
-            when: ModuleWhen {
-                files: vec!["main.tf".to_owned()],
-                env: vec!["TF_WORKSPACE".to_owned()],
-            },
-            source: vec![
-                SourceDef {
-                    env: Some("TF_WORKSPACE".to_owned()),
-                    file: None,
-                    command: None,
-                    regex: None,
+        let defs = resolve_modules(&[
+            ModuleDef {
+                name: "node".to_owned(),
+                when: ModuleWhen {
+                    files: vec!["package.json".to_owned()],
+                    env: vec![],
                 },
-                SourceDef {
+                source: vec![SourceDef {
                     env: None,
-                    file: Some(".terraform-version".to_owned()),
+                    file: Some(".node-version".to_owned()),
                     command: None,
                     regex: None,
+                }],
+                format: "v{value}".to_owned(),
+                icon: None,
+                style: StyleConfig::default(),
+                connector: None,
+                arbitration: None,
+            },
+            ModuleDef {
+                name: "terraform".to_owned(),
+                when: ModuleWhen {
+                    files: vec!["main.tf".to_owned()],
+                    env: vec!["TF_WORKSPACE".to_owned()],
                 },
-            ],
-            format: "{value}".to_owned(),
-            icon: None,
-            style: StyleConfig::default(),
-            connector: None,
-            arbitration: None,
-        }]);
+                source: vec![
+                    SourceDef {
+                        env: Some("TF_WORKSPACE".to_owned()),
+                        file: None,
+                        command: None,
+                        regex: None,
+                    },
+                    SourceDef {
+                        env: None,
+                        file: Some(".terraform-version".to_owned()),
+                        command: None,
+                        regex: None,
+                    },
+                ],
+                format: "{value}".to_owned(),
+                icon: None,
+                style: StyleConfig::default(),
+                connector: None,
+                arbitration: None,
+            },
+        ]);
 
         let facts = RequestFacts::collect(dir.path().to_path_buf(), vec![]);
-        let inputs = facts.matching_dependency_inputs(&defs, ModuleSpeed::Slow);
+        let inputs = facts.matching_dependency_inputs(&defs, ModuleSpeed::Fast);
 
         assert_eq!(inputs.env_vars, Vec::<String>::new());
         assert_eq!(
@@ -1021,29 +953,6 @@ mod tests {
             results.is_empty(),
             "PATH in env_vars alone must not change detect_modules command lookup"
         );
-        Ok(())
-    }
-
-    #[test]
-    fn test_detect_toolchain_compat_via_modules() -> Result<(), Box<dyn std::error::Error>> {
-        // Built-in toolchains should still detect when marker files exist
-        let dir = tempfile::tempdir()?;
-        std::fs::write(dir.path().join("Cargo.toml"), "")?;
-
-        let defs = resolve_modules(&[]);
-        let results = detect_modules(&defs, dir.path(), &[], None, ModuleSpeed::Slow);
-        // May or may not detect (depends on rustc being available),
-        // but no panic and at most 1 rust entry
-        assert!(results.len() <= 1);
-        if let Some(tc) = results.first() {
-            assert_eq!(tc.name, "rust");
-            assert!(
-                tc.value.starts_with('v'),
-                "should have v prefix: {}",
-                tc.value
-            );
-            assert_eq!(tc.connector.as_deref(), Some("via"));
-        }
         Ok(())
     }
 

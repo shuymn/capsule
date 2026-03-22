@@ -122,7 +122,7 @@ mod tests {
     use super::*;
     use crate::{
         config::Config,
-        module::resolve_modules,
+        module::preset_module_defs,
         render::style::{Color, Style},
         test_utils::contains_style_sequence,
     };
@@ -151,13 +151,17 @@ mod tests {
     }
 
     fn make_toolchain_module(name: &str, version: &str) -> CustomModuleInfo {
-        let defs = resolve_modules(&[]);
-        let resolved = defs.iter().find(|def| def.name == name);
+        let presets = preset_module_defs();
+        let preset = presets.iter().find(|def| def.name == name);
+        let style = preset.map_or(Style::new().fg(Color::BrightBlack), |def| {
+            def.style
+                .resolve(Style::new().fg(Color::BrightBlack).bold())
+        });
         CustomModuleInfo {
             name: name.to_owned(),
             value: version.to_owned(),
-            icon: resolved.and_then(|def| def.icon.clone()),
-            style: resolved.map_or(Style::new().fg(Color::BrightBlack), |def| def.style),
+            icon: preset.and_then(|def| def.icon.clone()),
+            style,
             connector: Some("via".to_owned()),
         }
     }
