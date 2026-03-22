@@ -296,19 +296,19 @@ async fn detect_custom_modules(input: &DetectInput<'_>) -> Vec<CustomModuleInfo>
     let mut slots: Vec<Option<CustomModuleInfo>> = vec![None; slot_count];
     let mut join_set = JoinSet::new();
 
-    let mut blocking = Vec::new();
+    let mut deferred = Vec::new();
     for (slot, def) in matching.iter().copied() {
         if should_detect_inline(input.speed, def) {
-            slots[slot] = input.facts.detect_module(def);
+            slots[slot] = input.facts.detect_module(def).await;
         } else {
-            blocking.push((slot, def.clone()));
+            deferred.push((slot, def.clone()));
         }
     }
 
-    if !blocking.is_empty() {
-        for (slot, def) in blocking {
+    if !deferred.is_empty() {
+        for (slot, def) in deferred {
             let facts = Arc::clone(&input.facts);
-            join_set.spawn_blocking(move || (slot, facts.detect_module(&def)));
+            join_set.spawn(async move { (slot, facts.detect_module(&def).await) });
         }
 
         let deadline = tokio::time::Instant::now() + input.timeout;

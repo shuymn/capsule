@@ -1,8 +1,10 @@
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    process::Command,
 };
+
+use regex_lite::Regex;
+use tokio::task::JoinSet;
 
 use super::{
     super::ModuleSpeed,
@@ -152,76 +154,84 @@ impl RequestFacts {
 
     /// Detects a module by resolving each source group independently
     /// and formatting with all resolved variables.
-    #[must_use]
-    pub(crate) fn detect_module(&self, def: &ResolvedModule) -> Option<CustomModuleInfo> {
+    pub(crate) async fn detect_module(&self, def: &ResolvedModule) -> Option<CustomModuleInfo> {
         let mut values = HashMap::new();
         for group in &def.source_groups {
-            if let Some(raw) = self.resolve_group(group) {
+            if let Some(raw) = self.resolve_group(group).await {
                 values.insert(group.name.as_str(), raw);
             }
         }
         format_module(def, &values)
     }
 
-    /// Resolves a source group using fast-first, slow-second semantics.
-    fn resolve_group(&self, group: &ResolvedSourceGroup) -> Option<String> {
-        for source in &group.sources {
-            if source.is_fast()
-                && let Some(raw) = self.resolve_source(source)
-            {
-                return Some(raw);
-            }
+    async fn resolve_group(&self, group: &ResolvedSourceGroup) -> Option<String> {
+        let fast_sources: Vec<&ResolvedSource> = group
+            .sources
+            .iter()
+            .filter(|source| source.is_fast())
+            .collect();
+        if let Some(raw) = self.resolve_sources(&fast_sources).await {
+            return Some(raw);
         }
 
-        for source in &group.sources {
-            if !source.is_fast()
-                && let Some(raw) = self.resolve_source(source)
-            {
-                return Some(raw);
+        let slow_sources: Vec<&ResolvedSource> = group
+            .sources
+            .iter()
+            .filter(|source| !source.is_fast())
+            .collect();
+        self.resolve_sources(&slow_sources).await
+    }
+
+    async fn resolve_sources(&self, sources: &[&ResolvedSource]) -> Option<String> {
+        match sources {
+            [] => None,
+            [source] => self.resolve_source(source).await,
+            _ => {
+                let mut join_set = JoinSet::new();
+                for source in sources {
+                    let cwd = self.cwd.clone();
+                    let env_vars = self.env_vars.clone();
+                    let path_env = self.command_path_env().map(ToOwned::to_owned);
+                    let source = (*source).clone();
+                    join_set.spawn(async move {
+                        resolve_source_owned(cwd, env_vars, path_env, source).await
+                    });
+                }
+
+                while let Some(joined) = join_set.join_next().await {
+                    if let Ok(Some(raw)) = joined {
+                        join_set.abort_all();
+                        return Some(raw);
+                    }
+                }
+
+                None
             }
         }
-
-        None
     }
 
     fn env_value(&self, name: &str) -> Option<&str> {
-        self.env_vars
-            .iter()
-            .find(|(key, _)| key == name)
-            .map(|(_, value)| value.as_str())
+        find_env_value(&self.env_vars, name)
     }
 
-    fn resolve_source(&self, source: &ResolvedSource) -> Option<String> {
+    async fn resolve_source(&self, source: &ResolvedSource) -> Option<String> {
         match source {
             ResolvedSource::Env { name, regex } => {
                 let value = self.env_value(name)?;
                 apply_regex(value, regex.as_ref())
             }
             ResolvedSource::File { path, regex } => {
-                let content = std::fs::read_to_string(self.cwd.join(path)).ok()?;
-                let trimmed = content.trim();
-                if trimmed.is_empty() || trimmed.contains('/') {
-                    return None;
-                }
-                apply_regex(trimmed, regex.as_ref())
+                let path = self.cwd.join(path);
+                let content = tokio::task::spawn_blocking(move || std::fs::read_to_string(path))
+                    .await
+                    .ok()?
+                    .ok()?;
+                validate_file_content(&content, regex.as_ref())
             }
             ResolvedSource::Command { args, regex } => {
-                let (program, cmd_args) = args.split_first()?;
-                let mut command = Command::new(program);
-                command.args(cmd_args).current_dir(&self.cwd);
-                if let Some(path_env) = self.command_path_env() {
-                    command.env("PATH", path_env);
-                }
-                let output = command.output().ok()?;
-                if !output.status.success() {
-                    return None;
-                }
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let trimmed = stdout.trim();
-                if trimmed.is_empty() {
-                    return None;
-                }
-                apply_regex(trimmed, regex.as_ref())
+                let path_env = self.command_path_env().map(ToOwned::to_owned);
+                resolve_command_source(self.cwd.clone(), path_env, args.clone(), regex.clone())
+                    .await
             }
         }
     }
@@ -251,8 +261,71 @@ pub fn required_env_var_names(modules: &[ResolvedModule]) -> Vec<String> {
     names
 }
 
+fn find_env_value<'a>(env_vars: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    env_vars
+        .iter()
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value.as_str())
+}
+
+fn validate_file_content(content: &str, regex: Option<&Regex>) -> Option<String> {
+    let trimmed = content.trim();
+    if trimmed.is_empty() || trimmed.contains('/') {
+        return None;
+    }
+    apply_regex(trimmed, regex)
+}
+
 fn push_unique(values: &mut Vec<String>, value: &str) {
     if !values.iter().any(|existing| existing == value) {
         values.push(value.to_owned());
+    }
+}
+
+async fn resolve_command_source(
+    cwd: PathBuf,
+    path_env: Option<String>,
+    args: Vec<String>,
+    regex: Option<Regex>,
+) -> Option<String> {
+    let (program, cmd_args) = args.split_first()?;
+    let mut command = tokio::process::Command::new(program);
+    command.kill_on_drop(true).args(cmd_args).current_dir(cwd);
+    if let Some(path_env) = path_env {
+        command.env("PATH", path_env);
+    }
+    let output = command.output().await.ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    apply_regex(trimmed, regex.as_ref())
+}
+
+async fn resolve_source_owned(
+    cwd: PathBuf,
+    env_vars: Vec<(String, String)>,
+    path_env: Option<String>,
+    source: ResolvedSource,
+) -> Option<String> {
+    match source {
+        ResolvedSource::Env { name, regex } => {
+            find_env_value(&env_vars, &name).and_then(|v| apply_regex(v, regex.as_ref()))
+        }
+        ResolvedSource::File { path, regex } => {
+            let content =
+                tokio::task::spawn_blocking(move || std::fs::read_to_string(cwd.join(path)))
+                    .await
+                    .ok()?
+                    .ok()?;
+            validate_file_content(&content, regex.as_ref())
+        }
+        ResolvedSource::Command { args, regex } => {
+            resolve_command_source(cwd, path_env, args, regex).await
+        }
     }
 }

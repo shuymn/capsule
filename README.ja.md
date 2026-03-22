@@ -124,7 +124,7 @@ icon = "🦀"
 connector = "via"
 style = { fg = "red" }
 
-# 同じ `name` のソースは env/file → command の順に試され、最初に解決したものが使われます。
+# ソースが複数ある場合は、非同期で解決して最初に成功した結果が使われます。
 [[module.source]]
 name = "version"
 env = "RUST_VERSION"

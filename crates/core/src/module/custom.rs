@@ -162,7 +162,10 @@ pub(crate) struct ModuleDependencyInputs {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::{
+        path::{Path, PathBuf},
+        time::Duration,
+    };
 
     use super::*;
     use crate::{
@@ -358,8 +361,8 @@ mod tests {
 
     // -- detect_modules -------------------------------------------------------
 
-    #[test]
-    fn test_detect_env_source() {
+    #[tokio::test]
+    async fn test_detect_env_source() {
         let defs = resolve_modules(&[ModuleDef {
             name: "aws".to_owned(),
             when: ModuleWhen {
@@ -381,15 +384,16 @@ mod tests {
         }]);
 
         let env_vars = vec![("AWS_PROFILE".to_owned(), "production".to_owned())];
-        let results = detect_modules(&defs, Path::new("/tmp"), &env_vars, None, ModuleSpeed::Fast);
+        let results =
+            detect_modules(&defs, Path::new("/tmp"), &env_vars, None, ModuleSpeed::Fast).await;
 
         let aws = results.iter().find(|r| r.name == "aws");
         assert!(aws.is_some(), "aws module should be detected");
         assert_eq!(aws.map(|a| a.value.as_str()), Some("production"));
     }
 
-    #[test]
-    fn test_detect_env_source_not_set() {
+    #[tokio::test]
+    async fn test_detect_env_source_not_set() {
         let defs = resolve_modules(&[ModuleDef {
             name: "aws".to_owned(),
             when: ModuleWhen {
@@ -410,15 +414,15 @@ mod tests {
             arbitration: None,
         }]);
 
-        let results = detect_modules(&defs, Path::new("/tmp"), &[], None, ModuleSpeed::Fast);
+        let results = detect_modules(&defs, Path::new("/tmp"), &[], None, ModuleSpeed::Fast).await;
         assert!(
             results.iter().all(|r| r.name != "aws"),
             "aws should not be detected without env var"
         );
     }
 
-    #[test]
-    fn test_detect_file_source() -> Result<(), Box<dyn std::error::Error>> {
+    #[tokio::test]
+    async fn test_detect_file_source() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         std::fs::write(dir.path().join(".tool-versions"), "erlang 26.0\n")?;
         std::fs::write(dir.path().join("rebar.config"), "")?;
@@ -443,15 +447,15 @@ mod tests {
             arbitration: None,
         }]);
 
-        let results = detect_modules(&defs, dir.path(), &[], None, ModuleSpeed::Fast);
+        let results = detect_modules(&defs, dir.path(), &[], None, ModuleSpeed::Fast).await;
         let erlang = results.iter().find(|r| r.name == "erlang");
         assert!(erlang.is_some(), "erlang module should be detected");
         assert_eq!(erlang.map(|e| e.value.as_str()), Some("v26.0"));
         Ok(())
     }
 
-    #[test]
-    fn test_detect_command_source() -> Result<(), Box<dyn std::error::Error>> {
+    #[tokio::test]
+    async fn test_detect_command_source() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         std::fs::write(dir.path().join("build.zig"), "")?;
 
@@ -475,15 +479,16 @@ mod tests {
             arbitration: None,
         }]);
 
-        let results = detect_modules(&defs, dir.path(), &[], None, ModuleSpeed::Slow);
+        let results = detect_modules(&defs, dir.path(), &[], None, ModuleSpeed::Slow).await;
         let m = results.iter().find(|r| r.name == "echo_ver");
         assert!(m.is_some(), "echo_ver should be detected");
         assert_eq!(m.map(|e| e.value.as_str()), Some("v1.2.3"));
         Ok(())
     }
 
-    #[test]
-    fn test_detect_fast_source_preferred_over_command() -> Result<(), Box<dyn std::error::Error>> {
+    #[tokio::test]
+    async fn test_detect_fast_source_preferred_over_command()
+    -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         std::fs::write(dir.path().join("marker"), "")?;
 
@@ -518,7 +523,7 @@ mod tests {
 
         let env_vars = vec![("MY_VERSION".to_owned(), "from-env".to_owned())];
         // Even though this is a slow module (has command), env source resolves first
-        let results = detect_modules(&defs, dir.path(), &env_vars, None, ModuleSpeed::Slow);
+        let results = detect_modules(&defs, dir.path(), &env_vars, None, ModuleSpeed::Slow).await;
         let m = results.iter().find(|r| r.name == "mixed");
         assert_eq!(
             m.map(|m| m.value.as_str()),
@@ -528,8 +533,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_detect_format_string() {
+    #[tokio::test]
+    async fn test_detect_format_string() {
         let defs = resolve_modules(&[ModuleDef {
             name: "test".to_owned(),
             when: ModuleWhen {
@@ -551,13 +556,14 @@ mod tests {
         }]);
 
         let env_vars = vec![("FOO".to_owned(), "1.0".to_owned())];
-        let results = detect_modules(&defs, Path::new("/tmp"), &env_vars, None, ModuleSpeed::Fast);
+        let results =
+            detect_modules(&defs, Path::new("/tmp"), &env_vars, None, ModuleSpeed::Fast).await;
         let m = results.iter().find(|r| r.name == "test");
         assert_eq!(m.map(|m| m.value.as_str()), Some("v1.0"));
     }
 
-    #[test]
-    fn test_detect_regex_on_env_source() {
+    #[tokio::test]
+    async fn test_detect_regex_on_env_source() {
         let defs = resolve_modules(&[ModuleDef {
             name: "test".to_owned(),
             when: ModuleWhen {
@@ -579,13 +585,14 @@ mod tests {
         }]);
 
         let env_vars = vec![("VERSION_STR".to_owned(), "v1.23.456-beta".to_owned())];
-        let results = detect_modules(&defs, Path::new("/tmp"), &env_vars, None, ModuleSpeed::Fast);
+        let results =
+            detect_modules(&defs, Path::new("/tmp"), &env_vars, None, ModuleSpeed::Fast).await;
         let m = results.iter().find(|r| r.name == "test");
         assert_eq!(m.map(|m| m.value.as_str()), Some("1.23"));
     }
 
-    #[test]
-    fn test_detect_when_files_not_present() -> Result<(), Box<dyn std::error::Error>> {
+    #[tokio::test]
+    async fn test_detect_when_files_not_present() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         // No marker file
         let defs = resolve_modules(&[ModuleDef {
@@ -609,7 +616,7 @@ mod tests {
         }]);
 
         let env_vars = vec![("FOO".to_owned(), "bar".to_owned())];
-        let results = detect_modules(&defs, dir.path(), &env_vars, None, ModuleSpeed::Fast);
+        let results = detect_modules(&defs, dir.path(), &env_vars, None, ModuleSpeed::Fast).await;
         assert!(
             results.is_empty(),
             "module should not trigger without marker file"
@@ -617,8 +624,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_detect_when_empty_always_triggers() {
+    #[tokio::test]
+    async fn test_detect_when_empty_always_triggers() {
         let defs = resolve_modules(&[ModuleDef {
             name: "always".to_owned(),
             when: ModuleWhen::default(), // empty when
@@ -637,12 +644,13 @@ mod tests {
         }]);
 
         let env_vars = vec![("FOO".to_owned(), "bar".to_owned())];
-        let results = detect_modules(&defs, Path::new("/tmp"), &env_vars, None, ModuleSpeed::Fast);
+        let results =
+            detect_modules(&defs, Path::new("/tmp"), &env_vars, None, ModuleSpeed::Fast).await;
         assert_eq!(results.len(), 1, "empty when should always trigger");
     }
 
-    #[test]
-    fn test_detect_command_failure_returns_none() -> Result<(), Box<dyn std::error::Error>> {
+    #[tokio::test]
+    async fn test_detect_command_failure_returns_none() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         std::fs::write(dir.path().join("marker"), "")?;
 
@@ -666,7 +674,7 @@ mod tests {
             arbitration: None,
         }]);
 
-        let results = detect_modules(&defs, dir.path(), &[], None, ModuleSpeed::Slow);
+        let results = detect_modules(&defs, dir.path(), &[], None, ModuleSpeed::Slow).await;
         assert!(
             results.is_empty(),
             "failing command should produce no output"
@@ -674,8 +682,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_detect_modules_same_group_keeps_lower_priority_user_module() {
+    #[tokio::test]
+    async fn test_detect_modules_same_group_keeps_lower_priority_user_module() {
         let defs = resolve_modules(&[
             ModuleDef {
                 name: "alpha".to_owned(),
@@ -715,7 +723,8 @@ mod tests {
             ("ALPHA_VERSION".to_owned(), "1.0.0".to_owned()),
             ("BETA_VERSION".to_owned(), "2.0.0".to_owned()),
         ];
-        let results = detect_modules(&defs, Path::new("/tmp"), &env_vars, None, ModuleSpeed::Fast);
+        let results =
+            detect_modules(&defs, Path::new("/tmp"), &env_vars, None, ModuleSpeed::Fast).await;
 
         assert_eq!(
             results.len(),
@@ -725,8 +734,8 @@ mod tests {
         assert_eq!(results[0].name, "beta");
     }
 
-    #[test]
-    fn test_detect_modules_same_group_equal_priority_keeps_earlier_definition() {
+    #[tokio::test]
+    async fn test_detect_modules_same_group_equal_priority_keeps_earlier_definition() {
         let defs = resolve_modules(&[
             ModuleDef {
                 name: "first".to_owned(),
@@ -766,7 +775,8 @@ mod tests {
             ("FIRST_VERSION".to_owned(), "1.0.0".to_owned()),
             ("SECOND_VERSION".to_owned(), "2.0.0".to_owned()),
         ];
-        let results = detect_modules(&defs, Path::new("/tmp"), &env_vars, None, ModuleSpeed::Fast);
+        let results =
+            detect_modules(&defs, Path::new("/tmp"), &env_vars, None, ModuleSpeed::Fast).await;
 
         assert_eq!(
             results.len(),
@@ -776,8 +786,8 @@ mod tests {
         assert_eq!(results[0].name, "first");
     }
 
-    #[test]
-    fn test_detect_modules_without_arbitration_are_unaffected() {
+    #[tokio::test]
+    async fn test_detect_modules_without_arbitration_are_unaffected() {
         let defs = resolve_modules(&[
             ModuleDef {
                 name: "winner".to_owned(),
@@ -817,7 +827,8 @@ mod tests {
             ("WINNER_VERSION".to_owned(), "1.0.0".to_owned()),
             ("PLAIN_VERSION".to_owned(), "2.0.0".to_owned()),
         ];
-        let results = detect_modules(&defs, Path::new("/tmp"), &env_vars, None, ModuleSpeed::Fast);
+        let results =
+            detect_modules(&defs, Path::new("/tmp"), &env_vars, None, ModuleSpeed::Fast).await;
 
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].name, "winner");
@@ -893,8 +904,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_request_facts_detect_module_uses_forwarded_path()
+    #[tokio::test]
+    async fn test_request_facts_detect_module_uses_forwarded_path()
     -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         std::fs::write(dir.path().join("marker"), "")?;
@@ -944,7 +955,7 @@ mod tests {
         )
         .with_forwarded_path_env();
 
-        let detected = facts.detect_module(module);
+        let detected = facts.detect_module(module).await;
         assert_eq!(
             detected.as_ref().map(|info| info.value.as_str()),
             Some("forwarded")
@@ -952,8 +963,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_detect_modules_does_not_treat_forwarded_path_env_as_override()
+    #[tokio::test]
+    async fn test_detect_modules_does_not_treat_forwarded_path_env_as_override()
     -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         std::fs::write(dir.path().join("marker"), "")?;
@@ -999,7 +1010,8 @@ mod tests {
             )],
             None,
             ModuleSpeed::Slow,
-        );
+        )
+        .await;
         assert!(
             results.is_empty(),
             "PATH in env_vars alone must not change detect_modules command lookup"
@@ -1007,8 +1019,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_detect_empty_env_var_value() {
+    #[tokio::test]
+    async fn test_detect_empty_env_var_value() {
         let defs = resolve_modules(&[ModuleDef {
             name: "empty_env".to_owned(),
             when: ModuleWhen {
@@ -1030,7 +1042,8 @@ mod tests {
         }]);
 
         let env_vars = vec![("EMPTY_VAR".to_owned(), String::new())];
-        let results = detect_modules(&defs, Path::new("/tmp"), &env_vars, None, ModuleSpeed::Fast);
+        let results =
+            detect_modules(&defs, Path::new("/tmp"), &env_vars, None, ModuleSpeed::Fast).await;
         let m = results.iter().find(|r| r.name == "empty_env");
         assert!(
             m.is_some(),
@@ -1039,8 +1052,8 @@ mod tests {
         assert_eq!(m.map(|m| m.value.as_str()), Some(""));
     }
 
-    #[test]
-    fn test_detect_empty_file_content_filtered() -> Result<(), Box<dyn std::error::Error>> {
+    #[tokio::test]
+    async fn test_detect_empty_file_content_filtered() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         std::fs::write(dir.path().join("marker"), "")?;
         std::fs::write(dir.path().join(".version"), "")?;
@@ -1065,7 +1078,7 @@ mod tests {
             arbitration: None,
         }]);
 
-        let results = detect_modules(&defs, dir.path(), &[], None, ModuleSpeed::Fast);
+        let results = detect_modules(&defs, dir.path(), &[], None, ModuleSpeed::Fast).await;
         assert!(
             results.iter().all(|r| r.name != "empty_file"),
             "empty file content must not produce a detection"
@@ -1073,8 +1086,9 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_detect_file_source_path_traversal_rejected() -> Result<(), Box<dyn std::error::Error>> {
+    #[tokio::test]
+    async fn test_detect_file_source_path_traversal_rejected()
+    -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let sub = dir.path().join("sub");
         std::fs::create_dir(&sub)?;
@@ -1101,7 +1115,7 @@ mod tests {
             arbitration: None,
         }]);
 
-        let results = detect_modules(&defs, &sub, &[], None, ModuleSpeed::Fast);
+        let results = detect_modules(&defs, &sub, &[], None, ModuleSpeed::Fast).await;
         assert!(
             results.iter().all(|r| r.name != "traversal"),
             "file source with path traversal ('..') must be rejected"
@@ -1109,8 +1123,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_detect_format_no_recursive_expansion() {
+    #[tokio::test]
+    async fn test_detect_format_no_recursive_expansion() {
         let defs = resolve_modules(&[ModuleDef {
             name: "format_inject".to_owned(),
             when: ModuleWhen::default(),
@@ -1129,7 +1143,8 @@ mod tests {
         }]);
 
         let env_vars = vec![("INJECT_VAR".to_owned(), "{value}".to_owned())];
-        let results = detect_modules(&defs, Path::new("/tmp"), &env_vars, None, ModuleSpeed::Fast);
+        let results =
+            detect_modules(&defs, Path::new("/tmp"), &env_vars, None, ModuleSpeed::Fast).await;
         let m = results.iter().find(|r| r.name == "format_inject");
         assert_eq!(
             m.map(|m| m.value.as_str()),
@@ -1138,8 +1153,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_detect_command_no_shell_injection() -> Result<(), Box<dyn std::error::Error>> {
+    #[tokio::test]
+    async fn test_detect_command_no_shell_injection() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         std::fs::write(dir.path().join("marker"), "")?;
         let sentinel = dir.path().join("pwned");
@@ -1167,7 +1182,7 @@ mod tests {
             arbitration: None,
         }]);
 
-        let _results = detect_modules(&defs, dir.path(), &[], None, ModuleSpeed::Slow);
+        let _results = detect_modules(&defs, dir.path(), &[], None, ModuleSpeed::Slow).await;
         assert!(
             !sentinel.exists(),
             "shell metacharacters in command args must not be interpreted"
@@ -1175,8 +1190,111 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_detect_concurrent_no_corruption() -> Result<(), Box<dyn std::error::Error>> {
+    #[tokio::test]
+    async fn test_detect_module_uses_first_completed_command_source()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("marker"), "")?;
+
+        let defs = resolve_modules(&[ModuleDef {
+            name: "runtime".to_owned(),
+            when: ModuleWhen {
+                files: vec!["marker".to_owned()],
+                env: vec![],
+            },
+            source: vec![
+                SourceDef {
+                    name: "value".to_owned(),
+                    env: None,
+                    file: None,
+                    command: Some(vec![
+                        "/bin/sh".to_owned(),
+                        "-c".to_owned(),
+                        "sleep 0.3; echo slow".to_owned(),
+                    ]),
+                    regex: None,
+                },
+                SourceDef {
+                    name: "value".to_owned(),
+                    env: None,
+                    file: None,
+                    command: Some(vec![
+                        "/bin/sh".to_owned(),
+                        "-c".to_owned(),
+                        "sleep 0.05; echo fast".to_owned(),
+                    ]),
+                    regex: None,
+                },
+            ],
+            format: "{value}".to_owned(),
+            icon: None,
+            style: StyleConfig::default(),
+            connector: None,
+            arbitration: None,
+        }]);
+        let module = defs.iter().find(|resolved| resolved.name == "runtime");
+        let Some(module) = module else {
+            return Err("runtime module missing".into());
+        };
+
+        let facts = RequestFacts::collect(dir.path().to_path_buf(), vec![]);
+        let started = tokio::time::Instant::now();
+        let detected = facts.detect_module(module).await;
+
+        assert_eq!(
+            detected.as_ref().map(|info| info.value.as_str()),
+            Some("fast")
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(200),
+            "async command resolution must not wait for slower fallbacks once a winner exists"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_detect_module_resolves_fast_file_source() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("marker"), "")?;
+        std::fs::write(dir.path().join(".runtime-version"), "2.3.4\n")?;
+
+        let defs = resolve_modules(&[ModuleDef {
+            name: "runtime".to_owned(),
+            when: ModuleWhen {
+                files: vec!["marker".to_owned()],
+                env: vec![],
+            },
+            source: vec![SourceDef {
+                name: "value".to_owned(),
+                env: None,
+                file: Some(".runtime-version".to_owned()),
+                command: None,
+                regex: None,
+            }],
+            format: "v{value}".to_owned(),
+            icon: None,
+            style: StyleConfig::default(),
+            connector: None,
+            arbitration: None,
+        }]);
+        let module = defs.iter().find(|resolved| resolved.name == "runtime");
+        let Some(module) = module else {
+            return Err("runtime module missing".into());
+        };
+
+        let facts = RequestFacts::collect(dir.path().to_path_buf(), vec![]);
+        let detected = facts.detect_module(module).await;
+
+        assert_eq!(
+            detected.as_ref().map(|info| info.value.as_str()),
+            Some("v2.3.4")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_detect_concurrent_no_corruption() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         std::fs::write(dir.path().join("marker"), "")?;
         std::fs::write(dir.path().join(".version"), "1.0.0\n")?;
@@ -1208,21 +1326,19 @@ mod tests {
         for _ in 0..8 {
             let defs = std::sync::Arc::clone(&defs);
             let path = dir_path.clone();
-            handles.push(std::thread::spawn(move || {
-                detect_modules(&defs, &path, &[], None, ModuleSpeed::Fast)
+            handles.push(tokio::task::spawn(async move {
+                detect_modules(&defs, &path, &[], None, ModuleSpeed::Fast).await
             }));
         }
 
         for handle in handles {
-            let results = handle
-                .join()
-                .map_err(|panic_payload| format!("thread panicked: {panic_payload:?}"))?;
+            let results = handle.await?;
             let m = results.iter().find(|r| r.name == "concurrent");
-            assert!(m.is_some(), "each thread must detect the module");
+            assert!(m.is_some(), "each task must detect the module");
             assert_eq!(
                 m.map(|m| m.value.as_str()),
                 Some("v1.0.0"),
-                "value must be consistent across threads"
+                "value must be consistent across tasks"
             );
         }
         Ok(())
