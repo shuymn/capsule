@@ -1,3 +1,7 @@
 [workspace]
 publish = false
 git_release_enable = false
+
+[[package]]
+name = "capsule-cli"
+git_tag_name = "v{{ version }}"
