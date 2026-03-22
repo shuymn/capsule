@@ -28,7 +28,7 @@ fn main() -> anyhow::Result<()> {
                 #[cfg(target_os = "macos")]
                 let sm = daemon::Launchd::new(&socket_path)?;
                 #[cfg(target_os = "linux")]
-                let sm = daemon::Systemd::new(&socket_path)?;
+                let sm = daemon::Systemd::new(&socket_path);
                 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
                 anyhow::bail!("service management is not supported on this platform");
 

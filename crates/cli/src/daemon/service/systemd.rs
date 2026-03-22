@@ -1,6 +1,9 @@
 //! Linux systemd service manager.
 
-use std::path::{Path, PathBuf};
+use std::{
+    fmt::Write as _,
+    path::{Path, PathBuf},
+};
 
 use anyhow::Context as _;
 
@@ -13,10 +16,10 @@ pub struct Systemd {
 
 impl Systemd {
     /// Create a new [`Systemd`] service manager.
-    pub fn new(socket_path: &Path) -> anyhow::Result<Self> {
-        Ok(Self {
+    pub fn new(socket_path: &Path) -> Self {
+        Self {
             socket_path: socket_path.to_path_buf(),
-        })
+        }
     }
 }
 
@@ -116,10 +119,10 @@ fn systemctl(args: &[&str]) -> anyhow::Result<()> {
 
 /// Generate the `.service` unit file content.
 fn generate_service_unit(capsule_bin: &Path, forwarded_env: &[(&str, String)]) -> String {
-    let env_lines: String = forwarded_env
-        .iter()
-        .map(|(key, value)| format!("Environment={key}={value}\n"))
-        .collect();
+    let mut env_lines = String::new();
+    for (key, value) in forwarded_env {
+        let _ = writeln!(env_lines, "Environment={key}={value}");
+    }
 
     format!(
         "[Unit]\n\

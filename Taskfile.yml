@@ -128,3 +128,35 @@ tasks:
     cmds:
       - task: build:release
       - cargo run -p capsule-prompt-bench --bin prompt-bench --release -- --capsule-bin target/release/capsule
+
+  docker:linux:build:
+    desc: Build the Linux CI Docker image
+    summary: |
+      Builds the helper image used to run Linux CI-equivalent checks locally.
+      Uses buildx with BuildKit caching for faster rebuilds.
+      Override the image name with CAPSULE_LINUX_CI_IMAGE.
+    cmds:
+      - docker buildx build --load --file docker/linux-ci.Dockerfile --tag ${CAPSULE_LINUX_CI_IMAGE:-capsule-linux-ci} .
+
+  docker:linux:lint:
+    desc: Run Linux lint checks in Docker
+    summary: |
+      Runs the same lint path as ubuntu-latest CI inside a Linux container.
+      The workspace is bind-mounted; build artifacts are written with the current UID/GID.
+    deps:
+      - task: docker:linux:build
+        silent: true
+    cmds:
+      - docker run --rm -it --user $(id -u):$(id -g) --env CARGO_HOME=/tmp/cargo --env RUSTUP_HOME=/tmp/rustup --volume ${PWD}:/workspace --workdir /workspace ${CAPSULE_LINUX_CI_IMAGE:-capsule-linux-ci} sh -c 'task lint'
+
+  docker:linux:check:
+    desc: Run full Linux verification in Docker
+    summary: |
+      Runs CI-equivalent verification inside a Linux container for local parity.
+      This task intentionally skips lefthook installation and invokes the underlying checks directly.
+      The workspace is bind-mounted; build artifacts are written with the current UID/GID.
+    deps:
+      - task: docker:linux:build
+        silent: true
+    cmds:
+      - docker run --rm -it --user $(id -u):$(id -g) --env CARGO_HOME=/tmp/cargo --env RUSTUP_HOME=/tmp/rustup --volume ${PWD}:/workspace --workdir /workspace ${CAPSULE_LINUX_CI_IMAGE:-capsule-linux-ci} sh -c 'task fmt:check && task lint && task test && task doc && task build'

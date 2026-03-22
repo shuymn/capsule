@@ -2,8 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
+#[cfg(target_os = "macos")]
 use anyhow::Context as _;
 
+#[cfg(target_os = "macos")]
 use super::ServiceManager;
 
 /// launchd service label.
@@ -13,11 +15,13 @@ const LAUNCHD_LABEL: &str = "com.github.shuymn.capsule";
 pub const LAUNCHD_SOCKET_NAME: &str = "Listeners";
 
 /// macOS launchd service manager.
+#[cfg(target_os = "macos")]
 pub struct Launchd {
     uid: u32,
     socket_path: PathBuf,
 }
 
+#[cfg(target_os = "macos")]
 impl Launchd {
     /// Create a new [`Launchd`] service manager.
     ///
@@ -75,6 +79,7 @@ impl Launchd {
     }
 }
 
+#[cfg(target_os = "macos")]
 impl ServiceManager for Launchd {
     fn install(&self, home: &Path, socket_path: &Path) -> anyhow::Result<()> {
         let capsule_bin = std::env::current_exe().context("cannot find capsule binary")?;

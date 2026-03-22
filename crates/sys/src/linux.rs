@@ -16,16 +16,16 @@ use std::os::unix::net::UnixListener;
 ///   validation.
 /// - The fd cannot be made non-blocking.
 pub fn systemd_activated_socket() -> Result<UnixListener, std::io::Error> {
-    let listen_pid = std::env::var("LISTEN_PID").map_err(|_| {
+    let listen_pid = std::env::var("LISTEN_PID").map_err(|error| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            "LISTEN_PID not set (not launched by systemd socket activation)",
+            format!("LISTEN_PID not set (not launched by systemd socket activation): {error}"),
         )
     })?;
-    let listen_fds = std::env::var("LISTEN_FDS").map_err(|_| {
+    let listen_fds = std::env::var("LISTEN_FDS").map_err(|error| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            "LISTEN_FDS not set (not launched by systemd socket activation)",
+            format!("LISTEN_FDS not set (not launched by systemd socket activation): {error}"),
         )
     })?;
 
@@ -58,15 +58,11 @@ pub fn systemd_activated_socket() -> Result<UnixListener, std::io::Error> {
 /// # Errors
 ///
 /// Returns a descriptive error string if validation fails.
-pub(crate) fn parse_listen_vars(
-    listen_pid: &str,
-    listen_fds: &str,
-    my_pid: u32,
-) -> Result<u32, String> {
+fn parse_listen_vars(listen_pid: &str, listen_fds: &str, my_pid: u32) -> Result<u32, String> {
     let pid: u32 = listen_pid
         .trim()
         .parse()
-        .map_err(|_| format!("LISTEN_PID is not a valid integer: {listen_pid:?}"))?;
+        .map_err(|error| format!("LISTEN_PID is not a valid integer: {listen_pid:?}: {error}"))?;
 
     if pid != my_pid {
         return Err(format!(
@@ -77,7 +73,7 @@ pub(crate) fn parse_listen_vars(
     let fds: u32 = listen_fds
         .trim()
         .parse()
-        .map_err(|_| format!("LISTEN_FDS is not a valid integer: {listen_fds:?}"))?;
+        .map_err(|error| format!("LISTEN_FDS is not a valid integer: {listen_fds:?}: {error}"))?;
 
     Ok(fds)
 }
