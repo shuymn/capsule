@@ -20,9 +20,20 @@ pub fn display_width(s: &str) -> usize {
         if ch == '\x1b' && chars.peek() == Some(&'[') {
             chars.next();
             skip_csi(&mut chars);
-        } else if ch == '%' && chars.peek() == Some(&'{') {
-            chars.next();
-            skip_zsh_escape(&mut chars);
+        } else if ch == '%' {
+            match chars.peek() {
+                Some(&'{') => {
+                    chars.next();
+                    skip_zsh_escape(&mut chars);
+                }
+                Some(&'%') => {
+                    chars.next(); // consume second '%'
+                    width += 1; // %% → 1 column in zsh
+                }
+                _ => {
+                    width += 1; // bare % (defensive fallback)
+                }
+            }
         } else {
             width += UnicodeWidthChar::width(ch).unwrap_or(0);
         }
@@ -63,13 +74,36 @@ pub fn truncate(s: &str, max_width: usize) -> String {
                 result.push(bracket);
             }
             copy_csi(&mut chars, &mut result);
-        } else if ch == '%' && chars.peek() == Some(&'{') {
-            has_escapes = true;
-            result.push(ch);
-            if let Some(brace) = chars.next() {
-                result.push(brace);
+        } else if ch == '%' {
+            match chars.peek() {
+                Some(&'{') => {
+                    has_escapes = true;
+                    result.push(ch);
+                    if let Some(brace) = chars.next() {
+                        result.push(brace);
+                    }
+                    copy_zsh_escape(&mut chars, &mut result);
+                }
+                Some(&'%') => {
+                    // %% displays as 1 column; keep the pair together.
+                    if width + 1 > effective_max {
+                        break;
+                    }
+                    width += 1;
+                    result.push(ch);
+                    if let Some(second) = chars.next() {
+                        result.push(second);
+                    }
+                }
+                _ => {
+                    // bare % (defensive fallback)
+                    if width + 1 > effective_max {
+                        break;
+                    }
+                    width += 1;
+                    result.push(ch);
+                }
             }
-            copy_zsh_escape(&mut chars, &mut result);
         } else {
             let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
             if width + char_width > effective_max {
@@ -250,5 +284,46 @@ mod tests {
         let result = truncate(styled, 6);
         assert_eq!(display_width(&result), 6);
         assert!(result.contains("%{\x1b[31m%}"));
+    }
+
+    // -- double-percent (%%) --
+
+    #[test]
+    fn test_render_width_double_percent() {
+        // %% displays as a single '%' in zsh PROMPT_PERCENT
+        assert_eq!(display_width("%%"), 1);
+        assert_eq!(display_width("100%%"), 4);
+    }
+
+    #[test]
+    fn test_render_width_multiple_double_percent() {
+        // '5'(1) + '0'(1) + '%%'(1) = 3
+        assert_eq!(display_width("50%%"), 3);
+    }
+
+    #[test]
+    fn test_render_truncate_double_percent_fits() {
+        assert_eq!(truncate("100%%", 4), "100%%"); // display width 4 == 4
+        assert_eq!(truncate("100%%", 5), "100%%");
+    }
+
+    #[test]
+    fn test_render_truncate_double_percent_truncated() {
+        let result = truncate("100%%", 3);
+        assert_eq!(display_width(&result), 3);
+        assert!(result.ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn test_render_truncate_double_percent_pair_not_split() {
+        let result = truncate("XY%%", 2);
+        assert_eq!(display_width(&result), 2);
+    }
+
+    #[test]
+    fn test_render_truncate_double_percent_preserved() {
+        // When %% survives truncation it stays as %%
+        assert_eq!(truncate("A%%B", 3), "A%%B"); // display width 3 == 3
+        assert_eq!(display_width("A%%B"), 3);
     }
 }

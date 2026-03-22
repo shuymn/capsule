@@ -105,27 +105,33 @@ impl Style {
 
     /// Apply ANSI styling to `text`, wrapping escape sequences in zsh `%{..%}`.
     ///
-    /// Returns `text` unchanged when no style attributes are set.
+    /// `%` characters in `text` are escaped to `%%` so that zsh `PROMPT_PERCENT`
+    /// does not interpret them as prompt sequences.
     #[must_use]
     pub fn paint(&self, text: &str) -> String {
         self.paint_with(text, ColorMap::default())
     }
 
     /// Apply ANSI styling using a caller-provided symbolic color mapping.
+    ///
+    /// `%` characters in `text` are escaped to `%%` so that zsh `PROMPT_PERCENT`
+    /// does not interpret them as prompt sequences.
     #[must_use]
     pub fn paint_with(&self, text: &str, color_map: ColorMap) -> String {
         use std::fmt::Write;
 
+        let escaped = escape_percent(text);
+
         if self.fg.is_none() && !self.bold && !self.dimmed {
-            return text.to_owned();
+            return escaped;
         }
 
-        let mut result = String::with_capacity(text.len() + 24);
+        let mut result = String::with_capacity(escaped.len() + 24);
         let style = self.to_anstyle(color_map);
         result.push_str("%{");
         let _ = write!(result, "{}", style.render());
         result.push_str("%}");
-        result.push_str(text);
+        result.push_str(&escaped);
         result.push_str("%{");
         let _ = write!(result, "{}", style.render_reset());
         result.push_str("%}");
@@ -206,6 +212,16 @@ where
 
 const fn is_valid_foreground_code(code: u16) -> bool {
     (code >= 30 && code <= 37) || (code >= 90 && code <= 97)
+}
+
+/// Escape `%` characters in `s` for zsh `PROMPT_PERCENT` expansion.
+///
+/// Every `%` becomes `%%` so zsh does not interpret it as a prompt sequence.
+fn escape_percent(s: &str) -> String {
+    if !s.contains('%') {
+        return s.to_owned();
+    }
+    s.replace('%', "%%")
 }
 
 #[cfg(test)]
@@ -302,5 +318,38 @@ mod tests {
             contains_style_sequence(&painted, &[1, 94]),
             "should contain remapped blue ANSI code: {painted}"
         );
+    }
+
+    #[test]
+    fn test_paint_no_style_escapes_percent() {
+        let style = Style::new();
+        assert_eq!(style.paint("100%B"), "100%%B");
+    }
+
+    #[test]
+    fn test_paint_no_style_multiple_percents() {
+        let style = Style::new();
+        assert_eq!(style.paint("50%+50%=100%"), "50%%+50%%=100%%");
+    }
+
+    #[test]
+    fn test_paint_styled_escapes_percent() {
+        let style = Style::new().fg(Color::Red);
+        let painted = style.paint("100%B");
+        assert!(
+            painted.contains("100%%B"),
+            "% should be escaped to %%: {painted}"
+        );
+        assert_eq!(
+            display_width(&painted),
+            5,
+            "display width of '100%B' should be 5: {painted}"
+        );
+    }
+
+    #[test]
+    fn test_paint_no_percent_unchanged() {
+        let style = Style::new();
+        assert_eq!(style.paint("hello"), "hello");
     }
 }
