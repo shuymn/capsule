@@ -50,11 +50,21 @@ pub struct StyleConfig {
 }
 
 impl StyleConfig {
-    /// Returns a `StyleConfig` with only bold enabled.
+    /// Returns a `StyleConfig` with only foreground color set.
     #[must_use]
-    pub const fn bold() -> Self {
+    pub const fn fg(color: Color) -> Self {
         Self {
-            fg: None,
+            fg: Some(color),
+            bold: None,
+            dimmed: None,
+        }
+    }
+
+    /// Returns a `StyleConfig` with foreground color and bold enabled.
+    #[must_use]
+    pub const fn fg_bold(color: Color) -> Self {
+        Self {
+            fg: Some(color),
             bold: Some(true),
             dimmed: None,
         }
@@ -99,16 +109,8 @@ impl Default for CharacterConfig {
         Self {
             disabled: false,
             glyph: "\u{276f}".to_owned(),
-            success_style: StyleConfig {
-                fg: Some(Color::Green),
-                bold: None,
-                dimmed: None,
-            },
-            error_style: StyleConfig {
-                fg: Some(Color::Red),
-                bold: None,
-                dimmed: None,
-            },
+            success_style: StyleConfig::fg(Color::Green),
+            error_style: StyleConfig::fg(Color::Red),
         }
     }
 }
@@ -157,16 +159,8 @@ impl Default for DirectoryConfig {
     fn default() -> Self {
         Self {
             disabled: false,
-            style: StyleConfig {
-                fg: Some(Color::Cyan),
-                bold: Some(true),
-                dimmed: None,
-            },
-            read_only_style: StyleConfig {
-                fg: Some(Color::Red),
-                bold: None,
-                dimmed: None,
-            },
+            style: StyleConfig::fg_bold(Color::Cyan),
+            read_only_style: StyleConfig::fg(Color::Red),
         }
     }
 }
@@ -237,21 +231,9 @@ impl Default for GitConfig {
             disabled: false,
             icon: "\u{f418}".to_owned(),
             connector: "on".to_owned(),
-            style: StyleConfig {
-                fg: Some(Color::Magenta),
-                bold: Some(true),
-                dimmed: None,
-            },
-            indicator_style: StyleConfig {
-                fg: Some(Color::Red),
-                bold: Some(true),
-                dimmed: None,
-            },
-            detached_hash_style: StyleConfig {
-                fg: Some(Color::Green),
-                bold: Some(true),
-                dimmed: None,
-            },
+            style: StyleConfig::fg_bold(Color::Magenta),
+            indicator_style: StyleConfig::fg_bold(Color::Red),
+            detached_hash_style: StyleConfig::fg_bold(Color::Green),
         }
     }
 }
@@ -346,11 +328,7 @@ impl Default for TimeConfig {
             disabled: false,
             format: TimeFormat::WithSeconds,
             connector: "at".to_owned(),
-            style: StyleConfig {
-                fg: Some(Color::Yellow),
-                bold: Some(true),
-                dimmed: None,
-            },
+            style: StyleConfig::fg_bold(Color::Yellow),
         }
     }
 }
@@ -402,11 +380,7 @@ impl Default for CmdDurationConfig {
             disabled: false,
             threshold_ms: 2000,
             connector: "took".to_owned(),
-            style: StyleConfig {
-                fg: Some(Color::Yellow),
-                bold: Some(true),
-                dimmed: None,
-            },
+            style: StyleConfig::fg_bold(Color::Yellow),
         }
     }
 }

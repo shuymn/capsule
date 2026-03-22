@@ -212,11 +212,7 @@ mod tests {
             }],
             format: "{value}".to_owned(),
             icon: None,
-            style: StyleConfig {
-                fg: Some(Color::Yellow),
-                bold: None,
-                dimmed: None,
-            },
+            style: StyleConfig::fg(Color::Yellow),
             connector: None,
             arbitration: None,
         }];
@@ -243,11 +239,7 @@ mod tests {
             }],
             format: "{value}".to_owned(),
             icon: Some("R".to_owned()),
-            style: StyleConfig {
-                fg: Some(Color::Blue),
-                bold: None,
-                dimmed: None,
-            },
+            style: StyleConfig::fg(Color::Blue),
             connector: None,
             arbitration: None,
         }];
@@ -275,11 +267,7 @@ mod tests {
             }],
             format: "v{value}".to_owned(),
             icon: Some("Z".to_owned()),
-            style: StyleConfig {
-                fg: Some(Color::Yellow),
-                bold: None,
-                dimmed: None,
-            },
+            style: StyleConfig::fg(Color::Yellow),
             connector: Some("via".to_owned()),
             arbitration: None,
         }];
@@ -412,11 +400,7 @@ mod tests {
             }],
             format: "{value}".to_owned(),
             icon: None,
-            style: StyleConfig {
-                fg: Some(Color::Yellow),
-                bold: None,
-                dimmed: None,
-            },
+            style: StyleConfig::fg(Color::Yellow),
             connector: None,
             arbitration: None,
         }]);

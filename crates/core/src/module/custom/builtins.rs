@@ -7,14 +7,6 @@ pub(super) const JS_RUNTIME_ARBITRATION_GROUP: &str = "node.js";
 pub(super) const BUN_ARBITRATION_PRIORITY: u32 = 10;
 pub(super) const NODE_ARBITRATION_PRIORITY: u32 = 20;
 
-const fn fg(color: Color) -> StyleConfig {
-    StyleConfig {
-        fg: Some(color),
-        bold: None,
-        dimmed: None,
-    }
-}
-
 /// Returns the built-in toolchain definitions as [`ModuleDef`]s.
 #[must_use]
 pub(super) fn builtin_module_defs() -> Vec<ModuleDef> {
@@ -33,7 +25,7 @@ pub(super) fn builtin_module_defs() -> Vec<ModuleDef> {
             }],
             format: "v{value}".to_owned(),
             icon: Some("\u{f1617}".to_owned()),
-            style: fg(Color::Red),
+            style: StyleConfig::fg(Color::Red),
             connector: Some("via".to_owned()),
             arbitration: None,
         },
@@ -63,7 +55,7 @@ pub(super) fn builtin_module_defs() -> Vec<ModuleDef> {
             ],
             format: "v{value}".to_owned(),
             icon: Some("\u{e76f}".to_owned()),
-            style: fg(Color::Red),
+            style: StyleConfig::fg(Color::Red),
             connector: Some("via".to_owned()),
             arbitration: Some(Arbitration {
                 group: JS_RUNTIME_ARBITRATION_GROUP.to_owned(),
@@ -92,7 +84,7 @@ pub(super) fn builtin_module_defs() -> Vec<ModuleDef> {
             ],
             format: "v{value}".to_owned(),
             icon: Some("\u{e718}".to_owned()),
-            style: fg(Color::Green),
+            style: StyleConfig::fg(Color::Green),
             connector: Some("via".to_owned()),
             arbitration: Some(Arbitration {
                 group: JS_RUNTIME_ARBITRATION_GROUP.to_owned(),
@@ -113,7 +105,7 @@ pub(super) fn builtin_module_defs() -> Vec<ModuleDef> {
             }],
             format: "v{value}".to_owned(),
             icon: Some("\u{e627}".to_owned()),
-            style: fg(Color::Cyan),
+            style: StyleConfig::fg(Color::Cyan),
             connector: Some("via".to_owned()),
             arbitration: None,
         },
@@ -131,7 +123,7 @@ pub(super) fn builtin_module_defs() -> Vec<ModuleDef> {
             }],
             format: "v{value}".to_owned(),
             icon: Some("\u{e235}".to_owned()),
-            style: fg(Color::Yellow),
+            style: StyleConfig::fg(Color::Yellow),
             connector: Some("via".to_owned()),
             arbitration: None,
         },
@@ -151,7 +143,7 @@ pub(super) fn builtin_module_defs() -> Vec<ModuleDef> {
             }],
             format: "v{value}".to_owned(),
             icon: Some("\u{e791}".to_owned()),
-            style: fg(Color::Red),
+            style: StyleConfig::fg(Color::Red),
             connector: Some("via".to_owned()),
             arbitration: None,
         },
