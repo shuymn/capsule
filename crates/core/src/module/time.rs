@@ -7,7 +7,6 @@ use crate::sealed;
 #[derive(Debug)]
 #[allow(clippy::module_name_repetitions)]
 pub struct TimeModule {
-    time_fn: fn() -> Option<(u8, u8, u8)>,
     show_seconds: bool,
 }
 
@@ -20,36 +19,14 @@ impl Default for TimeModule {
 impl TimeModule {
     /// Creates a new `TimeModule` using the system clock (default `HH:MM:SS`).
     #[must_use]
-    pub fn new() -> Self {
-        Self {
-            time_fn: system_local_time,
-            show_seconds: true,
-        }
+    pub const fn new() -> Self {
+        Self { show_seconds: true }
     }
 
     /// Creates a new `TimeModule` with configurable seconds display.
     #[must_use]
-    pub fn with_show_seconds(show_seconds: bool) -> Self {
-        Self {
-            time_fn: system_local_time,
-            show_seconds,
-        }
-    }
-
-    #[cfg(test)]
-    fn with_time_fn(time_fn: fn() -> Option<(u8, u8, u8)>) -> Self {
-        Self {
-            time_fn,
-            show_seconds: true,
-        }
-    }
-
-    #[cfg(test)]
-    fn with_time_fn_and_format(time_fn: fn() -> Option<(u8, u8, u8)>, show_seconds: bool) -> Self {
-        Self {
-            time_fn,
-            show_seconds,
-        }
+    pub const fn with_show_seconds(show_seconds: bool) -> Self {
+        Self { show_seconds }
     }
 }
 
@@ -65,14 +42,23 @@ impl Module for TimeModule {
     }
 
     fn render(&self, _ctx: &RenderContext<'_>) -> Option<ModuleOutput> {
-        let (hour, minute, second) = (self.time_fn)()?;
-        let content = if self.show_seconds {
-            format!("{hour:02}:{minute:02}:{second:02}")
-        } else {
-            format!("{hour:02}:{minute:02}")
-        };
-        Some(ModuleOutput { content })
+        render_time(system_local_time(), self.show_seconds)
     }
+}
+
+fn format_time(hour: u8, minute: u8, second: u8, show_seconds: bool) -> String {
+    if show_seconds {
+        format!("{hour:02}:{minute:02}:{second:02}")
+    } else {
+        format!("{hour:02}:{minute:02}")
+    }
+}
+
+fn render_time(time: Option<(u8, u8, u8)>, show_seconds: bool) -> Option<ModuleOutput> {
+    let (hour, minute, second) = time?;
+    Some(ModuleOutput {
+        content: format_time(hour, minute, second, show_seconds),
+    })
 }
 
 fn system_local_time() -> Option<(u8, u8, u8)> {
@@ -82,64 +68,32 @@ fn system_local_time() -> Option<(u8, u8, u8)> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
 
-    fn make_ctx() -> RenderContext<'static> {
-        RenderContext {
-            cwd: Path::new("/tmp"),
-            home_dir: Path::new("/Users/testuser"),
-            last_exit_code: 0,
-            duration_ms: None,
-            keymap: "main",
-            cols: 80,
-        }
+    #[test]
+    fn test_format_time_with_seconds() {
+        assert_eq!(format_time(14, 5, 9, true), "14:05:09");
     }
 
     #[test]
-    #[allow(clippy::unnecessary_wraps)]
-    fn test_module_formats_time() {
-        fn fixed() -> Option<(u8, u8, u8)> {
-            Some((14, 5, 9))
-        }
-        let module = TimeModule::with_time_fn(fixed);
-        let ctx = make_ctx();
-        let output = module.render(&ctx);
+    fn test_format_time_without_seconds() {
+        assert_eq!(format_time(14, 5, 9, false), "14:05");
+    }
+
+    #[test]
+    fn test_render_time_returns_none_for_unavailable_time() {
+        assert!(render_time(None, true).is_none());
+    }
+
+    #[test]
+    fn test_render_time_formats_with_seconds() {
+        let output = render_time(Some((14, 5, 9)), true);
         assert_eq!(output.map(|o| o.content), Some("14:05:09".to_owned()));
     }
 
     #[test]
-    #[allow(clippy::unnecessary_wraps)]
-    fn test_module_midnight() {
-        fn midnight() -> Option<(u8, u8, u8)> {
-            Some((0, 0, 0))
-        }
-        let module = TimeModule::with_time_fn(midnight);
-        let ctx = make_ctx();
-        let output = module.render(&ctx);
-        assert_eq!(output.map(|o| o.content), Some("00:00:00".to_owned()));
-    }
-
-    #[test]
-    fn test_module_time_unavailable_returns_none() {
-        fn unavailable() -> Option<(u8, u8, u8)> {
-            None
-        }
-        let module = TimeModule::with_time_fn(unavailable);
-        let ctx = make_ctx();
-        assert!(module.render(&ctx).is_none());
-    }
-
-    #[test]
-    #[allow(clippy::unnecessary_wraps)]
-    fn test_module_formats_time_without_seconds() {
-        fn fixed() -> Option<(u8, u8, u8)> {
-            Some((14, 5, 9))
-        }
-        let module = TimeModule::with_time_fn_and_format(fixed, false);
-        let ctx = make_ctx();
-        let output = module.render(&ctx);
+    fn test_render_time_formats_without_seconds() {
+        let output = render_time(Some((14, 5, 9)), false);
         assert_eq!(output.map(|o| o.content), Some("14:05".to_owned()));
     }
 }
