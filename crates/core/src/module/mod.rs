@@ -22,7 +22,10 @@ pub use custom::{
 };
 pub(crate) use custom::{DetectedModuleCandidate, RequestFacts, arbitrate_detected_modules};
 pub use directory::DirectoryModule;
-pub use git::{CommandGitProvider, GitError, GitModule, GitProvider, GitStatus};
+pub use git::{
+    CommandGitProvider, GitError, GitModule, GitOperationState, GitProvider, GitState, GitStatus,
+    GitStyles,
+};
 pub use status::StatusModule;
 pub use time::TimeModule;
 

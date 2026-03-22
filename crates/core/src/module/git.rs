@@ -1,6 +1,9 @@
 //! Git module — displays git branch and working tree status.
 
-use std::{path::Path, process::Command};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use super::{Module, ModuleOutput, ModuleSpeed, RenderContext};
 use crate::{
@@ -14,6 +17,51 @@ pub enum GitError {
     /// Failed to execute the git command.
     #[error("failed to execute git command")]
     Command(#[source] std::io::Error),
+}
+
+/// Ongoing git operation kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display)]
+pub enum GitState {
+    /// Interactive or non-interactive rebase in progress.
+    #[strum(serialize = "REBASING")]
+    Rebase,
+    /// Applying patches via `git am`.
+    #[strum(serialize = "AM")]
+    Am,
+    /// Merge in progress.
+    #[strum(serialize = "MERGING")]
+    Merge,
+    /// Cherry-pick in progress.
+    #[strum(serialize = "CHERRY-PICKING")]
+    CherryPick,
+    /// Revert in progress.
+    #[strum(serialize = "REVERTING")]
+    Revert,
+    /// Bisect session in progress.
+    #[strum(serialize = "BISECTING")]
+    Bisect,
+}
+
+/// Detected in-progress git operation with optional step progress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GitOperationState {
+    /// The kind of operation.
+    pub state: GitState,
+    /// Current step (1-based), if applicable (rebase / am).
+    pub step: Option<usize>,
+    /// Total steps, if applicable (rebase / am).
+    pub total: Option<usize>,
+}
+
+impl GitOperationState {
+    /// Create an operation state with no step progress.
+    const fn without_progress(state: GitState) -> Self {
+        Self {
+            state,
+            step: None,
+            total: None,
+        }
+    }
 }
 
 /// Git repository status information.
@@ -41,6 +89,8 @@ pub struct GitStatus {
     pub ahead: usize,
     /// Commits behind upstream.
     pub behind: usize,
+    /// Ongoing git operation (rebase, merge, etc.), if any.
+    pub state: Option<GitOperationState>,
 }
 
 /// Provides git repository information.
@@ -82,7 +132,41 @@ impl GitProvider for CommandGitProvider {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        Ok(Some(parse_porcelain_v2(&stdout)))
+        let mut status = parse_porcelain_v2(&stdout);
+
+        // Detect in-progress operations via filesystem sentinel files.
+        if let Some(git_dir) = find_git_dir(cwd) {
+            status.state = detect_git_state(&git_dir);
+        }
+
+        Ok(Some(status))
+    }
+}
+
+/// Bundled style configuration for git output rendering.
+#[derive(Debug, Clone, Copy)]
+pub struct GitStyles {
+    /// Style for the branch name and icon.
+    pub branch: Style,
+    /// Style for `(hash)` in detached `HEAD (hash)`.
+    pub detached_hash: Style,
+    /// Style for status indicators (e.g., `[!+]`).
+    pub indicator: Style,
+    /// Style for operation state labels (e.g., `(REBASING 2/5)`).
+    pub state: Style,
+    /// ANSI color code overrides.
+    pub color_map: ColorMap,
+}
+
+impl Default for GitStyles {
+    fn default() -> Self {
+        Self {
+            branch: Style::new().fg(Color::Magenta).bold(),
+            detached_hash: Style::new().fg(Color::Green).dimmed(),
+            indicator: Style::new().fg(Color::Red).bold(),
+            state: Style::new().fg(Color::Yellow).bold(),
+            color_map: ColorMap::default(),
+        }
     }
 }
 
@@ -93,39 +177,21 @@ impl GitProvider for CommandGitProvider {
 #[allow(clippy::module_name_repetitions)]
 pub struct GitModule<G> {
     provider: G,
-    style: Style,
-    detached_hash_style: Style,
-    indicator_style: Style,
-    color_map: ColorMap,
+    styles: GitStyles,
 }
 
 impl<G> GitModule<G> {
-    /// Creates a new `GitModule` with the given provider and default indicator color.
+    /// Creates a new `GitModule` with the given provider and default styles.
     pub fn new(provider: G) -> Self {
         Self {
             provider,
-            style: Style::new().fg(Color::Magenta).bold(),
-            detached_hash_style: Style::new().fg(Color::Green).dimmed(),
-            indicator_style: Style::new().fg(Color::Red).bold(),
-            color_map: ColorMap::default(),
+            styles: GitStyles::default(),
         }
     }
 
-    /// Creates a new `GitModule` with explicit styles and color mapping.
-    pub const fn with_styles(
-        provider: G,
-        style: Style,
-        detached_hash_style: Style,
-        indicator_style: Style,
-        color_map: ColorMap,
-    ) -> Self {
-        Self {
-            provider,
-            style,
-            detached_hash_style,
-            indicator_style,
-            color_map,
-        }
+    /// Creates a new `GitModule` with explicit styles.
+    pub const fn with_styles(provider: G, styles: GitStyles) -> Self {
+        Self { provider, styles }
     }
 }
 
@@ -143,13 +209,7 @@ impl<G: GitProvider> GitModule<G> {
                 return None;
             }
         };
-        let content = format_git_output(
-            &status,
-            self.style,
-            self.detached_hash_style,
-            self.indicator_style,
-            self.color_map,
-        );
+        let content = format_git_output(&status, &self.styles);
         if content.is_empty() {
             return None;
         }
@@ -171,6 +231,93 @@ impl<G: GitProvider> Module for GitModule<G> {
     fn render(&self, ctx: &RenderContext<'_>) -> Option<ModuleOutput> {
         self.render_for_cwd(ctx.cwd, None)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Git directory discovery and state detection
+// ---------------------------------------------------------------------------
+
+/// Find the `.git` directory for a repository containing `cwd`.
+///
+/// Walks up from `cwd` looking for a `.git` entry. If it is a regular
+/// directory, returns it directly. If it is a file (git worktree), reads
+/// the `gitdir:` pointer and resolves the path.
+fn find_git_dir(cwd: &Path) -> Option<PathBuf> {
+    let mut dir = cwd;
+    loop {
+        let dot_git = dir.join(".git");
+        if dot_git.is_dir() {
+            return Some(dot_git);
+        }
+        if dot_git.is_file() {
+            return read_gitdir_pointer(&dot_git);
+        }
+        dir = dir.parent()?;
+    }
+}
+
+/// Read a `.git` worktree pointer file and resolve the gitdir path.
+fn read_gitdir_pointer(dot_git_file: &Path) -> Option<PathBuf> {
+    let content = std::fs::read_to_string(dot_git_file).ok()?;
+    let gitdir = content.strip_prefix("gitdir: ")?.trim();
+    let path = Path::new(gitdir);
+    if path.is_absolute() {
+        Some(path.to_path_buf())
+    } else {
+        dot_git_file.parent().map(|p| p.join(path))
+    }
+}
+
+/// Detect the current in-progress git operation by inspecting sentinel
+/// files in the git directory.
+///
+/// Priority order matches git's own status reporting.
+fn detect_git_state(git_dir: &Path) -> Option<GitOperationState> {
+    let rebase_merge = git_dir.join("rebase-merge");
+    if rebase_merge.is_dir() {
+        let step = read_usize_file(&rebase_merge.join("msgnum"));
+        let total = read_usize_file(&rebase_merge.join("end"));
+        return Some(GitOperationState {
+            state: GitState::Rebase,
+            step,
+            total,
+        });
+    }
+
+    let rebase_apply = git_dir.join("rebase-apply");
+    if rebase_apply.is_dir() {
+        let state = if rebase_apply.join("applying").exists() {
+            GitState::Am
+        } else {
+            GitState::Rebase
+        };
+        let step = read_usize_file(&rebase_apply.join("next"));
+        let total = read_usize_file(&rebase_apply.join("last"));
+        return Some(GitOperationState { state, step, total });
+    }
+
+    if git_dir.join("MERGE_HEAD").exists() {
+        return Some(GitOperationState::without_progress(GitState::Merge));
+    }
+
+    if git_dir.join("CHERRY_PICK_HEAD").exists() {
+        return Some(GitOperationState::without_progress(GitState::CherryPick));
+    }
+
+    if git_dir.join("REVERT_HEAD").exists() {
+        return Some(GitOperationState::without_progress(GitState::Revert));
+    }
+
+    if git_dir.join("BISECT_LOG").exists() {
+        return Some(GitOperationState::without_progress(GitState::Bisect));
+    }
+
+    None
+}
+
+/// Read a file containing a single `usize` value (used for rebase progress).
+fn read_usize_file(path: &Path) -> Option<usize> {
+    std::fs::read_to_string(path).ok()?.trim().parse().ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -249,28 +396,48 @@ fn short_commit_prefix(full_oid: &str) -> &str {
     full_oid.get(..end).unwrap_or("")
 }
 
-fn format_git_output(
-    status: &GitStatus,
-    style: Style,
-    detached_hash_style: Style,
-    indicator_style: Style,
-    color_map: ColorMap,
-) -> String {
+fn write_state(buf: &mut String, op_state: &GitOperationState) {
+    use std::fmt::Write;
+    match (op_state.step, op_state.total) {
+        (Some(step), Some(total)) => {
+            let _ = write!(buf, "({} {step}/{total})", op_state.state);
+        }
+        _ => {
+            let _ = write!(buf, "({})", op_state.state);
+        }
+    }
+}
+
+fn format_git_output(status: &GitStatus, styles: &GitStyles) -> String {
     let mut out = String::with_capacity(64);
 
     if let Some(ref branch) = status.branch {
-        out.push_str(&style.paint_with(branch, color_map));
+        out.push_str(&styles.branch.paint_with(branch, styles.color_map));
     } else if let Some(ref oid) = status.head_oid {
         let prefix = short_commit_prefix(oid);
         if !prefix.is_empty() {
-            out.push_str(&style.paint_with("HEAD ", color_map));
-            let paren = format!("({prefix})");
-            out.push_str(&detached_hash_style.paint_with(&paren, color_map));
+            out.push_str(&styles.branch.paint_with("HEAD ", styles.color_map));
+            let mut paren = String::with_capacity(prefix.len() + 2);
+            paren.push('(');
+            paren.push_str(prefix);
+            paren.push(')');
+            out.push_str(&styles.detached_hash.paint_with(&paren, styles.color_map));
         }
     }
 
+    // State label (rebase, merge, etc.) between branch and indicators
+    if let Some(ref op_state) = status.state {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        let mut state_buf = String::with_capacity(24);
+        write_state(&mut state_buf, op_state);
+        out.push_str(&styles.state.paint_with(&state_buf, styles.color_map));
+    }
+
     // Indicator order follows Starship defaults: = $ ✘ » ! + ? ⇕/⇡⇣
-    let mut indicators = String::new();
+    // Max content: 7 single-char indicators + 1 diverge indicator + 2 brackets = ~40 bytes (UTF-8 multi-byte)
+    let mut indicators = String::with_capacity(40);
     if status.conflicted > 0 {
         indicators.push('=');
     }
@@ -294,13 +461,10 @@ fn format_git_output(
     }
     if status.ahead > 0 && status.behind > 0 {
         indicators.push('⇕');
-    } else {
-        if status.ahead > 0 {
-            indicators.push('⇡');
-        }
-        if status.behind > 0 {
-            indicators.push('⇣');
-        }
+    } else if status.ahead > 0 {
+        indicators.push('⇡');
+    } else if status.behind > 0 {
+        indicators.push('⇣');
     }
 
     if !indicators.is_empty() {
@@ -309,7 +473,7 @@ fn format_git_output(
         }
         indicators.insert(0, '[');
         indicators.push(']');
-        out.push_str(&indicator_style.paint_with(&indicators, color_map));
+        out.push_str(&styles.indicator.paint_with(&indicators, styles.color_map));
     }
 
     out
@@ -322,20 +486,258 @@ mod tests {
     use super::*;
     use crate::{render::layout::display_width, test_utils::contains_style_sequence};
 
-    fn default_style() -> Style {
-        Style::new().fg(Color::Magenta).bold()
+    // -- GitState Display tests --
+
+    #[test]
+    fn test_git_state_display_rebase() {
+        assert_eq!(GitState::Rebase.to_string(), "REBASING");
     }
 
-    fn default_indicator_style() -> Style {
-        Style::new().fg(Color::Red).bold()
+    #[test]
+    fn test_git_state_display_am() {
+        assert_eq!(GitState::Am.to_string(), "AM");
     }
 
-    fn default_detached_hash_style() -> Style {
-        Style::new().fg(Color::Green).dimmed()
+    #[test]
+    fn test_git_state_display_merge() {
+        assert_eq!(GitState::Merge.to_string(), "MERGING");
     }
 
-    fn default_color_map() -> ColorMap {
-        ColorMap::default()
+    #[test]
+    fn test_git_state_display_cherry_pick() {
+        assert_eq!(GitState::CherryPick.to_string(), "CHERRY-PICKING");
+    }
+
+    #[test]
+    fn test_git_state_display_revert() {
+        assert_eq!(GitState::Revert.to_string(), "REVERTING");
+    }
+
+    #[test]
+    fn test_git_state_display_bisect() {
+        assert_eq!(GitState::Bisect.to_string(), "BISECTING");
+    }
+
+    // -- find_git_dir tests --
+
+    #[test]
+    fn test_find_git_dir_normal_repo() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::create_dir(dir.path().join(".git"))?;
+        let result = find_git_dir(dir.path());
+        assert_eq!(result, Some(dir.path().join(".git")));
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_git_dir_subdirectory() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::create_dir(dir.path().join(".git"))?;
+        let sub = dir.path().join("src").join("deep");
+        std::fs::create_dir_all(&sub)?;
+        let result = find_git_dir(&sub);
+        assert_eq!(result, Some(dir.path().join(".git")));
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_git_dir_worktree() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let gitdir_target = dir.path().join("actual-gitdir");
+        std::fs::create_dir(&gitdir_target)?;
+        let worktree = dir.path().join("worktree");
+        std::fs::create_dir(&worktree)?;
+        std::fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}", gitdir_target.display()),
+        )?;
+        let result = find_git_dir(&worktree);
+        assert_eq!(result, Some(gitdir_target));
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_git_dir_worktree_relative() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let gitdir_target = dir.path().join("actual-gitdir");
+        std::fs::create_dir(&gitdir_target)?;
+        let worktree = dir.path().join("worktree");
+        std::fs::create_dir(&worktree)?;
+        std::fs::write(worktree.join(".git"), "gitdir: ../actual-gitdir\n")?;
+        let result = find_git_dir(&worktree);
+        assert!(result.is_some(), "should resolve relative gitdir pointer");
+        assert!(
+            result
+                .as_ref()
+                .is_some_and(|p| p.ends_with("actual-gitdir")),
+            "resolved path should end with actual-gitdir: {result:?}",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_git_dir_not_a_repo() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let result = find_git_dir(dir.path());
+        // tempdir is under /tmp or similar — may find system .git if any; safest
+        // is to verify that the returned path (if any) is not inside our tempdir.
+        if let Some(ref p) = result {
+            assert!(
+                !p.starts_with(dir.path()),
+                "should not find .git inside our tempdir: {p:?}",
+            );
+        }
+        Ok(())
+    }
+
+    // -- detect_git_state tests --
+
+    #[test]
+    fn test_detect_rebase_merge_with_progress() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let rebase = dir.path().join("rebase-merge");
+        std::fs::create_dir(&rebase)?;
+        std::fs::write(rebase.join("msgnum"), "3\n")?;
+        std::fs::write(rebase.join("end"), "7\n")?;
+        let result = detect_git_state(dir.path());
+        assert_eq!(
+            result,
+            Some(GitOperationState {
+                state: GitState::Rebase,
+                step: Some(3),
+                total: Some(7),
+            }),
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_detect_rebase_merge_without_progress() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::create_dir(dir.path().join("rebase-merge"))?;
+        let result = detect_git_state(dir.path());
+        assert_eq!(
+            result,
+            Some(GitOperationState {
+                state: GitState::Rebase,
+                step: None,
+                total: None,
+            }),
+            "rebase-merge dir without msgnum/end should have None step/total",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_detect_rebase_apply() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let rebase = dir.path().join("rebase-apply");
+        std::fs::create_dir(&rebase)?;
+        std::fs::write(rebase.join("next"), "2\n")?;
+        std::fs::write(rebase.join("last"), "5\n")?;
+        let result = detect_git_state(dir.path());
+        assert_eq!(
+            result,
+            Some(GitOperationState {
+                state: GitState::Rebase,
+                step: Some(2),
+                total: Some(5),
+            }),
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_detect_am() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let rebase = dir.path().join("rebase-apply");
+        std::fs::create_dir(&rebase)?;
+        std::fs::write(rebase.join("applying"), "")?;
+        std::fs::write(rebase.join("next"), "1\n")?;
+        std::fs::write(rebase.join("last"), "3\n")?;
+        let result = detect_git_state(dir.path());
+        assert_eq!(
+            result,
+            Some(GitOperationState {
+                state: GitState::Am,
+                step: Some(1),
+                total: Some(3),
+            }),
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_detect_merge() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("MERGE_HEAD"), "abc123\n")?;
+        let result = detect_git_state(dir.path());
+        assert_eq!(
+            result,
+            Some(GitOperationState::without_progress(GitState::Merge)),
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_detect_cherry_pick() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("CHERRY_PICK_HEAD"), "abc123\n")?;
+        let result = detect_git_state(dir.path());
+        assert_eq!(
+            result,
+            Some(GitOperationState::without_progress(GitState::CherryPick)),
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_detect_revert() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("REVERT_HEAD"), "abc123\n")?;
+        let result = detect_git_state(dir.path());
+        assert_eq!(
+            result,
+            Some(GitOperationState::without_progress(GitState::Revert)),
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_detect_bisect() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("BISECT_LOG"), "")?;
+        let result = detect_git_state(dir.path());
+        assert_eq!(
+            result,
+            Some(GitOperationState::without_progress(GitState::Bisect)),
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_detect_no_state() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let result = detect_git_state(dir.path());
+        assert_eq!(result, None);
+        Ok(())
+    }
+
+    #[test]
+    fn test_detect_priority_rebase_over_merge() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::create_dir(dir.path().join("rebase-merge"))?;
+        std::fs::write(dir.path().join("MERGE_HEAD"), "abc123\n")?;
+        let result = detect_git_state(dir.path());
+        assert!(
+            result.is_some_and(|s| s.state == GitState::Rebase),
+            "rebase should take priority over merge: {result:?}",
+        );
+        Ok(())
+    }
+
+    fn default_styles() -> GitStyles {
+        GitStyles::default()
     }
 
     // -- Parsing tests --
@@ -412,13 +814,7 @@ mod tests {
             branch: Some("main".to_owned()),
             ..GitStatus::default()
         };
-        let output = format_git_output(
-            &status,
-            default_style(),
-            default_detached_hash_style(),
-            default_indicator_style(),
-            default_color_map(),
-        );
+        let output = format_git_output(&status, &default_styles());
         assert_eq!(display_width(&output), 4, "visible width: {output:?}");
         assert!(output.contains("main"), "should contain branch name");
         assert!(
@@ -443,13 +839,7 @@ mod tests {
             ahead: 1,
             ..GitStatus::default()
         };
-        let output = format_git_output(
-            &status,
-            default_style(),
-            default_detached_hash_style(),
-            default_indicator_style(),
-            default_color_map(),
-        );
+        let output = format_git_output(&status, &default_styles());
         // "main [!+?⇡]" = 4 + 1 + 6 = 11 visible chars
         assert_eq!(display_width(&output), 11, "visible width: {output:?}");
         assert!(output.contains("main"), "should contain branch");
@@ -470,13 +860,7 @@ mod tests {
             head_oid: Some("abcdef0123456789abcdef0123456789abcd".to_owned()),
             ..GitStatus::default()
         };
-        let output = format_git_output(
-            &status,
-            default_style(),
-            default_detached_hash_style(),
-            default_indicator_style(),
-            default_color_map(),
-        );
+        let output = format_git_output(&status, &default_styles());
         assert_eq!(display_width(&output), 14, "visible width: {output:?}");
         assert!(
             output.contains("HEAD ") && output.contains("(abcdef0)"),
@@ -501,13 +885,7 @@ mod tests {
             modified: 1,
             ..GitStatus::default()
         };
-        let output = format_git_output(
-            &status,
-            default_style(),
-            default_detached_hash_style(),
-            default_indicator_style(),
-            default_color_map(),
-        );
+        let output = format_git_output(&status, &default_styles());
         let clean = strip_ansi_and_zsh(&output);
         assert_eq!(
             clean, "HEAD (deadbee) [!]",
@@ -522,13 +900,7 @@ mod tests {
             staged: 1,
             ..GitStatus::default()
         };
-        let output = format_git_output(
-            &status,
-            default_style(),
-            default_detached_hash_style(),
-            default_indicator_style(),
-            default_color_map(),
-        );
+        let output = format_git_output(&status, &default_styles());
         // "[+]" = 3 visible chars
         assert_eq!(display_width(&output), 3, "visible width: {output:?}");
         assert!(
@@ -678,13 +1050,7 @@ mod tests {
             conflicted: 1,
             ..GitStatus::default()
         };
-        let output = format_git_output(
-            &status,
-            default_style(),
-            default_detached_hash_style(),
-            default_indicator_style(),
-            default_color_map(),
-        );
+        let output = format_git_output(&status, &default_styles());
         assert!(
             output.contains("[=]"),
             "conflict should use '=' not '~': {output:?}"
@@ -698,13 +1064,7 @@ mod tests {
             stashed: 3,
             ..GitStatus::default()
         };
-        let output = format_git_output(
-            &status,
-            default_style(),
-            default_detached_hash_style(),
-            default_indicator_style(),
-            default_color_map(),
-        );
+        let output = format_git_output(&status, &default_styles());
         assert!(output.contains("[$]"), "stash should show '$': {output:?}");
     }
 
@@ -715,13 +1075,7 @@ mod tests {
             deleted: 1,
             ..GitStatus::default()
         };
-        let output = format_git_output(
-            &status,
-            default_style(),
-            default_detached_hash_style(),
-            default_indicator_style(),
-            default_color_map(),
-        );
+        let output = format_git_output(&status, &default_styles());
         assert!(
             output.contains("[✘]"),
             "deleted should show '✘': {output:?}"
@@ -735,13 +1089,7 @@ mod tests {
             renamed: 1,
             ..GitStatus::default()
         };
-        let output = format_git_output(
-            &status,
-            default_style(),
-            default_detached_hash_style(),
-            default_indicator_style(),
-            default_color_map(),
-        );
+        let output = format_git_output(&status, &default_styles());
         assert!(
             output.contains("[»]"),
             "renamed should show '»': {output:?}"
@@ -756,13 +1104,7 @@ mod tests {
             behind: 1,
             ..GitStatus::default()
         };
-        let output = format_git_output(
-            &status,
-            default_style(),
-            default_detached_hash_style(),
-            default_indicator_style(),
-            default_color_map(),
-        );
+        let output = format_git_output(&status, &default_styles());
         assert!(
             output.contains('⇕'),
             "diverged (ahead+behind) should show '⇕': {output:?}"
@@ -792,13 +1134,7 @@ mod tests {
             behind: 0,
             ..GitStatus::default()
         };
-        let output = format_git_output(
-            &status,
-            default_style(),
-            default_detached_hash_style(),
-            default_indicator_style(),
-            default_color_map(),
-        );
+        let output = format_git_output(&status, &default_styles());
         // Strip all ANSI/zsh escapes to get visible text
         let clean = strip_ansi_and_zsh(&output);
         // Expected visible: "main [=$✘»!+?⇡]"
@@ -817,14 +1153,17 @@ mod tests {
         };
         let output = format_git_output(
             &status,
-            Style::new().fg(Color::Cyan),
-            Style::new().fg(Color::Green),
-            Style::new().fg(Color::Yellow),
-            ColorMap {
-                cyan: 96,
-                green: 32,
-                yellow: 93,
-                ..ColorMap::default()
+            &GitStyles {
+                branch: Style::new().fg(Color::Cyan),
+                detached_hash: Style::new().fg(Color::Green),
+                indicator: Style::new().fg(Color::Yellow),
+                color_map: ColorMap {
+                    cyan: 96,
+                    green: 32,
+                    yellow: 93,
+                    ..ColorMap::default()
+                },
+                ..default_styles()
             },
         );
         assert!(
@@ -856,6 +1195,119 @@ mod tests {
             }
         }
         result
+    }
+
+    // -- write_state tests --
+
+    fn state_to_string(op_state: &GitOperationState) -> String {
+        let mut buf = String::new();
+        write_state(&mut buf, op_state);
+        buf
+    }
+
+    #[test]
+    fn test_write_state_with_progress() {
+        let state = GitOperationState {
+            state: GitState::Rebase,
+            step: Some(2),
+            total: Some(5),
+        };
+        assert_eq!(state_to_string(&state), "(REBASING 2/5)");
+    }
+
+    #[test]
+    fn test_write_state_without_progress() {
+        let state = GitOperationState::without_progress(GitState::Merge);
+        assert_eq!(state_to_string(&state), "(MERGING)");
+    }
+
+    #[test]
+    fn test_write_state_partial_progress_shows_no_progress() {
+        let state = GitOperationState {
+            state: GitState::Rebase,
+            step: Some(3),
+            total: None,
+        };
+        assert_eq!(
+            state_to_string(&state),
+            "(REBASING)",
+            "partial progress should fall back to no-progress display",
+        );
+    }
+
+    // -- format_git_output with state tests --
+
+    #[test]
+    fn test_format_git_output_with_rebase_state() {
+        let status = GitStatus {
+            branch: Some("main".to_owned()),
+            state: Some(GitOperationState {
+                state: GitState::Rebase,
+                step: Some(2),
+                total: Some(5),
+            }),
+            ..GitStatus::default()
+        };
+        let output = format_git_output(&status, &default_styles());
+        let clean = strip_ansi_and_zsh(&output);
+        assert_eq!(clean, "main (REBASING 2/5)");
+    }
+
+    #[test]
+    fn test_format_git_output_with_merge_state() {
+        let status = GitStatus {
+            branch: Some("main".to_owned()),
+            state: Some(GitOperationState::without_progress(GitState::Merge)),
+            ..GitStatus::default()
+        };
+        let output = format_git_output(&status, &default_styles());
+        let clean = strip_ansi_and_zsh(&output);
+        assert_eq!(clean, "main (MERGING)");
+    }
+
+    #[test]
+    fn test_format_git_output_state_with_indicators() {
+        let status = GitStatus {
+            branch: Some("main".to_owned()),
+            state: Some(GitOperationState {
+                state: GitState::Rebase,
+                step: Some(2),
+                total: Some(5),
+            }),
+            modified: 1,
+            staged: 1,
+            ..GitStatus::default()
+        };
+        let output = format_git_output(&status, &default_styles());
+        let clean = strip_ansi_and_zsh(&output);
+        assert_eq!(clean, "main (REBASING 2/5) [!+]");
+    }
+
+    #[test]
+    fn test_format_git_output_detached_with_state() {
+        let status = GitStatus {
+            branch: None,
+            head_oid: Some("abcdef0123456789".to_owned()),
+            state: Some(GitOperationState::without_progress(GitState::CherryPick)),
+            ..GitStatus::default()
+        };
+        let output = format_git_output(&status, &default_styles());
+        let clean = strip_ansi_and_zsh(&output);
+        assert_eq!(clean, "HEAD (abcdef0) (CHERRY-PICKING)");
+    }
+
+    #[test]
+    fn test_format_git_output_state_styled_yellow_bold() {
+        let status = GitStatus {
+            branch: Some("main".to_owned()),
+            state: Some(GitOperationState::without_progress(GitState::Merge)),
+            ..GitStatus::default()
+        };
+        let output = format_git_output(&status, &default_styles());
+        assert!(
+            contains_style_sequence(&output, &[1, 33]),
+            "state should be bold yellow: {output:?}",
+        );
     }
 
     #[test]

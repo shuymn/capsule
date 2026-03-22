@@ -275,6 +275,8 @@ pub struct GitConfig {
     pub style: StyleConfig,
     /// Style for status indicators (e.g., `[!+]`).
     pub indicator_style: StyleConfig,
+    /// Style for operation state labels (e.g., `(REBASING 2/5)`).
+    pub state_style: StyleConfig,
     /// Style for `(hash)` in detached `HEAD (hash)` output.
     pub detached_hash_style: StyleConfig,
 }
@@ -288,6 +290,7 @@ impl Default for GitConfig {
             style: StyleConfig::fg_bold(Color::Magenta),
             indicator_style: StyleConfig::fg_bold(Color::Red),
             detached_hash_style: StyleConfig::fg_bold(Color::Green),
+            state_style: StyleConfig::fg_bold(Color::Yellow),
         }
     }
 }
@@ -306,6 +309,11 @@ impl GitConfig {
     #[must_use]
     pub fn detached_hash_prompt_style(&self) -> Style {
         self.detached_hash_style.resolve(Style::new())
+    }
+
+    #[must_use]
+    pub fn state_prompt_style(&self) -> Style {
+        self.state_style.resolve(Style::new())
     }
 
     /// Build a [`Segment`] for git status output (already styled by the
