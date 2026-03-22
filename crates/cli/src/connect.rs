@@ -153,6 +153,49 @@ impl BuildIdNegotiation {
     }
 }
 
+/// Perform a single synchronous request-response exchange with the daemon.
+///
+/// Connects to `socket_path`, sends `request` as a newline-delimited
+/// netstring, reads one newline-delimited response, and returns the
+/// parsed [`Message`].
+///
+/// # Errors
+///
+/// Returns an error if the connection, write, read, or deserialization
+/// fails.
+pub fn sync_request(
+    socket_path: &Path,
+    request: &Message,
+    timeout: Duration,
+) -> anyhow::Result<Message> {
+    use std::os::unix::net::UnixStream;
+
+    let stream = UnixStream::connect(socket_path).context("failed to connect to daemon")?;
+    stream
+        .set_read_timeout(Some(timeout))
+        .context("failed to set socket timeout")?;
+    stream
+        .set_write_timeout(Some(timeout))
+        .context("failed to set socket timeout")?;
+
+    let mut wire = request.to_wire();
+    wire.push(b'\n');
+    (&stream)
+        .write_all(&wire)
+        .context("failed to send request to daemon")?;
+
+    let mut reader = std::io::BufReader::new(&stream);
+    let mut buf = Vec::with_capacity(128);
+    reader
+        .read_until(b'\n', &mut buf)
+        .context("failed to read response from daemon")?;
+    if buf.last() == Some(&b'\n') {
+        buf.pop();
+    }
+
+    Message::from_wire(&buf).map_err(|e| anyhow::anyhow!("failed to parse response: {e}"))
+}
+
 /// Negotiate build ID with the daemon and retrieve env var requirements.
 ///
 /// Returns negotiation outcome and env var names, or an error on I/O failure.
@@ -163,36 +206,13 @@ pub fn negotiate_build_id(socket_path: &Path) -> anyhow::Result<BuildIdNegotiati
         });
     };
 
-    let mut stream = std::os::unix::net::UnixStream::connect(socket_path)
-        .context("failed to connect for build_id negotiation")?;
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-
-    // Send Hello
     let hello = Message::Hello(Hello {
         version: PROTOCOL_VERSION,
         build_id: Some(my_build_id.clone()),
     });
-    let mut wire = hello.to_wire();
-    wire.push(b'\n');
-    stream.write_all(&wire)?;
 
-    // Read HelloAck
-    let mut reader = std::io::BufReader::new(&stream);
-    let mut buf = Vec::new();
-    reader.read_until(b'\n', &mut buf)?;
-
-    if buf.last() == Some(&b'\n') {
-        buf.pop();
-    }
-    if buf.is_empty() {
-        return Ok(BuildIdNegotiation::Incompatible {
-            env_var_names: vec![],
-        });
-    }
-
-    match Message::from_wire(&buf) {
-        Ok(Message::HelloAck(ack)) => {
+    match sync_request(socket_path, &hello, Duration::from_secs(5))? {
+        Message::HelloAck(ack) => {
             let compatible = ack.build_id.is_none_or(|id| id == my_build_id);
             Ok(if compatible {
                 BuildIdNegotiation::Compatible {

@@ -1,9 +1,5 @@
-use std::{
-    io::{BufRead as _, Write as _},
-    time::Duration,
-};
+use std::time::Duration;
 
-use anyhow::Context as _;
 use capsule_protocol::{Message, PROTOCOL_VERSION, StatusRequest};
 
 use super::socket_path;
@@ -15,37 +11,19 @@ use super::socket_path;
 /// Returns an error if the daemon is not running or the status exchange fails.
 pub fn status(json: bool) -> anyhow::Result<()> {
     let sock = socket_path()?;
-    let mut stream = std::os::unix::net::UnixStream::connect(&sock)
-        .context("daemon is not running (cannot connect to socket)")?;
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-
     let req = Message::StatusRequest(StatusRequest {
         version: PROTOCOL_VERSION,
     });
-    let mut wire = req.to_wire();
-    wire.push(b'\n');
-    stream.write_all(&wire)?;
 
-    let mut reader = std::io::BufReader::new(&stream);
-    let mut buf = Vec::with_capacity(1024);
-    reader
-        .read_until(b'\n', &mut buf)
-        .context("failed to read status response")?;
-    if buf.last() == Some(&b'\n') {
-        buf.pop();
-    }
-
-    match Message::from_wire(&buf) {
-        Ok(Message::StatusResponse(resp)) => {
+    match crate::connect::sync_request(&sock, &req, Duration::from_secs(5))? {
+        Message::StatusResponse(resp) => {
             if json {
                 print_status_json(&resp);
             } else {
                 print_status_human(&resp);
             }
         }
-        Ok(_) => anyhow::bail!("unexpected message type from daemon"),
-        Err(error) => anyhow::bail!("failed to parse status response: {error}"),
+        _ => anyhow::bail!("unexpected message type from daemon"),
     }
     Ok(())
 }

@@ -228,6 +228,7 @@ mod tests {
     use super::{
         service::{
             LAUNCHD_LABEL, ServiceManager, daemon_needs_restart, generate_plist, plist_path_for,
+            wait_until_daemon_ready,
         },
         *,
     };
@@ -544,6 +545,47 @@ mod tests {
 
         // Uninstall when plist doesn't exist — should succeed gracefully.
         uninstall(&NoopServiceManager, home.path())?;
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // wait_until_daemon_ready tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_wait_until_daemon_ready_succeeds_on_hello_ack() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let socket = dir.path().join("test.sock");
+
+        start_mock_daemon(&socket, None)?;
+        std::thread::sleep(Duration::from_millis(50));
+
+        wait_until_daemon_ready(&socket, None)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_wait_until_daemon_ready_build_id_match() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let socket = dir.path().join("test.sock");
+
+        let my_id = crate::build_id::compute();
+        start_mock_daemon(&socket, my_id.clone())?;
+        std::thread::sleep(Duration::from_millis(50));
+
+        wait_until_daemon_ready(&socket, my_id.as_ref())?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_wait_until_daemon_ready_no_listener_times_out() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let socket = dir.path().join("nonexistent.sock");
+
+        let result = wait_until_daemon_ready(&socket, None);
+        assert!(result.is_err(), "should fail on nonexistent socket");
         Ok(())
     }
 }

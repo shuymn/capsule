@@ -1,7 +1,5 @@
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
-use std::thread;
-#[cfg(unix)]
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -17,13 +15,13 @@ pub(super) const LAUNCHD_LABEL: &str = "com.github.shuymn.capsule";
 /// service. `Launchd` dispatches to real `launchctl` commands;
 /// `NoopServiceManager` (test-only) succeeds silently.
 ///
-/// When `load` or `restart` returns `Ok`, the service is ready to accept
-/// connections. Implementations that manage a socket-activated daemon
-/// block internally until the socket is connectable.
+/// When `load` or `restart` returns `Ok`, the daemon is ready to process
+/// requests. Implementations that manage a socket-activated daemon
+/// block internally until the daemon responds to a protocol handshake.
 pub trait ServiceManager {
     /// Load and start the service from the given definition file.
     ///
-    /// Returns `Ok(())` once the service is ready to accept connections.
+    /// Returns `Ok(())` once the daemon is ready to process requests.
     fn load(&self, service_file: &Path) -> anyhow::Result<()>;
 
     /// Stop and unload the service.
@@ -34,7 +32,7 @@ pub trait ServiceManager {
 
     /// Restart a running service.
     ///
-    /// Returns `Ok(())` once the service is ready to accept connections.
+    /// Returns `Ok(())` once the daemon is ready to process requests.
     fn restart(&self) -> anyhow::Result<()>;
 }
 
@@ -83,8 +81,8 @@ impl ServiceManager for Launchd {
         if !status.success() {
             anyhow::bail!("launchctl bootstrap failed with {status}");
         }
-        wait_until_socket_connectable(&self.socket_path)
-            .context("daemon socket did not become ready after load")?;
+        wait_until_daemon_ready(&self.socket_path, None)
+            .context("daemon did not become ready after load")?;
         Ok(())
     }
 
@@ -104,8 +102,9 @@ impl ServiceManager for Launchd {
         if !status.success() {
             anyhow::bail!("launchctl kickstart failed with {status}");
         }
-        wait_until_socket_connectable(&self.socket_path)
-            .context("daemon socket did not become ready after restart")?;
+        let expected = crate::build_id::compute();
+        wait_until_daemon_ready(&self.socket_path, expected.as_ref())
+            .context("daemon did not become ready after restart")?;
         Ok(())
     }
 }
@@ -234,32 +233,59 @@ pub(super) fn daemon_needs_restart(socket_path: &Path) -> bool {
     )
 }
 
-/// Poll until `socket_path` accepts a Unix stream connection or a timeout elapses.
+/// Poll until the daemon responds to a Hello/HelloAck handshake.
 ///
-/// Used after launchd restart/load so `capsule connect` in existing shells can
-/// reconnect without racing a still-starting daemon.
+/// Unlike a simple `UnixStream::connect` check, this verifies the daemon
+/// is actually processing connections. With launchd socket activation the
+/// socket is always connectable (launchd manages it), so a connect-only
+/// check returns immediately even before the daemon process starts.
+///
+/// If `expected_build_id` is `Some`, the `HelloAck` must contain a
+/// matching build ID (used after restart to confirm the *new* daemon
+/// is responding, not the old one being torn down). If `None`, any
+/// `HelloAck` suffices (used after fresh load).
 #[cfg(unix)]
-fn wait_until_socket_connectable(socket_path: &Path) -> anyhow::Result<()> {
-    use std::os::unix::net::UnixStream;
+pub(super) fn wait_until_daemon_ready(
+    socket_path: &Path,
+    expected_build_id: Option<&capsule_protocol::BuildId>,
+) -> anyhow::Result<()> {
+    use capsule_protocol::{Hello, Message, PROTOCOL_VERSION};
 
-    const INTERVAL: Duration = Duration::from_millis(10);
-    const MAX_ATTEMPTS: u32 = 500;
+    const ATTEMPT_TIMEOUT: Duration = Duration::from_millis(200);
+    const MAX_ATTEMPTS: u32 = 25;
+
+    let hello = Message::Hello(Hello {
+        version: PROTOCOL_VERSION,
+        build_id: crate::build_id::compute(),
+    });
 
     for _ in 0..MAX_ATTEMPTS {
-        if UnixStream::connect(socket_path).is_ok() {
-            return Ok(());
+        if let Ok(Message::HelloAck(ack)) =
+            crate::connect::sync_request(socket_path, &hello, ATTEMPT_TIMEOUT)
+        {
+            let id_ok = match expected_build_id {
+                Some(expected) => ack.build_id.as_ref().is_none_or(|id| id == expected),
+                None => true,
+            };
+            if id_ok {
+                return Ok(());
+            }
+            // Old daemon still responding; wait before retrying.
+            std::thread::sleep(ATTEMPT_TIMEOUT);
         }
-        thread::sleep(INTERVAL);
     }
 
     anyhow::bail!(
-        "timed out after {} ms waiting for {}",
-        INTERVAL.as_millis() * u128::from(MAX_ATTEMPTS),
+        "daemon did not become ready within {} ms ({})",
+        ATTEMPT_TIMEOUT.as_millis() * u128::from(MAX_ATTEMPTS),
         socket_path.display()
     )
 }
 
 #[cfg(not(unix))]
-fn wait_until_socket_connectable(_socket_path: &Path) -> anyhow::Result<()> {
+pub(super) fn wait_until_daemon_ready(
+    _socket_path: &Path,
+    _expected_build_id: Option<&capsule_protocol::BuildId>,
+) -> anyhow::Result<()> {
     Ok(())
 }
