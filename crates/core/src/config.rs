@@ -328,7 +328,7 @@ pub struct TimeConfig {
 impl Default for TimeConfig {
     fn default() -> Self {
         Self {
-            disabled: false,
+            disabled: true,
             format: TimeFormat::WithSeconds,
             connector: "at".to_owned(),
             style: StyleConfig::fg_bold(Color::Yellow),
