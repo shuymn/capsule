@@ -6,6 +6,7 @@ mod build_id;
 mod cli;
 mod connect;
 mod daemon;
+mod preset;
 
 use clap::Parser;
 
@@ -43,5 +44,6 @@ fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
+        Command::Preset => preset::run(),
     }
 }

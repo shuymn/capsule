@@ -87,9 +87,11 @@ dependencies = [
  "capsule-core",
  "capsule-protocol",
  "clap",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
 ]

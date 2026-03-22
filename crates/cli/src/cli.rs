@@ -21,6 +21,8 @@ pub enum Command {
         /// Target shell
         shell: Shell,
     },
+    /// Output preset module definitions as TOML
+    Preset,
 }
 
 #[derive(Subcommand)]
