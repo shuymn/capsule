@@ -78,7 +78,12 @@ jobs:
           path: artifacts
 
       - name: Extract release notes
-        run: awk '/^## \[[0-9]/{if(p) exit; p=1; next} p' crates/cli/CHANGELOG.md > /tmp/release-notes.md
+        run: |
+          if [ -f crates/cli/CHANGELOG.md ]; then
+            awk '/^## \[[0-9]/{if(p) exit; p=1; next} p' crates/cli/CHANGELOG.md > /tmp/release-notes.md
+          else
+            touch /tmp/release-notes.md
+          fi
 
       - name: Create GitHub Release
         run: |
