@@ -1,6 +1,7 @@
 [workspace]
 publish = false
 git_release_enable = false
+release_always = false
 
 [[package]]
 name = "capsule-cli"
