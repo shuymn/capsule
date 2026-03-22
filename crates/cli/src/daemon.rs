@@ -232,6 +232,10 @@ mod tests {
         *,
     };
 
+    fn test_socket_path(home: &Path) -> PathBuf {
+        home.join(".capsule/capsule.sock")
+    }
+
     struct NoopServiceManager;
 
     impl ServiceManager for NoopServiceManager {
@@ -436,8 +440,9 @@ mod tests {
     #[test]
     fn test_install_fresh_creates_plist_noop() -> Result<(), Box<dyn std::error::Error>> {
         let home = tempfile::tempdir()?;
+        let socket = test_socket_path(home.path());
 
-        install(&NoopServiceManager, home.path())?;
+        install(&NoopServiceManager, home.path(), &socket)?;
 
         let plist = plist_path_for(home.path());
         assert!(plist.is_file(), "plist should be created");
@@ -452,14 +457,15 @@ mod tests {
     #[test]
     fn test_install_unchanged_plist_skips_noop() -> Result<(), Box<dyn std::error::Error>> {
         let home = tempfile::tempdir()?;
+        let socket = test_socket_path(home.path());
 
         // First install creates the plist.
-        install(&NoopServiceManager, home.path())?;
+        install(&NoopServiceManager, home.path(), &socket)?;
         let plist = plist_path_for(home.path());
         let content_before = std::fs::read_to_string(&plist)?;
 
         // Second install with same binary — no daemon running → skip.
-        install(&NoopServiceManager, home.path())?;
+        install(&NoopServiceManager, home.path(), &socket)?;
         let content_after = std::fs::read_to_string(&plist)?;
 
         assert_eq!(
@@ -473,19 +479,18 @@ mod tests {
     fn test_install_unchanged_plist_build_id_mismatch_noop()
     -> Result<(), Box<dyn std::error::Error>> {
         let home = tempfile::tempdir()?;
+        let socket = test_socket_path(home.path());
 
         // First install.
-        install(&NoopServiceManager, home.path())?;
+        install(&NoopServiceManager, home.path(), &socket)?;
 
         // Start mock daemon returning a different build_id on the canonical socket.
-        let capsule_dir = home.path().join(".capsule");
-        std::fs::create_dir_all(&capsule_dir)?;
-        let socket = capsule_dir.join("capsule.sock");
+        std::fs::create_dir_all(home.path().join(".capsule"))?;
         start_mock_daemon(&socket, Some(BuildId::new("different:99999".to_owned())))?;
         std::thread::sleep(Duration::from_millis(50));
 
         // Second install detects mismatch → kickstart via Noop succeeds.
-        install(&NoopServiceManager, home.path())?;
+        install(&NoopServiceManager, home.path(), &socket)?;
 
         // Plist content should be unchanged (kickstart, not rewrite).
         let plist = plist_path_for(home.path());
@@ -496,6 +501,7 @@ mod tests {
     #[test]
     fn test_install_changed_plist_reloads_noop() -> Result<(), Box<dyn std::error::Error>> {
         let home = tempfile::tempdir()?;
+        let socket = test_socket_path(home.path());
         let plist = plist_path_for(home.path());
 
         // Create an old plist with different content.
@@ -505,7 +511,7 @@ mod tests {
         std::fs::write(&plist, "old content")?;
 
         // Install should replace it.
-        install(&NoopServiceManager, home.path())?;
+        install(&NoopServiceManager, home.path(), &socket)?;
 
         let content = std::fs::read_to_string(&plist)?;
         assert_ne!(content, "old content", "plist should be updated");
@@ -519,9 +525,10 @@ mod tests {
     #[test]
     fn test_uninstall_removes_plist_noop() -> Result<(), Box<dyn std::error::Error>> {
         let home = tempfile::tempdir()?;
+        let socket = test_socket_path(home.path());
 
         // Install first.
-        install(&NoopServiceManager, home.path())?;
+        install(&NoopServiceManager, home.path(), &socket)?;
         let plist = plist_path_for(home.path());
         assert!(plist.is_file(), "plist should exist before uninstall");
 

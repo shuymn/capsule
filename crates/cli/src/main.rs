@@ -23,10 +23,11 @@ fn main() -> anyhow::Result<()> {
                 anyhow::bail!("capsule daemon install/uninstall requires macOS (launchd)");
                 #[cfg(target_os = "macos")]
                 {
-                    let sm = daemon::Launchd::new()?;
                     let home = daemon::home_dir()?;
+                    let socket_path = daemon::socket_path()?;
+                    let sm = daemon::Launchd::new(&socket_path)?;
                     match action {
-                        Some(DaemonAction::Install) => daemon::install(&sm, &home),
+                        Some(DaemonAction::Install) => daemon::install(&sm, &home, &socket_path),
                         Some(DaemonAction::Uninstall) => daemon::uninstall(&sm, &home),
                         _ => Ok(()),
                     }

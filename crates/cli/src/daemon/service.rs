@@ -1,4 +1,8 @@
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::thread;
+#[cfg(unix)]
+use std::time::Duration;
 
 use anyhow::Context as _;
 
@@ -12,8 +16,14 @@ pub(super) const LAUNCHD_LABEL: &str = "com.github.shuymn.capsule";
 /// Implementations handle loading, unloading, and restarting a daemon
 /// service. `Launchd` dispatches to real `launchctl` commands;
 /// `NoopServiceManager` (test-only) succeeds silently.
+///
+/// When `load` or `restart` returns `Ok`, the service is ready to accept
+/// connections. Implementations that manage a socket-activated daemon
+/// block internally until the socket is connectable.
 pub trait ServiceManager {
     /// Load and start the service from the given definition file.
+    ///
+    /// Returns `Ok(())` once the service is ready to accept connections.
     fn load(&self, service_file: &Path) -> anyhow::Result<()>;
 
     /// Stop and unload the service.
@@ -23,6 +33,8 @@ pub trait ServiceManager {
     fn unload(&self) -> anyhow::Result<bool>;
 
     /// Restart a running service.
+    ///
+    /// Returns `Ok(())` once the service is ready to accept connections.
     fn restart(&self) -> anyhow::Result<()>;
 }
 
@@ -30,11 +42,12 @@ pub trait ServiceManager {
 #[cfg(target_os = "macos")]
 pub struct Launchd {
     uid: u32,
+    socket_path: PathBuf,
 }
 
 #[cfg(target_os = "macos")]
 impl Launchd {
-    pub fn new() -> anyhow::Result<Self> {
+    pub fn new(socket_path: &Path) -> anyhow::Result<Self> {
         let output = std::process::Command::new("id")
             .arg("-u")
             .output()
@@ -44,7 +57,10 @@ impl Launchd {
             .trim()
             .parse()
             .with_context(|| format!("failed to parse uid from `id -u`: {uid_output:?}"))?;
-        Ok(Self { uid })
+        Ok(Self {
+            uid,
+            socket_path: socket_path.to_path_buf(),
+        })
     }
 
     /// `gui/{uid}/{label}` target used by bootout and kickstart.
@@ -64,11 +80,12 @@ impl ServiceManager for Launchd {
             ])
             .status()
             .context("failed to run launchctl bootstrap")?;
-        if status.success() {
-            Ok(())
-        } else {
+        if !status.success() {
             anyhow::bail!("launchctl bootstrap failed with {status}");
         }
+        wait_until_socket_connectable(&self.socket_path)
+            .context("daemon socket did not become ready after load")?;
+        Ok(())
     }
 
     fn unload(&self) -> anyhow::Result<bool> {
@@ -84,11 +101,12 @@ impl ServiceManager for Launchd {
             .args(["kickstart", "-k", &self.service_target()])
             .status()
             .context("failed to run launchctl kickstart")?;
-        if status.success() {
-            Ok(())
-        } else {
+        if !status.success() {
             anyhow::bail!("launchctl kickstart failed with {status}");
         }
+        wait_until_socket_connectable(&self.socket_path)
+            .context("daemon socket did not become ready after restart")?;
+        Ok(())
     }
 }
 
@@ -146,15 +164,14 @@ pub(super) fn plist_path_for(home: &Path) -> PathBuf {
 ///
 /// Returns an error if the plist cannot be written or the service manager
 /// operation fails.
-pub fn install(sm: &impl ServiceManager, home: &Path) -> anyhow::Result<()> {
+pub fn install(sm: &impl ServiceManager, home: &Path, socket_path: &Path) -> anyhow::Result<()> {
     let capsule_bin = std::env::current_exe().context("cannot find capsule binary")?;
-    let canonical_socket = home.join(".capsule/capsule.sock");
-    let plist_content = generate_plist(&capsule_bin, &canonical_socket);
+    let plist_content = generate_plist(&capsule_bin, socket_path);
     let plist = plist_path_for(home);
 
     if let Ok(existing) = std::fs::read_to_string(&plist) {
         if existing == plist_content {
-            if daemon_needs_restart(&canonical_socket) {
+            if daemon_needs_restart(socket_path) {
                 sm.restart()?;
                 println!("daemon restarted (binary updated)");
             } else {
@@ -215,4 +232,34 @@ pub(super) fn daemon_needs_restart(socket_path: &Path) -> bool {
         crate::connect::negotiate_build_id(socket_path),
         Ok(ref n) if n.needs_daemon_restart(),
     )
+}
+
+/// Poll until `socket_path` accepts a Unix stream connection or a timeout elapses.
+///
+/// Used after launchd restart/load so `capsule connect` in existing shells can
+/// reconnect without racing a still-starting daemon.
+#[cfg(unix)]
+fn wait_until_socket_connectable(socket_path: &Path) -> anyhow::Result<()> {
+    use std::os::unix::net::UnixStream;
+
+    const INTERVAL: Duration = Duration::from_millis(10);
+    const MAX_ATTEMPTS: u32 = 500;
+
+    for _ in 0..MAX_ATTEMPTS {
+        if UnixStream::connect(socket_path).is_ok() {
+            return Ok(());
+        }
+        thread::sleep(INTERVAL);
+    }
+
+    anyhow::bail!(
+        "timed out after {} ms waiting for {}",
+        INTERVAL.as_millis() * u128::from(MAX_ATTEMPTS),
+        socket_path.display()
+    )
+}
+
+#[cfg(not(unix))]
+fn wait_until_socket_connectable(_socket_path: &Path) -> anyhow::Result<()> {
+    Ok(())
 }
