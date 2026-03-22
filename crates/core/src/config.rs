@@ -38,7 +38,7 @@ pub struct Config {
 }
 
 /// A partially specified prompt style override.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct StyleConfig {
     /// Optional symbolic foreground color.
@@ -70,6 +70,15 @@ impl StyleConfig {
             fg: Some(color),
             bold: Some(true),
             dimmed: None,
+        }
+    }
+
+    /// Fills in `None` fields from `defaults`, leaving explicitly set fields unchanged.
+    fn merge_with(self, defaults: Self) -> Self {
+        Self {
+            fg: self.fg.or(defaults.fg),
+            bold: self.bold.or(defaults.bold),
+            dimmed: self.dimmed.or(defaults.dimmed),
         }
     }
 
@@ -195,6 +204,13 @@ impl CharacterConfig {
             content_style: Some(style),
         }
     }
+
+    fn merge_style_defaults(mut self) -> Self {
+        let defaults = Self::default();
+        self.success_style = self.success_style.merge_with(defaults.success_style);
+        self.error_style = self.error_style.merge_with(defaults.error_style);
+        self
+    }
 }
 
 /// Directory module settings.
@@ -258,6 +274,13 @@ impl DirectoryConfig {
                 content_style: Some(self.prompt_style()),
             }
         }
+    }
+
+    fn merge_style_defaults(mut self) -> Self {
+        let defaults = Self::default();
+        self.style = self.style.merge_with(defaults.style);
+        self.read_only_style = self.read_only_style.merge_with(defaults.read_only_style);
+        self
     }
 }
 
@@ -332,6 +355,17 @@ impl GitConfig {
             }),
             content_style: None,
         }
+    }
+
+    fn merge_style_defaults(mut self) -> Self {
+        let defaults = Self::default();
+        self.style = self.style.merge_with(defaults.style);
+        self.indicator_style = self.indicator_style.merge_with(defaults.indicator_style);
+        self.state_style = self.state_style.merge_with(defaults.state_style);
+        self.detached_hash_style = self
+            .detached_hash_style
+            .merge_with(defaults.detached_hash_style);
+        self
     }
 }
 
@@ -420,6 +454,12 @@ impl TimeConfig {
             content_style: Some(self.prompt_style()),
         }
     }
+
+    fn merge_style_defaults(mut self) -> Self {
+        let defaults = Self::default();
+        self.style = self.style.merge_with(defaults.style);
+        self
+    }
 }
 
 /// Command duration module settings.
@@ -465,6 +505,12 @@ impl CmdDurationConfig {
             icon: None,
             content_style: Some(self.prompt_style()),
         }
+    }
+
+    fn merge_style_defaults(mut self) -> Self {
+        let defaults = Self::default();
+        self.style = self.style.merge_with(defaults.style);
+        self
     }
 }
 
@@ -703,6 +749,23 @@ pub fn resolve_config_path() -> Option<PathBuf> {
     Some(xdg_default)
 }
 
+impl Config {
+    /// Merges partially-specified nested [`StyleConfig`] fields with their parent defaults.
+    ///
+    /// When a user writes `[character.success_style]\nfg = "magenta"`, serde fills in
+    /// missing `StyleConfig` fields from `StyleConfig::default()` (all `None`) rather than
+    /// from `CharacterConfig::default().success_style`. This method restores those defaults
+    /// so that, for example, `bold = true` is preserved when only `fg` is overridden.
+    fn merge_style_defaults(mut self) -> Self {
+        self.character = self.character.merge_style_defaults();
+        self.directory = self.directory.merge_style_defaults();
+        self.git = self.git.merge_style_defaults();
+        self.time = self.time.merge_style_defaults();
+        self.cmd_duration = self.cmd_duration.merge_style_defaults();
+        self
+    }
+}
+
 /// Load configuration from the given path.
 ///
 /// - If the file does not exist, returns compiled-in defaults.
@@ -732,7 +795,7 @@ pub fn load_config(path: &Path) -> Config {
 pub fn read_config(path: &Path) -> Result<Option<Config>, ConfigLoadError> {
     match std::fs::read_to_string(path) {
         Ok(content) => toml::from_str::<Config>(&content)
-            .map(Some)
+            .map(|config| Some(config.merge_style_defaults()))
             .map_err(|source| ConfigLoadError::Parse {
                 path: path.to_path_buf(),
                 source,
@@ -1365,6 +1428,100 @@ style = { fg = "green" }
             config.character.vicmd.glyph, "\u{276e}",
             "default vicmd glyph should be ❮ when only style is specified"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_config_partial_style_preserves_parent_bold() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[character.success_style]
+fg = "magenta"
+"#,
+        )?;
+        let config = load_config(&path);
+        assert_eq!(config.character.success_style.fg, Some(Color::Magenta));
+        assert_eq!(
+            config.character.success_style.bold,
+            Some(true),
+            "bold from CharacterConfig default should be preserved"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_config_partial_style_explicit_false_overrides_default()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[character.success_style]
+fg = "magenta"
+bold = false
+"#,
+        )?;
+        let config = load_config(&path);
+        assert_eq!(config.character.success_style.fg, Some(Color::Magenta));
+        assert_eq!(
+            config.character.success_style.bold,
+            Some(false),
+            "explicit bold = false should override the default true"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_config_git_partial_style_preserves_defaults() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[git.style]
+fg = "cyan"
+[git.indicator_style]
+fg = "yellow"
+"#,
+        )?;
+        let config = load_config(&path);
+        assert_eq!(config.git.style.fg, Some(Color::Cyan));
+        assert_eq!(
+            config.git.style.bold,
+            Some(true),
+            "bold from GitConfig default should be preserved for style"
+        );
+        assert_eq!(config.git.indicator_style.fg, Some(Color::Yellow));
+        assert_eq!(
+            config.git.indicator_style.bold,
+            Some(true),
+            "bold from GitConfig default should be preserved for indicator_style"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_config_full_style_override_not_affected() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[character.success_style]
+fg = "blue"
+bold = false
+dimmed = true
+"#,
+        )?;
+        let config = load_config(&path);
+        assert_eq!(config.character.success_style.fg, Some(Color::Blue));
+        assert_eq!(config.character.success_style.bold, Some(false));
+        assert_eq!(config.character.success_style.dimmed, Some(true));
         Ok(())
     }
 }
