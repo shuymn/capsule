@@ -17,16 +17,16 @@ Use the prompt benchmark harness when you need a fair comparison between
   seconds per iteration; keep that value above your expected slow-path latency if
   you change workloads
 - `starship`: runs `starship prompt` as a subprocess
-- Each iteration uses a unique subdirectory to prevent daemon cache hits,
+- **Uncached** iterations use a unique subdirectory to prevent daemon cache hits,
   ensuring slow modules (git, toolchain) run every time
+- **Cached** iterations reuse the same directory after warm-up so that the daemon
+  serves results from its internal cache
 
 ## Workloads
 
 The harness generates deterministic local workloads:
 
 - non-repository directory
-- small clean Git repository (24 files)
-- medium clean Git repository (240 files)
 - Git repository with `Cargo.toml` and a `rustc --version` custom module
 
 ## Metrics

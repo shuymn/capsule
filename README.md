@@ -216,18 +216,16 @@ capsule init zsh            Print shell integration script
 
 ## Benchmark
 
-Prompt latency measured with `crates/prompt-bench`. *capsule* talks directly to the daemon socket; *starship* is invoked as a subprocess for comparison. "Fast" is the time to the first response (`RenderResult`); "Slow" includes the asynchronous `Update` with git/toolchain data.
+Prompt latency measured with `crates/prompt-bench`. *capsule* talks directly to the daemon socket; *starship* is invoked as a subprocess for comparison. Values show fast / slow where applicable (fast = `RenderResult`, slow = +`Update` with git/toolchain).
 
-| Workload | Tool | Fast p50 ms | Fast p95 ms | Slow p50 ms | Slow p95 ms | vs starship |
-| --- | --- | ---: | ---: | ---: | ---: | ---: |
-| outside | capsule | 1.04 | 1.76 | - | - | x3.8 / - |
-| outside | starship | 3.91 | 4.25 | - | - | |
-| repo-small | capsule | 0.11 | 0.15 | 5.08 | 5.73 | x97.8 / x2.1 |
-| repo-small | starship | 10.76 | 12.01 | - | - | |
-| repo-medium | capsule | 0.11 | 0.15 | 4.91 | 6.30 | x89.9 / x2.0 |
-| repo-medium | starship | 9.89 | 11.34 | - | - | |
-| repo-toolchain | capsule | 0.10 | 0.30 | 4.60 | 11.02 | x105.8 / x2.3 |
-| repo-toolchain | starship | 10.58 | 10.98 | - | - | |
+| Workload | Tool | p50 ms | p95 ms | vs starship |
+| --- | --- | ---: | ---: | ---: |
+| outside | capsule | 0.76 | 1.34 | x4.7 |
+| outside | capsule (cached) | 0.13 | 0.87 | x27.9 |
+| outside | starship | 3.55 | 4.10 | |
+| repo-toolchain | capsule | 0.08 / 4.34 | 0.15 / 6.41 | x149.3 / x2.6 |
+| repo-toolchain | capsule (cached) | 1.14 | 2.10 | x9.9 |
+| repo-toolchain | starship | 11.24 | 12.24 | |
 
 30 iterations per workload, release build, macOS (Apple Silicon). See `docs/benchmarking.md` for methodology and reproduction steps.
 

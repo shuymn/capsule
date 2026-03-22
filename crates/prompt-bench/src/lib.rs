@@ -101,7 +101,6 @@ fn sample_stddev(values: &[f64]) -> f64 {
 pub struct ScenarioResult {
     pub tool: String,
     pub workload: String,
-    pub description: String,
     pub fast: SummaryStats,
     pub slow: Option<SummaryStats>,
 }

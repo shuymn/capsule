@@ -58,7 +58,6 @@ struct Args {
 
 struct Workload {
     path: PathBuf,
-    description: String,
     subdirs: Vec<PathBuf>,
 }
 
@@ -162,6 +161,13 @@ fn format_ms(value: f64) -> String {
 }
 
 fn render_markdown(metadata: &RunMetadata, results: &[ScenarioResult]) -> String {
+    // Build a lookup: workload -> starship fast p50 for speedup calculation.
+    let starship_p50: std::collections::HashMap<&str, f64> = results
+        .iter()
+        .filter(|r| r.tool == "starship")
+        .map(|r| (r.workload.as_str(), r.fast.p50_ms))
+        .collect();
+
     let mut lines: Vec<String> = vec![
         "# Prompt Benchmark Report".to_owned(),
         String::new(),
@@ -179,25 +185,33 @@ fn render_markdown(metadata: &RunMetadata, results: &[ScenarioResult]) -> String
         String::new(),
         "## Results".to_owned(),
         String::new(),
-        "| Workload | Tool | Fast p50 ms | Fast p95 ms | Slow p50 ms | Slow p95 ms | Description |"
-            .to_owned(),
-        "| --- | --- | ---: | ---: | ---: | ---: | --- |".to_owned(),
+        "| Workload | Tool | p50 ms | p95 ms | vs starship |".to_owned(),
+        "| --- | --- | ---: | ---: | ---: |".to_owned(),
     ];
 
     for r in results {
-        let (slow_p50, slow_p95) = r.slow.as_ref().map_or_else(
-            || ("-".to_owned(), "-".to_owned()),
-            |s| (format_ms(s.p50_ms), format_ms(s.p95_ms)),
+        let p50 = r.slow.as_ref().map_or_else(
+            || format_ms(r.fast.p50_ms),
+            |s| format!("{} / {}", format_ms(r.fast.p50_ms), format_ms(s.p50_ms)),
         );
+        let p95 = r.slow.as_ref().map_or_else(
+            || format_ms(r.fast.p95_ms),
+            |s| format!("{} / {}", format_ms(r.fast.p95_ms), format_ms(s.p95_ms)),
+        );
+        let speedup = if r.tool == "starship" {
+            String::new()
+        } else if let Some(&star_p50) = starship_p50.get(r.workload.as_str()) {
+            let fast_x = format!("x{:.1}", star_p50 / r.fast.p50_ms);
+            match r.slow.as_ref() {
+                Some(s) => format!("{fast_x} / x{:.1}", star_p50 / s.p50_ms),
+                None => fast_x,
+            }
+        } else {
+            String::new()
+        };
         lines.push(format!(
-            "| {} | {} | {} | {} | {} | {} | {} |",
-            r.workload,
-            r.tool,
-            format_ms(r.fast.p50_ms),
-            format_ms(r.fast.p95_ms),
-            slow_p50,
-            slow_p95,
-            r.description
+            "| {} | {} | {} | {} | {} |",
+            r.workload, r.tool, p50, p95, speedup,
         ));
     }
 
@@ -232,7 +246,7 @@ fn run_command(cmd: &[&str], cwd: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn create_repo(repo: &Path, git_bin: &Path, file_count: usize) -> anyhow::Result<()> {
+fn create_toolchain_repo(repo: &Path, git_bin: &Path) -> anyhow::Result<()> {
     fs::create_dir_all(repo).with_context(|| repo.display().to_string())?;
     let git = git_bin.to_str().context("git path is not valid UTF-8")?;
     run_command(&[git, "init", "-q"], repo)?;
@@ -243,7 +257,7 @@ fn create_repo(repo: &Path, git_bin: &Path, file_count: usize) -> anyhow::Result
     )?;
     run_command(&[git, "config", "commit.gpgsign", "false"], repo)?;
 
-    for index in 0..file_count {
+    for index in 0..16_usize {
         let nested = repo
             .join("src")
             .join(format!("group-{}", index % 8))
@@ -256,25 +270,17 @@ fn create_repo(repo: &Path, git_bin: &Path, file_count: usize) -> anyhow::Result
             .with_context(|| nested.display().to_string())?;
     }
 
-    run_command(&[git, "add", "."], repo)?;
-    run_command(&[git, "commit", "-qm", "initial"], repo)?;
-    Ok(())
-}
-
-fn create_toolchain_repo(repo: &Path, git_bin: &Path) -> anyhow::Result<()> {
-    create_repo(repo, git_bin, 16)?;
     fs::write(
         repo.join("Cargo.toml"),
         "[package]\nname = \"prompt-bench-toolchain\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
     )?;
-    fs::create_dir_all(repo.join("src"))?;
     fs::write(
         repo.join("src").join("main.rs"),
         "fn main() {\n    println!(\"toolchain marker\");\n}\n",
     )?;
-    let git = git_bin.to_str().context("git path is not valid UTF-8")?;
+
     run_command(&[git, "add", "."], repo)?;
-    run_command(&[git, "commit", "-qm", "toolchain"], repo)?;
+    run_command(&[git, "commit", "-qm", "initial"], repo)?;
     Ok(())
 }
 
@@ -300,12 +306,6 @@ fn create_workloads(
     let outside = workspace.join("outside");
     fs::create_dir_all(&outside).with_context(|| outside.display().to_string())?;
 
-    let repo_small = workspace.join("repo-small");
-    create_repo(&repo_small, git_bin, 24)?;
-
-    let repo_medium = workspace.join("repo-medium");
-    create_repo(&repo_medium, git_bin, 240)?;
-
     let repo_toolchain = workspace.join("repo-toolchain");
     create_toolchain_repo(&repo_toolchain, git_bin)?;
 
@@ -315,31 +315,13 @@ fn create_workloads(
             "outside".to_owned(),
             Workload {
                 path: outside.clone(),
-                description: "Non-repository directory".to_owned(),
                 subdirs: create_subdirs(&outside, subdir_count)?,
-            },
-        ),
-        (
-            "repo-small".to_owned(),
-            Workload {
-                path: repo_small.clone(),
-                description: "Small clean Git repository (24 files)".to_owned(),
-                subdirs: create_subdirs(&repo_small, subdir_count)?,
-            },
-        ),
-        (
-            "repo-medium".to_owned(),
-            Workload {
-                path: repo_medium.clone(),
-                description: "Medium clean Git repository (240 files)".to_owned(),
-                subdirs: create_subdirs(&repo_medium, subdir_count)?,
             },
         ),
         (
             "repo-toolchain".to_owned(),
             Workload {
                 path: repo_toolchain.clone(),
-                description: "Git repository with Cargo.toml (toolchain detection)".to_owned(),
                 subdirs: create_subdirs(&repo_toolchain, subdir_count)?,
             },
         ),
@@ -435,7 +417,7 @@ impl CapsuleConn {
         })
     }
 
-    fn measure(&mut self, cwd: &Path) -> anyhow::Result<CapsuleSample> {
+    fn measure(&mut self, cwd: &Path, update_wait: Duration) -> anyhow::Result<CapsuleSample> {
         let generation = CAPSULE_PROMPT_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
         let session_id = SessionId::from_hex(b"deadbeefcafebabe").context("bench session id")?;
         let req = Request {
@@ -478,7 +460,7 @@ impl CapsuleConn {
 
         self.read
             .get_mut()
-            .set_read_timeout(Some(Duration::from_millis(UPDATE_WAIT_MS)))
+            .set_read_timeout(Some(update_wait))
             .context("set read timeout for Update")?;
 
         let mut total_ms = fast_ms;
@@ -533,11 +515,14 @@ fn run_benchmark(
     iterations: usize,
 ) -> anyhow::Result<Vec<ScenarioResult>> {
     let mut results = Vec::new();
-    let total = workloads.len() * 2;
+    let total = workloads.len() * 3;
     let sock_path = home_dir.join(".capsule").join("capsule.sock");
     let path_env = build_path_env(capsule_bin, starship_bin, git_bin, rustc_path().as_deref());
+    let update_wait = Duration::from_millis(UPDATE_WAIT_MS);
 
     let mut step = 0usize;
+
+    // Phase 1: capsule (uncached) — unique cwd per iteration to force cache miss.
     for (name, workload) in workloads {
         step += 1;
         eprintln!("[{step}/{total}] capsule {name}");
@@ -546,7 +531,7 @@ fn run_benchmark(
         let mut subdir_idx = 0usize;
 
         for _ in 0..2 {
-            conn.measure(&workload.subdirs[subdir_idx])
+            conn.measure(&workload.subdirs[subdir_idx], update_wait)
                 .with_context(|| format!("capsule warm-up {name}"))?;
             subdir_idx += 1;
         }
@@ -554,7 +539,7 @@ fn run_benchmark(
         let mut capsule_samples = Vec::with_capacity(iterations);
         for _ in 0..iterations {
             capsule_samples.push(
-                conn.measure(&workload.subdirs[subdir_idx])
+                conn.measure(&workload.subdirs[subdir_idx], update_wait)
                     .with_context(|| format!("capsule sample {name}"))?,
             );
             subdir_idx += 1;
@@ -568,7 +553,7 @@ fn run_benchmark(
         results.push(ScenarioResult {
             tool: "capsule".to_owned(),
             workload: name.clone(),
-            description: workload.description.clone(),
+
             fast: summarize(&fast_values),
             slow: if has_slow {
                 Some(summarize(&total_values))
@@ -578,6 +563,39 @@ fn run_benchmark(
         });
     }
 
+    // Phase 2: capsule (cached) — same cwd for every iteration to hit the cache.
+    let cached_drain_wait = Duration::from_millis(1);
+    for (name, workload) in workloads {
+        step += 1;
+        eprintln!("[{step}/{total}] capsule (cached) {name}");
+
+        let mut conn = CapsuleConn::connect(&sock_path, path_env.clone())?;
+        let cached_cwd = &workload.path;
+
+        // Warm-up: wait for Update so that slow-module results are cached.
+        for _ in 0..2 {
+            conn.measure(cached_cwd, update_wait)
+                .with_context(|| format!("capsule cached warm-up {name}"))?;
+        }
+
+        let mut cached_fast = Vec::with_capacity(iterations);
+        for _ in 0..iterations {
+            let sample = conn
+                .measure(cached_cwd, cached_drain_wait)
+                .with_context(|| format!("capsule cached sample {name}"))?;
+            cached_fast.push(sample.fast_ms);
+        }
+
+        results.push(ScenarioResult {
+            tool: "capsule (cached)".to_owned(),
+            workload: name.clone(),
+
+            fast: summarize(&cached_fast),
+            slow: None,
+        });
+    }
+
+    // Phase 3: starship
     for (name, workload) in workloads {
         step += 1;
         eprintln!("[{step}/{total}] starship {name}");
@@ -598,7 +616,7 @@ fn run_benchmark(
         results.push(ScenarioResult {
             tool: "starship".to_owned(),
             workload: name.clone(),
-            description: workload.description.clone(),
+
             fast: summarize(&starship_values),
             slow: None,
         });
