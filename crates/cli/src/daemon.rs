@@ -338,7 +338,7 @@ mod tests {
     fn test_generate_plist_contains_required_keys() {
         let bin = PathBuf::from("/usr/local/bin/capsule");
         let sock = PathBuf::from("/Users/test/.capsule/capsule.sock");
-        let plist = generate_plist(&bin, &sock);
+        let plist = generate_plist(&bin, &sock, &[]);
 
         assert!(plist.contains(LAUNCHD_LABEL), "plist should contain label");
         assert!(
@@ -367,7 +367,7 @@ mod tests {
     fn test_generate_plist_no_inetd_compatibility() {
         let bin = PathBuf::from("/usr/local/bin/capsule");
         let sock = PathBuf::from("/Users/test/.capsule/capsule.sock");
-        let plist = generate_plist(&bin, &sock);
+        let plist = generate_plist(&bin, &sock, &[]);
 
         assert!(
             !plist.contains("inetdCompatibility"),
@@ -379,13 +379,49 @@ mod tests {
     fn test_generate_plist_valid_xml() {
         let bin = PathBuf::from("/usr/local/bin/capsule");
         let sock = PathBuf::from("/Users/test/.capsule/capsule.sock");
-        let plist = generate_plist(&bin, &sock);
+        let plist = generate_plist(&bin, &sock, &[]);
 
         assert!(
             plist.starts_with("<?xml"),
             "plist should start with XML declaration"
         );
         assert!(plist.contains("</plist>"), "plist should be well-formed");
+    }
+
+    #[test]
+    fn test_generate_plist_without_env_has_no_environment_variables() {
+        let bin = PathBuf::from("/usr/local/bin/capsule");
+        let sock = PathBuf::from("/Users/test/.capsule/capsule.sock");
+        let plist = generate_plist(&bin, &sock, &[]);
+
+        assert!(
+            !plist.contains("EnvironmentVariables"),
+            "plist should not contain EnvironmentVariables when empty: {plist}"
+        );
+    }
+
+    #[test]
+    fn test_generate_plist_with_xdg_config_home() {
+        let bin = PathBuf::from("/usr/local/bin/capsule");
+        let sock = PathBuf::from("/Users/test/.capsule/capsule.sock");
+        let plist = generate_plist(
+            &bin,
+            &sock,
+            &[("XDG_CONFIG_HOME", "/Users/test/.config".to_owned())],
+        );
+
+        assert!(
+            plist.contains("EnvironmentVariables"),
+            "plist should contain EnvironmentVariables: {plist}"
+        );
+        assert!(
+            plist.contains("<key>XDG_CONFIG_HOME</key>"),
+            "plist should contain XDG_CONFIG_HOME key: {plist}"
+        );
+        assert!(
+            plist.contains("<string>/Users/test/.config</string>"),
+            "plist should contain XDG_CONFIG_HOME value: {plist}"
+        );
     }
 
     #[test]

@@ -114,7 +114,17 @@ impl ServiceManager for Launchd {
 /// Uses socket activation: launchd creates the socket and launches
 /// the daemon on first connection. The daemon retrieves the socket fd
 /// via `launch_activate_socket`.
-pub(super) fn generate_plist(capsule_bin: &Path, socket_path: &Path) -> String {
+///
+/// `forwarded_env` is embedded as `EnvironmentVariables` so that
+/// config file resolution in the socket-activated daemon works
+/// identically to interactive shell sessions.
+pub(super) fn generate_plist(
+    capsule_bin: &Path,
+    socket_path: &Path,
+    forwarded_env: &[(&str, String)],
+) -> String {
+    let env_section = format_environment_variables(forwarded_env);
+
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -126,7 +136,7 @@ pub(super) fn generate_plist(capsule_bin: &Path, socket_path: &Path) -> String {
     <array>
         <string>{}</string>
         <string>daemon</string>
-    </array>
+    </array>{env_section}
     <key>Sockets</key>
     <dict>
         <key>{LAUNCHD_SOCKET_NAME}</key>
@@ -143,6 +153,53 @@ pub(super) fn generate_plist(capsule_bin: &Path, socket_path: &Path) -> String {
         capsule_bin.display(),
         socket_path.display(),
     )
+}
+
+/// Build the `EnvironmentVariables` plist fragment.
+///
+/// Returns an empty string when the slice is empty.
+fn format_environment_variables(vars: &[(&str, String)]) -> String {
+    use std::fmt::Write;
+
+    if vars.is_empty() {
+        return String::new();
+    }
+
+    let mut buf = String::from("\n    <key>EnvironmentVariables</key>\n    <dict>");
+    for (key, value) in vars {
+        let _ = write!(
+            buf,
+            "\n        <key>{}</key>\n        <string>{}</string>",
+            escape_xml(key),
+            escape_xml(value),
+        );
+    }
+    buf.push_str("\n    </dict>");
+    buf
+}
+
+fn escape_xml(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.contains(['&', '<', '>', '"', '\'']) {
+        std::borrow::Cow::Owned(
+            s.replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+                .replace('"', "&quot;")
+                .replace('\'', "&apos;"),
+        )
+    } else {
+        std::borrow::Cow::Borrowed(s)
+    }
+}
+
+/// Collect environment variables that must be forwarded to the
+/// socket-activated daemon process.
+pub(super) fn collect_forwarded_env() -> Vec<(&'static str, String)> {
+    let mut vars = Vec::new();
+    if let Ok(val) = std::env::var("XDG_CONFIG_HOME") {
+        vars.push(("XDG_CONFIG_HOME", val));
+    }
+    vars
 }
 
 /// Compute the plist path for a given home directory.
@@ -165,7 +222,8 @@ pub(super) fn plist_path_for(home: &Path) -> PathBuf {
 /// operation fails.
 pub fn install(sm: &impl ServiceManager, home: &Path, socket_path: &Path) -> anyhow::Result<()> {
     let capsule_bin = std::env::current_exe().context("cannot find capsule binary")?;
-    let plist_content = generate_plist(&capsule_bin, socket_path);
+    let forwarded_env = collect_forwarded_env();
+    let plist_content = generate_plist(&capsule_bin, socket_path, &forwarded_env);
     let plist = plist_path_for(home);
 
     if let Ok(existing) = std::fs::read_to_string(&plist) {
