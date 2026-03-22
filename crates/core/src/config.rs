@@ -81,6 +81,8 @@ impl StyleConfig {
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default)]
 pub struct CharacterConfig {
+    /// Whether the character module is disabled.
+    pub disabled: bool,
     /// The prompt character glyph.
     pub glyph: String,
     /// Color when last command succeeded.
@@ -96,6 +98,7 @@ pub struct CharacterConfig {
 impl Default for CharacterConfig {
     fn default() -> Self {
         Self {
+            disabled: false,
             glyph: "\u{276f}".to_owned(),
             success_color: Color::Green,
             error_color: Color::Red,
@@ -122,6 +125,8 @@ impl CharacterConfig {
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default)]
 pub struct DirectoryConfig {
+    /// Whether the directory module is disabled.
+    pub disabled: bool,
     /// Foreground color for the directory path (bold is always applied).
     pub color: Color,
     /// Structured style override for the directory path.
@@ -133,6 +138,7 @@ pub struct DirectoryConfig {
 impl Default for DirectoryConfig {
     fn default() -> Self {
         Self {
+            disabled: false,
             color: Color::Cyan,
             style: StyleConfig::bold(),
             read_only_style: StyleConfig {
@@ -266,8 +272,8 @@ impl<'de> serde::Deserialize<'de> for TimeFormat {
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default)]
 pub struct TimeConfig {
-    /// Whether the time segment is displayed.
-    pub enabled: bool,
+    /// Whether the time module is disabled.
+    pub disabled: bool,
     /// Time format.
     pub format: TimeFormat,
     /// Foreground color for the time segment.
@@ -279,7 +285,7 @@ pub struct TimeConfig {
 impl Default for TimeConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            disabled: false,
             format: TimeFormat::WithSeconds,
             color: Color::Yellow,
             style: StyleConfig::bold(),
@@ -304,6 +310,8 @@ impl TimeConfig {
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default)]
 pub struct CmdDurationConfig {
+    /// Whether the command duration module is disabled.
+    pub disabled: bool,
     /// Minimum duration in milliseconds before showing the segment.
     pub threshold_ms: u64,
     /// Foreground color for the duration segment.
@@ -315,6 +323,7 @@ pub struct CmdDurationConfig {
 impl Default for CmdDurationConfig {
     fn default() -> Self {
         Self {
+            disabled: false,
             threshold_ms: 2000,
             color: Color::Yellow,
             style: StyleConfig::bold(),
@@ -656,11 +665,11 @@ threshold_ms = 5000
             &path,
             r"
 [time]
-enabled = false
+disabled = true
 ",
         )?;
         let config = load_config(&path);
-        assert!(!config.time.enabled);
+        assert!(config.time.disabled);
         Ok(())
     }
 

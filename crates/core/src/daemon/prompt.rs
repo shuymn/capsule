@@ -36,22 +36,34 @@ pub(super) fn run_fast_modules(
     read_only: bool,
     custom_modules: Vec<CustomModuleInfo>,
 ) -> FastOutputs {
-    let time = if config.time.enabled {
+    let time = if config.time.disabled {
+        None
+    } else {
         TimeModule::with_show_seconds(config.time.show_seconds())
             .render(ctx)
             .map(|output| output.content)
-    } else {
-        None
     };
     FastOutputs {
-        directory: DirectoryModule::new()
-            .render(ctx)
-            .map(|output| output.content),
-        cmd_duration: CmdDurationModule::with_threshold(config.cmd_duration.threshold_ms)
-            .render(ctx)
-            .map(|output| output.content),
+        directory: if config.directory.disabled {
+            None
+        } else {
+            DirectoryModule::new()
+                .render(ctx)
+                .map(|output| output.content)
+        },
+        cmd_duration: if config.cmd_duration.disabled {
+            None
+        } else {
+            CmdDurationModule::with_threshold(config.cmd_duration.threshold_ms)
+                .render(ctx)
+                .map(|output| output.content)
+        },
         time,
-        character: Some(config.character.glyph.clone()),
+        character: if config.character.disabled {
+            None
+        } else {
+            Some(config.character.glyph.clone())
+        },
         last_exit_code: ctx.last_exit_code,
         read_only,
         custom_modules,
