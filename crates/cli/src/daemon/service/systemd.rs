@@ -176,9 +176,8 @@ mod tests {
     use super::{generate_service_unit, generate_socket_unit, service_file_path, socket_file_path};
 
     #[test]
-    fn test_generate_service_unit_contains_required_fields() {
-        let bin = PathBuf::from("/usr/local/bin/capsule");
-        let unit = generate_service_unit(&bin, &[]);
+    fn service_unit_contains_core_fields() {
+        let unit = service_unit_without_env();
 
         assert!(unit.contains("[Unit]"), "should have [Unit] section");
         assert!(unit.contains("[Service]"), "should have [Service] section");
@@ -195,7 +194,7 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_service_unit_with_env_vars() {
+    fn service_unit_embeds_environment_variables() {
         let bin = PathBuf::from("/usr/bin/capsule");
         let unit = generate_service_unit(
             &bin,
@@ -209,9 +208,8 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_service_unit_without_env_has_no_environment_lines() {
-        let bin = PathBuf::from("/usr/bin/capsule");
-        let unit = generate_service_unit(&bin, &[]);
+    fn service_unit_omits_environment_lines_when_empty() {
+        let unit = service_unit_without_env();
 
         assert!(
             !unit.contains("Environment="),
@@ -220,9 +218,8 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_socket_unit_contains_required_fields() {
-        let sock = PathBuf::from("/home/user/.capsule/capsule.sock");
-        let unit = generate_socket_unit(&sock);
+    fn socket_unit_contains_core_fields() {
+        let unit = socket_unit();
 
         assert!(unit.contains("[Unit]"), "should have [Unit] section");
         assert!(unit.contains("[Socket]"), "should have [Socket] section");
@@ -242,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn test_service_file_path_uses_systemd_user_dir() {
+    fn service_file_path_uses_systemd_user_dir() {
         let home = PathBuf::from("/home/user");
         let path = service_file_path(&home);
         assert_eq!(
@@ -252,12 +249,22 @@ mod tests {
     }
 
     #[test]
-    fn test_socket_file_path_uses_systemd_user_dir() {
+    fn socket_file_path_uses_systemd_user_dir() {
         let home = PathBuf::from("/home/user");
         let path = socket_file_path(&home);
         assert_eq!(
             path,
             PathBuf::from("/home/user/.config/systemd/user/capsule.socket")
         );
+    }
+
+    fn service_unit_without_env() -> String {
+        let bin = PathBuf::from("/usr/local/bin/capsule");
+        generate_service_unit(&bin, &[])
+    }
+
+    fn socket_unit() -> String {
+        let sock = PathBuf::from("/home/user/.capsule/capsule.sock");
+        generate_socket_unit(&sock)
     }
 }

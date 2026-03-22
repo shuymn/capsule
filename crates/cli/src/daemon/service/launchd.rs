@@ -249,10 +249,8 @@ mod tests {
     use super::{LAUNCHD_LABEL, LAUNCHD_SOCKET_NAME, generate_plist, plist_path_for};
 
     #[test]
-    fn test_generate_plist_contains_required_keys() {
-        let bin = PathBuf::from("/usr/local/bin/capsule");
-        let sock = PathBuf::from("/Users/test/.capsule/capsule.sock");
-        let plist = generate_plist(&bin, &sock, &[]);
+    fn plist_contains_core_fields() {
+        let plist = plist_without_env();
 
         assert!(plist.contains(LAUNCHD_LABEL), "plist should contain label");
         assert!(
@@ -278,22 +276,8 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_plist_no_inetd_compatibility() {
-        let bin = PathBuf::from("/usr/local/bin/capsule");
-        let sock = PathBuf::from("/Users/test/.capsule/capsule.sock");
-        let plist = generate_plist(&bin, &sock, &[]);
-
-        assert!(
-            !plist.contains("inetdCompatibility"),
-            "plist should not use inetdCompatibility"
-        );
-    }
-
-    #[test]
-    fn test_generate_plist_valid_xml() {
-        let bin = PathBuf::from("/usr/local/bin/capsule");
-        let sock = PathBuf::from("/Users/test/.capsule/capsule.sock");
-        let plist = generate_plist(&bin, &sock, &[]);
+    fn plist_is_valid_xml() {
+        let plist = plist_without_env();
 
         assert!(
             plist.starts_with("<?xml"),
@@ -303,10 +287,8 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_plist_without_env_has_no_environment_variables() {
-        let bin = PathBuf::from("/usr/local/bin/capsule");
-        let sock = PathBuf::from("/Users/test/.capsule/capsule.sock");
-        let plist = generate_plist(&bin, &sock, &[]);
+    fn plist_omits_environment_variables_when_empty() {
+        let plist = plist_without_env();
 
         assert!(
             !plist.contains("EnvironmentVariables"),
@@ -315,7 +297,7 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_plist_with_xdg_config_home() {
+    fn plist_embeds_environment_variables() {
         let bin = PathBuf::from("/usr/local/bin/capsule");
         let sock = PathBuf::from("/Users/test/.capsule/capsule.sock");
         let plist = generate_plist(
@@ -339,12 +321,28 @@ mod tests {
     }
 
     #[test]
-    fn test_plist_path_for_uses_launch_agents_dir() {
+    fn plist_has_no_inetd_compatibility() {
+        let plist = plist_without_env();
+
+        assert!(
+            !plist.contains("inetdCompatibility"),
+            "plist should not use inetdCompatibility"
+        );
+    }
+
+    #[test]
+    fn plist_path_uses_launch_agents_dir() {
         let home = PathBuf::from("/Users/test");
         let path = plist_path_for(&home);
         assert_eq!(
             path,
             PathBuf::from("/Users/test/Library/LaunchAgents/com.github.shuymn.capsule.plist")
         );
+    }
+
+    fn plist_without_env() -> String {
+        let bin = PathBuf::from("/usr/local/bin/capsule");
+        let sock = PathBuf::from("/Users/test/.capsule/capsule.sock");
+        generate_plist(&bin, &sock, &[])
     }
 }
