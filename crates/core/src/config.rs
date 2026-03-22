@@ -479,6 +479,10 @@ fn default_module_format() -> String {
     "{value}".to_owned()
 }
 
+fn default_source_name() -> String {
+    "value".to_owned()
+}
+
 /// Arbitration rule for collapsing competing modules into a single winner.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct Arbitration {
@@ -505,6 +509,12 @@ pub struct ModuleWhen {
 /// Exactly one of `env`, `file`, or `command` should be set.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct SourceDef {
+    /// Variable name this source contributes to.
+    ///
+    /// Sources with the same name form a fallback chain.
+    /// Defaults to `"value"` when omitted.
+    #[serde(default = "default_source_name")]
+    pub name: String,
     /// Read value from an environment variable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<String>,

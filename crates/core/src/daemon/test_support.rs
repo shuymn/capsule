@@ -72,6 +72,7 @@ pub(super) fn make_sleep_module(name: &str, sleep_ms: u32, output: &str) -> Modu
             env: vec![],
         },
         source: vec![SourceDef {
+            name: "value".to_owned(),
             env: None,
             file: None,
             command: Some(vec![

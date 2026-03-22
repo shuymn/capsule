@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -7,7 +7,8 @@ use std::{
 use super::{
     super::ModuleSpeed,
     CustomModuleInfo, ModuleDependencyInputs, RequestFacts, ResolvedModule, ResolvedSource,
-    detect::{apply_regex, make_info},
+    ResolvedSourceGroup,
+    detect::{apply_regex, format_module},
 };
 use crate::config::ModuleWhen;
 
@@ -58,7 +59,7 @@ impl ModuleDependencyInputs {
         for file_path in &module.when.files {
             self.push_file(file_path);
         }
-        for source in &module.sources {
+        for source in module.all_sources() {
             match source {
                 ResolvedSource::Env { name, .. } => self.push_env(name),
                 ResolvedSource::File { path, .. } => self.push_file(path),
@@ -149,21 +150,34 @@ impl RequestFacts {
         files_ok && env_ok
     }
 
+    /// Detects a module by resolving each source group independently
+    /// and formatting with all resolved variables.
     #[must_use]
     pub(crate) fn detect_module(&self, def: &ResolvedModule) -> Option<CustomModuleInfo> {
-        for source in &def.sources {
+        let mut values = HashMap::new();
+        for group in &def.source_groups {
+            if let Some(raw) = self.resolve_group(group) {
+                values.insert(group.name.as_str(), raw);
+            }
+        }
+        format_module(def, &values)
+    }
+
+    /// Resolves a source group using fast-first, slow-second semantics.
+    fn resolve_group(&self, group: &ResolvedSourceGroup) -> Option<String> {
+        for source in &group.sources {
             if source.is_fast()
                 && let Some(raw) = self.resolve_source(source)
             {
-                return Some(make_info(def, &raw));
+                return Some(raw);
             }
         }
 
-        for source in &def.sources {
+        for source in &group.sources {
             if !source.is_fast()
                 && let Some(raw) = self.resolve_source(source)
             {
-                return Some(make_info(def, &raw));
+                return Some(raw);
             }
         }
 
@@ -226,7 +240,7 @@ pub fn required_env_var_names(modules: &[ResolvedModule]) -> Vec<String> {
                 names.push(env_name.clone());
             }
         }
-        for source in &module.sources {
+        for source in module.all_sources() {
             if let ResolvedSource::Env { name, .. } = source
                 && seen.insert(name.as_str())
             {

@@ -1,6 +1,8 @@
 use regex_lite::Regex;
 
-use super::{super::ModuleSpeed, ResolvedModule, ResolvedSource};
+use super::{
+    super::ModuleSpeed, ResolvedModule, ResolvedSource, ResolvedSourceGroup, detect::parse_format,
+};
 use crate::{
     config::{ModuleDef, SourceDef},
     render::style::{Color, Style},
@@ -13,11 +15,18 @@ pub fn resolve_modules(modules: &[ModuleDef]) -> Vec<ResolvedModule> {
 }
 
 fn compile_module_def(def: ModuleDef) -> ResolvedModule {
-    let sources: Vec<ResolvedSource> = def.source.into_iter().filter_map(compile_source).collect();
-    let speed = if sources.iter().all(ResolvedSource::is_fast) {
-        ModuleSpeed::Fast
-    } else {
-        ModuleSpeed::Slow
+    let source_groups = group_sources(def.source);
+    let format_segments = parse_format(&def.format);
+    let speed = {
+        let all_fast = source_groups
+            .iter()
+            .flat_map(|g| &g.sources)
+            .all(ResolvedSource::is_fast);
+        if all_fast {
+            ModuleSpeed::Fast
+        } else {
+            ModuleSpeed::Slow
+        }
     };
     let style = def
         .style
@@ -26,14 +35,34 @@ fn compile_module_def(def: ModuleDef) -> ResolvedModule {
     ResolvedModule {
         name: def.name,
         when: def.when,
-        sources,
-        format: def.format,
+        source_groups,
+        format_segments,
         icon: def.icon,
         style,
         connector: def.connector,
         speed,
         arbitration: def.arbitration,
     }
+}
+
+/// Groups a flat list of [`SourceDef`]s by variable name, preserving first-appearance order.
+fn group_sources(sources: Vec<SourceDef>) -> Vec<ResolvedSourceGroup> {
+    let mut groups: Vec<ResolvedSourceGroup> = Vec::new();
+    for def in sources {
+        let name = def.name.clone();
+        let Some(resolved) = compile_source(def) else {
+            continue;
+        };
+        if let Some(group) = groups.iter_mut().find(|g| g.name == name) {
+            group.sources.push(resolved);
+        } else {
+            groups.push(ResolvedSourceGroup {
+                name,
+                sources: vec![resolved],
+            });
+        }
+    }
+    groups
 }
 
 fn compile_source(def: SourceDef) -> Option<ResolvedSource> {

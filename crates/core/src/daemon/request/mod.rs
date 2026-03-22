@@ -278,8 +278,7 @@ struct SlowUpdateTarget {
 fn should_detect_inline(speed: ModuleSpeed, module: &ResolvedModule) -> bool {
     speed == ModuleSpeed::Fast
         && module
-            .sources
-            .iter()
+            .all_sources()
             .all(|source| matches!(source, ResolvedSource::Env { .. }))
 }
 
@@ -1171,6 +1170,7 @@ mod tests {
                     env: vec!["CAPSULE_PROFILE".to_owned()],
                 },
                 source: vec![SourceDef {
+                    name: "value".to_owned(),
                     env: None,
                     file: None,
                     command: Some(vec![
@@ -1273,6 +1273,7 @@ mod tests {
                 name: "profile".to_owned(),
                 when: ModuleWhen::default(),
                 source: vec![SourceDef {
+                    name: "value".to_owned(),
                     env: Some("CAPSULE_PROFILE".to_owned()),
                     file: None,
                     command: None,
@@ -1688,6 +1689,7 @@ mod tests {
                     env: vec!["MY_VAR".to_owned()],
                 },
                 source: vec![SourceDef {
+                    name: "value".to_owned(),
                     env: None,
                     file: None,
                     command: Some(vec![

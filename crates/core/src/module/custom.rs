@@ -34,10 +34,10 @@ pub struct ResolvedModule {
     pub name: String,
     /// Trigger conditions.
     pub when: ModuleWhen,
-    /// Compiled value sources.
-    pub sources: Vec<ResolvedSource>,
-    /// Format string with `{value}` placeholder.
-    pub format: String,
+    /// Compiled value source groups, keyed by variable name.
+    pub source_groups: Vec<ResolvedSourceGroup>,
+    /// Pre-parsed format segments.
+    pub format_segments: Vec<detect::FormatSegment>,
     /// Nerd Font icon glyph.
     pub icon: Option<String>,
     /// Display style.
@@ -48,6 +48,22 @@ pub struct ResolvedModule {
     pub speed: ModuleSpeed,
     /// Optional arbitration rule for collapsing competing detected modules.
     pub arbitration: Option<Arbitration>,
+}
+
+impl ResolvedModule {
+    /// Iterates over all sources across all groups.
+    pub(crate) fn all_sources(&self) -> impl Iterator<Item = &ResolvedSource> {
+        self.source_groups.iter().flat_map(|g| &g.sources)
+    }
+}
+
+/// A named group of fallback sources that resolve to a single format variable.
+#[derive(Debug, Clone)]
+pub struct ResolvedSourceGroup {
+    /// Variable name used in the format string (e.g. `"version"`, `"region"`).
+    pub name: String,
+    /// Ordered fallback sources for this variable.
+    pub sources: Vec<ResolvedSource>,
 }
 
 /// A compiled value source.
@@ -178,6 +194,7 @@ mod tests {
                 env: vec!["AWS_PROFILE".to_owned()],
             },
             source: vec![SourceDef {
+                name: "value".to_owned(),
                 env: Some("AWS_PROFILE".to_owned()),
                 file: None,
                 command: None,
@@ -205,6 +222,7 @@ mod tests {
                 env: vec![],
             },
             source: vec![SourceDef {
+                name: "value".to_owned(),
                 env: None,
                 file: None,
                 command: Some(vec!["zig".to_owned(), "version".to_owned()]),
@@ -220,7 +238,13 @@ mod tests {
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].name, "zig");
         assert_eq!(resolved[0].connector.as_deref(), Some("via"));
-        assert_eq!(resolved[0].format, "v{value}");
+        assert_eq!(
+            resolved[0].format_segments,
+            vec![
+                detect::FormatSegment::Literal("v".to_owned()),
+                detect::FormatSegment::Variable("value".to_owned()),
+            ]
+        );
         assert_eq!(resolved[0].speed, ModuleSpeed::Slow);
     }
 
@@ -230,6 +254,7 @@ mod tests {
             name: "deno".to_owned(),
             when: ModuleWhen::default(),
             source: vec![SourceDef {
+                name: "value".to_owned(),
                 env: Some("DENO_VERSION".to_owned()),
                 file: None,
                 command: None,
@@ -256,6 +281,7 @@ mod tests {
             name: "env_only".to_owned(),
             when: ModuleWhen::default(),
             source: vec![SourceDef {
+                name: "value".to_owned(),
                 env: Some("FOO".to_owned()),
                 file: None,
                 command: None,
@@ -279,12 +305,14 @@ mod tests {
             when: ModuleWhen::default(),
             source: vec![
                 SourceDef {
+                    name: "value".to_owned(),
                     env: Some("FOO".to_owned()),
                     file: None,
                     command: None,
                     regex: None,
                 },
                 SourceDef {
+                    name: "value".to_owned(),
                     env: None,
                     file: None,
                     command: Some(vec!["echo".to_owned(), "bar".to_owned()]),
@@ -308,6 +336,7 @@ mod tests {
             name: "empty_cmd".to_owned(),
             when: ModuleWhen::default(),
             source: vec![SourceDef {
+                name: "value".to_owned(),
                 env: None,
                 file: None,
                 command: Some(vec![]),
@@ -322,7 +351,7 @@ mod tests {
 
         let m = defs.iter().find(|r| r.name == "empty_cmd");
         assert!(
-            m.is_some_and(|m| m.sources.is_empty()),
+            m.is_some_and(|m| m.source_groups.is_empty()),
             "empty command args must be filtered during compilation"
         );
     }
@@ -338,6 +367,7 @@ mod tests {
                 env: vec!["AWS_PROFILE".to_owned()],
             },
             source: vec![SourceDef {
+                name: "value".to_owned(),
                 env: Some("AWS_PROFILE".to_owned()),
                 file: None,
                 command: None,
@@ -367,6 +397,7 @@ mod tests {
                 env: vec!["AWS_PROFILE".to_owned()],
             },
             source: vec![SourceDef {
+                name: "value".to_owned(),
                 env: Some("AWS_PROFILE".to_owned()),
                 file: None,
                 command: None,
@@ -399,6 +430,7 @@ mod tests {
                 env: vec![],
             },
             source: vec![SourceDef {
+                name: "value".to_owned(),
                 env: None,
                 file: Some(".tool-versions".to_owned()),
                 command: None,
@@ -430,6 +462,7 @@ mod tests {
                 env: vec![],
             },
             source: vec![SourceDef {
+                name: "value".to_owned(),
                 env: None,
                 file: None,
                 command: Some(vec!["echo".to_owned(), "1.2.3".to_owned()]),
@@ -462,12 +495,14 @@ mod tests {
             },
             source: vec![
                 SourceDef {
+                    name: "value".to_owned(),
                     env: Some("MY_VERSION".to_owned()),
                     file: None,
                     command: None,
                     regex: None,
                 },
                 SourceDef {
+                    name: "value".to_owned(),
                     env: None,
                     file: None,
                     command: Some(vec!["echo".to_owned(), "from-cmd".to_owned()]),
@@ -502,6 +537,7 @@ mod tests {
                 env: vec!["FOO".to_owned()],
             },
             source: vec![SourceDef {
+                name: "value".to_owned(),
                 env: Some("FOO".to_owned()),
                 file: None,
                 command: None,
@@ -529,6 +565,7 @@ mod tests {
                 env: vec!["VERSION_STR".to_owned()],
             },
             source: vec![SourceDef {
+                name: "value".to_owned(),
                 env: Some("VERSION_STR".to_owned()),
                 file: None,
                 command: None,
@@ -558,6 +595,7 @@ mod tests {
                 env: vec![],
             },
             source: vec![SourceDef {
+                name: "value".to_owned(),
                 env: Some("FOO".to_owned()),
                 file: None,
                 command: None,
@@ -585,6 +623,7 @@ mod tests {
             name: "always".to_owned(),
             when: ModuleWhen::default(), // empty when
             source: vec![SourceDef {
+                name: "value".to_owned(),
                 env: Some("FOO".to_owned()),
                 file: None,
                 command: None,
@@ -614,6 +653,7 @@ mod tests {
                 env: vec![],
             },
             source: vec![SourceDef {
+                name: "value".to_owned(),
                 env: None,
                 file: None,
                 command: Some(vec!["false".to_owned()]),
@@ -641,6 +681,7 @@ mod tests {
                 name: "alpha".to_owned(),
                 when: ModuleWhen::default(),
                 source: vec![SourceDef {
+                    name: "value".to_owned(),
                     env: Some("ALPHA_VERSION".to_owned()),
                     file: None,
                     command: None,
@@ -656,6 +697,7 @@ mod tests {
                 name: "beta".to_owned(),
                 when: ModuleWhen::default(),
                 source: vec![SourceDef {
+                    name: "value".to_owned(),
                     env: Some("BETA_VERSION".to_owned()),
                     file: None,
                     command: None,
@@ -690,6 +732,7 @@ mod tests {
                 name: "first".to_owned(),
                 when: ModuleWhen::default(),
                 source: vec![SourceDef {
+                    name: "value".to_owned(),
                     env: Some("FIRST_VERSION".to_owned()),
                     file: None,
                     command: None,
@@ -705,6 +748,7 @@ mod tests {
                 name: "second".to_owned(),
                 when: ModuleWhen::default(),
                 source: vec![SourceDef {
+                    name: "value".to_owned(),
                     env: Some("SECOND_VERSION".to_owned()),
                     file: None,
                     command: None,
@@ -739,6 +783,7 @@ mod tests {
                 name: "winner".to_owned(),
                 when: ModuleWhen::default(),
                 source: vec![SourceDef {
+                    name: "value".to_owned(),
                     env: Some("WINNER_VERSION".to_owned()),
                     file: None,
                     command: None,
@@ -754,6 +799,7 @@ mod tests {
                 name: "plain".to_owned(),
                 when: ModuleWhen::default(),
                 source: vec![SourceDef {
+                    name: "value".to_owned(),
                     env: Some("PLAIN_VERSION".to_owned()),
                     file: None,
                     command: None,
@@ -794,6 +840,7 @@ mod tests {
                     env: vec![],
                 },
                 source: vec![SourceDef {
+                    name: "value".to_owned(),
                     env: None,
                     file: Some(".node-version".to_owned()),
                     command: None,
@@ -813,12 +860,14 @@ mod tests {
                 },
                 source: vec![
                     SourceDef {
+                        name: "value".to_owned(),
                         env: Some("TF_WORKSPACE".to_owned()),
                         file: None,
                         command: None,
                         regex: None,
                     },
                     SourceDef {
+                        name: "value".to_owned(),
                         env: None,
                         file: Some(".terraform-version".to_owned()),
                         command: None,
@@ -857,6 +906,7 @@ mod tests {
                 env: vec![],
             },
             source: vec![SourceDef {
+                name: "value".to_owned(),
                 env: None,
                 file: None,
                 command: Some(vec!["fake-tool".to_owned(), "--version".to_owned()]),
@@ -915,6 +965,7 @@ mod tests {
                 env: vec![],
             },
             source: vec![SourceDef {
+                name: "value".to_owned(),
                 env: None,
                 file: None,
                 command: Some(vec!["fake-tool".to_owned(), "--version".to_owned()]),
@@ -965,6 +1016,7 @@ mod tests {
                 env: vec!["EMPTY_VAR".to_owned()],
             },
             source: vec![SourceDef {
+                name: "value".to_owned(),
                 env: Some("EMPTY_VAR".to_owned()),
                 file: None,
                 command: None,
@@ -1000,6 +1052,7 @@ mod tests {
                 env: vec![],
             },
             source: vec![SourceDef {
+                name: "value".to_owned(),
                 env: None,
                 file: Some(".version".to_owned()),
                 command: None,
@@ -1035,6 +1088,7 @@ mod tests {
                 env: vec![],
             },
             source: vec![SourceDef {
+                name: "value".to_owned(),
                 env: None,
                 file: Some("../evil".to_owned()),
                 command: None,
@@ -1061,6 +1115,7 @@ mod tests {
             name: "format_inject".to_owned(),
             when: ModuleWhen::default(),
             source: vec![SourceDef {
+                name: "value".to_owned(),
                 env: Some("INJECT_VAR".to_owned()),
                 file: None,
                 command: None,
@@ -1096,6 +1151,7 @@ mod tests {
                 env: vec![],
             },
             source: vec![SourceDef {
+                name: "value".to_owned(),
                 env: None,
                 file: None,
                 command: Some(vec![
@@ -1132,6 +1188,7 @@ mod tests {
                 env: vec![],
             },
             source: vec![SourceDef {
+                name: "value".to_owned(),
                 env: None,
                 file: Some(".version".to_owned()),
                 command: None,
