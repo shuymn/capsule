@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/shuymn/capsule/compare/v0.1.1...v0.1.2) - 2026-03-23
+
+### Added
+
+- *(daemon)* update service definition on restart
+
+### Other
+
+- *(daemon)* streamline action matching for install and uninstall commands
+- *(daemon)* simplify action handling for install and uninstall commands
+
 ## [0.1.1](https://github.com/shuymn/capsule/compare/v0.1.0...v0.1.1) - 2026-03-23
 
 ### Other
