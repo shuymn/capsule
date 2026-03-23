@@ -1131,7 +1131,7 @@ mod tests {
         netstring::encode_into(&mut wire, b"main");
         netstring::encode_into(&mut wire, meta);
         let Message::Request(req) = Message::from_wire(&wire)? else {
-            return Ok(vec![]);
+            unreachable!("expected Message::Request from wire with meta: {meta:?}");
         };
         Ok(req.env_vars)
     }
