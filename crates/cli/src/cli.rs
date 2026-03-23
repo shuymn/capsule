@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
-#[command(name = "capsule", about = "macOS zsh prompt engine")]
+#[command(name = "capsule", about = "macOS zsh prompt engine", version)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
