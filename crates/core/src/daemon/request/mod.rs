@@ -15,8 +15,8 @@ use super::{
     stats::DaemonStats,
 };
 use crate::module::{
-    CustomModuleInfo, DetectedModuleCandidate, GitModule, GitProvider, ModuleSpeed, RequestFacts,
-    ResolvedModule, ResolvedSource, arbitrate_detected_modules, required_env_var_names,
+    CustomModuleInfo, GitModule, GitProvider, ModuleSpeed, RequestFacts, ResolvedModule,
+    ResolvedSource, required_env_var_names,
 };
 
 mod pipeline;
@@ -334,19 +334,7 @@ async fn detect_custom_modules(input: &DetectInput<'_>) -> Vec<CustomModuleInfo>
         }
     }
 
-    let detected = matching_modules_to_candidates(&matching, slots);
-    arbitrate_detected_modules(detected)
-}
-
-fn matching_modules_to_candidates(
-    matching: &[(usize, &ResolvedModule)],
-    slots: Vec<Option<CustomModuleInfo>>,
-) -> Vec<DetectedModuleCandidate> {
-    matching
-        .iter()
-        .zip(slots)
-        .filter_map(|((_, def), info)| info.map(|info| DetectedModuleCandidate::new(def, info)))
-        .collect()
+    RequestFacts::arbitrate_detected_slots(&matching, slots)
 }
 
 #[expect(
@@ -787,7 +775,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_daemon_responds_with_render_result() -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_daemon_render_result() -> Result<(), Box<dyn std::error::Error>> {
         let harness = TestHarness::start(MockGitProvider::default()).await?;
         let (mut reader, mut writer) = harness.connect().await?;
 
@@ -813,8 +801,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_daemon_sends_update_after_slow_module() -> Result<(), Box<dyn std::error::Error>>
-    {
+    async fn test_daemon_slow_module_update() -> Result<(), Box<dyn std::error::Error>> {
         let provider = MockGitProvider {
             status: Some(GitStatus {
                 branch: Some("main".to_owned()),
@@ -887,7 +874,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_daemon_uses_cached_slow_results() -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_daemon_uses_slow_cache() -> Result<(), Box<dyn std::error::Error>> {
         let provider = MockGitProvider {
             status: Some(GitStatus {
                 branch: Some("main".to_owned()),
@@ -936,8 +923,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_daemon_revalidates_git_on_cache_hit_without_update_when_unchanged()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_daemon_git_cache_hit_revalidates() -> Result<(), Box<dyn std::error::Error>> {
         let call_count = count_git_calls();
         let provider = MockGitProvider {
             status: Some(GitStatus {
@@ -1033,8 +1019,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_daemon_coalesces_inflight_slow_recompute_for_same_cache_key()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_daemon_coalesces_slow_recompute() -> Result<(), Box<dyn std::error::Error>> {
         let call_count = count_git_calls();
         let provider = MockGitProvider {
             status: Some(GitStatus {
@@ -1088,8 +1073,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_hot_reload_does_not_reuse_stale_slow_cache_from_previous_config()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_hot_reload_invalidates_slow_cache() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let config_path = dir.path().join("config.toml");
         write_config(&config_path, "[git.indicator_style]\nfg = \"red\"\n")?;
@@ -1180,8 +1164,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_daemon_caches_slow_results_for_same_env_dependency_value()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_daemon_env_dep_cache_hit() -> Result<(), Box<dyn std::error::Error>> {
         let config = Config {
             module: vec![ModuleDef {
                 name: "env-sensitive".to_owned(),
@@ -1259,8 +1242,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_daemon_responds_to_hello_with_hello_ack() -> Result<(), Box<dyn std::error::Error>>
-    {
+    async fn test_daemon_hello_ack() -> Result<(), Box<dyn std::error::Error>> {
         let build_id = BuildId::new("12345:1700000000000000000".to_owned());
         let harness =
             TestHarness::start_with_build_id(MockGitProvider::default(), Some(build_id.clone()))
@@ -1286,8 +1268,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_fast_env_module_renders_without_blocking_pool()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_fast_env_module_no_blocking_pool() -> Result<(), Box<dyn std::error::Error>> {
         let config = Config {
             module: vec![ModuleDef {
                 name: "profile".to_owned(),
@@ -1330,8 +1311,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_hot_reload_uses_updated_config_on_next_request()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_hot_reload_uses_updated_config() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let config_path = dir.path().join("config.toml");
         write_config(&config_path, &character_config("$"))?;
@@ -1362,8 +1342,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_hot_reload_parse_error_keeps_previous_valid_config()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_hot_reload_keeps_previous_config() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let config_path = dir.path().join("config.toml");
         write_config(&config_path, &character_config("$"))?;
@@ -1394,8 +1373,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_hot_reload_loads_config_created_after_start()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_hot_reload_loads_new_config() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let config_path = dir.path().join("config.toml");
 
@@ -1445,8 +1423,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_daemon_path_traversal_cwd_handled_safely()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_daemon_path_traversal_safe() -> Result<(), Box<dyn std::error::Error>> {
         let harness = TestHarness::start(MockGitProvider::default()).await?;
         let (mut reader, mut writer) = harness.connect().await?;
 
@@ -1465,8 +1442,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_daemon_different_cwds_get_independent_slow_computes()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_daemon_cwds_isolate_slow_computes() -> Result<(), Box<dyn std::error::Error>> {
         let call_count = count_git_calls();
         let provider = MockGitProvider {
             status: Some(GitStatus {
@@ -1522,8 +1498,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_daemon_config_reload_during_inflight_does_not_poison_cache()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_daemon_reload_does_not_poison_cache() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let config_path = dir.path().join("config.toml");
         write_config(&config_path, "[git.indicator_style]\nfg = \"red\"\n")?;
@@ -1588,7 +1563,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_daemon_cross_session_cache_sharing() -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_daemon_cross_session_cache() -> Result<(), Box<dyn std::error::Error>> {
         let call_count = count_git_calls();
         let provider = MockGitProvider {
             status: Some(GitStatus {
@@ -1646,8 +1621,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_daemon_rapid_generation_suppresses_stale_updates()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_daemon_suppresses_stale_updates() -> Result<(), Box<dyn std::error::Error>> {
         let call_count = count_git_calls();
         let provider = MockGitProvider {
             status: Some(GitStatus {
@@ -1699,8 +1673,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_daemon_env_dependency_prevents_cache_reuse()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_daemon_env_dep_prevents_cache_reuse() -> Result<(), Box<dyn std::error::Error>> {
         let config = Config {
             module: vec![ModuleDef {
                 name: "env-dep".to_owned(),
@@ -1763,8 +1736,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_daemon_caches_slow_results_with_file_dependency()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_daemon_file_dep_cache_hit() -> Result<(), Box<dyn std::error::Error>> {
         let config = Config {
             module: vec![make_sleep_module("file-dep", 50, "CACHED")],
             ..Config::default()
@@ -1820,8 +1792,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_daemon_status_request_returns_metrics() -> Result<(), Box<dyn std::error::Error>>
-    {
+    async fn test_daemon_status_metrics() -> Result<(), Box<dyn std::error::Error>> {
         let provider = MockGitProvider {
             status: Some(GitStatus {
                 branch: Some("main".to_owned()),
@@ -1867,7 +1838,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_daemon_cache_off_always_recomputes_slow_modules()
+    async fn test_daemon_cache_off_recomputes_slow_modules()
     -> Result<(), Box<dyn std::error::Error>> {
         let call_count = count_git_calls();
         let provider = MockGitProvider {

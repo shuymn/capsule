@@ -15,7 +15,10 @@ use super::{
     ResolvedSourceGroup,
     detect::{apply_regex, format_module},
 };
-use crate::config::ModuleWhen;
+use crate::{
+    config::ModuleWhen,
+    module::{DetectedModuleCandidate, arbitrate_detected_modules},
+};
 
 pub type CommandResolverFuture = Pin<Box<dyn Future<Output = Option<String>> + Send + 'static>>;
 pub type CommandResolver = dyn Fn(PathBuf, Option<String>, Vec<String>, Option<Regex>) -> CommandResolverFuture
@@ -179,6 +182,18 @@ impl RequestFacts {
             }
         }
         format_module(def, &values)
+    }
+
+    pub(crate) fn arbitrate_detected_slots(
+        matching: &[(usize, &ResolvedModule)],
+        slots: Vec<Option<CustomModuleInfo>>,
+    ) -> Vec<CustomModuleInfo> {
+        let detected = matching
+            .iter()
+            .zip(slots)
+            .filter_map(|((_, def), info)| info.map(|info| DetectedModuleCandidate::new(def, info)))
+            .collect();
+        arbitrate_detected_modules(detected)
     }
 
     async fn resolve_group(&self, group: &ResolvedSourceGroup) -> Option<String> {
