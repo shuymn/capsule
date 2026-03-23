@@ -100,7 +100,7 @@ pub(super) fn wait_until_daemon_ready(
 
     for _ in 0..MAX_ATTEMPTS {
         if let Ok(Message::HelloAck(ack)) =
-            crate::connect::sync_request(socket_path, &hello, ATTEMPT_TIMEOUT)
+            crate::connect::sync_request_with_timeout(socket_path, &hello, ATTEMPT_TIMEOUT)
         {
             let id_ok = match expected_build_id {
                 Some(expected) => ack.build_id.as_ref().is_none_or(|id| id == expected),

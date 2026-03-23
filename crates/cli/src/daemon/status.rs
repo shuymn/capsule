@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use capsule_protocol::{Message, PROTOCOL_VERSION, StatusRequest};
 
 use super::socket_path;
@@ -15,7 +13,7 @@ pub fn status(json: bool) -> anyhow::Result<()> {
         version: PROTOCOL_VERSION,
     });
 
-    match crate::connect::sync_request(&sock, &req, Duration::from_secs(5))? {
+    match crate::connect::sync_request(&sock, &req)? {
         Message::StatusResponse(resp) => {
             if json {
                 print_status_json(&resp);
