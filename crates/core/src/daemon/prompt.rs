@@ -284,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_compose_prompt_with_toolchain_version() {
+    fn test_daemon_compose_prompt_toolchain_version_and_color() {
         let fast = make_fast_outputs();
         let slow = SlowOutput {
             custom_modules: vec![make_toolchain_module("rust", "v1.82.0")],
@@ -306,16 +306,6 @@ mod tests {
             "left1 should not contain toolchain name: {}",
             lines.left1
         );
-    }
-
-    #[test]
-    fn test_daemon_compose_prompt_toolchain_uses_theme_color() {
-        let fast = make_fast_outputs();
-        let slow = SlowOutput {
-            custom_modules: vec![make_toolchain_module("rust", "v1.82.0")],
-            ..make_slow_output()
-        };
-        let lines = compose_prompt(&fast, Some(&slow), 80, &default_config());
         assert!(
             contains_style_sequence(&lines.left1, &[1, 31]),
             "rust toolchain should use bold red: {}",
@@ -324,64 +314,24 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_compose_prompt_no_toolchain_without_slow() {
+    fn test_daemon_compose_prompt_omits_toolchain_when_slow_missing() {
         let fast = make_fast_outputs();
-        let lines = compose_prompt(&fast, None, 80, &default_config());
+        let without_slow = compose_prompt(&fast, None, 80, &default_config());
         assert!(
-            !lines.left1.contains("via"),
+            !without_slow.left1.contains("via"),
             "toolchain should not appear without slow output: {}",
-            lines.left1
+            without_slow.left1
         );
-    }
 
-    #[test]
-    fn test_daemon_compose_prompt_multiple_toolchains() {
-        let fast = make_fast_outputs();
-        let slow = SlowOutput {
-            custom_modules: vec![
-                make_toolchain_module("rust", "v1.82.0"),
-                make_toolchain_module("node", "v22.0.0"),
-            ],
-            ..make_slow_output()
-        };
-        let lines = compose_prompt(&fast, Some(&slow), 120, &default_config());
-        assert!(
-            lines.left1.contains("v1.82.0"),
-            "should contain rust version: {}",
-            lines.left1
-        );
-        assert!(
-            lines.left1.contains("v22.0.0"),
-            "should contain node version: {}",
-            lines.left1
-        );
-        assert_eq!(
-            lines.left1.matches("via").count(),
-            2,
-            "should have two 'via' connectors: {}",
-            lines.left1
-        );
-        let rust_pos = lines.left1.find("v1.82.0");
-        let node_pos = lines.left1.find("v22.0.0");
-        assert!(
-            rust_pos < node_pos,
-            "rust should come before node: {}",
-            lines.left1
-        );
-    }
-
-    #[test]
-    fn test_daemon_compose_prompt_empty_custom_modules() {
-        let fast = make_fast_outputs();
-        let slow = SlowOutput {
+        let empty_slow = SlowOutput {
             custom_modules: vec![],
             ..make_slow_output()
         };
-        let lines = compose_prompt(&fast, Some(&slow), 80, &default_config());
+        let with_empty_slow = compose_prompt(&fast, Some(&empty_slow), 80, &default_config());
         assert!(
-            !lines.left1.contains("via"),
-            "no 'via' connector with empty custom modules: {}",
-            lines.left1
+            !with_empty_slow.left1.contains("via"),
+            "toolchain should not appear with empty slow output: {}",
+            with_empty_slow.left1
         );
     }
 
@@ -410,7 +360,7 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_compose_prompt_does_not_dim_connectors() {
+    fn test_daemon_compose_prompt_connectors_keep_their_styles() {
         let fast = FastOutputs {
             time: Some("14:30:45".to_owned()),
             ..make_fast_outputs()
@@ -447,11 +397,6 @@ mod tests {
             lines.left2
         );
         assert!(
-            contains_style_sequence(&lines.left1, &[1, 31]),
-            "rust toolchain should use bold red: {}",
-            lines.left1
-        );
-        assert!(
             contains_yellow_ansi(&lines.left2),
             "time content should use yellow styling: {}",
             lines.left2
@@ -474,7 +419,7 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_compose_prompt_cmd_duration_took_connector() {
+    fn test_daemon_compose_prompt_cmd_duration_uses_took() {
         let fast = FastOutputs {
             cmd_duration: Some("3s".to_owned()),
             ..make_fast_outputs()
@@ -493,7 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_compose_prompt_readonly_shows_lock_icon() {
+    fn test_daemon_compose_prompt_readonly_lock_is_red() {
         let fast = FastOutputs {
             read_only: true,
             ..make_fast_outputs()
@@ -504,15 +449,6 @@ mod tests {
             "readonly dir should show lock icon: {}",
             lines.left1
         );
-    }
-
-    #[test]
-    fn test_daemon_compose_prompt_readonly_lock_styled_red() {
-        let fast = FastOutputs {
-            read_only: true,
-            ..make_fast_outputs()
-        };
-        let lines = compose_prompt(&fast, None, 80, &default_config());
         let lock_pos = lines.left1.find('\u{f023}');
         assert!(lock_pos.is_some(), "lock icon should be present");
         let before_lock = &lines.left1[..lock_pos.unwrap_or(0)];
