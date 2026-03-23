@@ -573,41 +573,56 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_shell_request_basic() -> Result<(), Box<dyn std::error::Error>> {
-        let line = b"42\t0\t1500\t/home/user\t120\tmain\tPATH=/usr/bin";
-        let req = parse_shell_request(line, test_session_id())?;
-        assert_eq!(req.version, PROTOCOL_VERSION);
-        assert_eq!(req.session_id, test_session_id());
-        assert_eq!(req.generation, PromptGeneration::new(42));
-        assert_eq!(req.last_exit_code, 0);
-        assert_eq!(req.duration_ms, Some(1500));
-        assert_eq!(req.cwd, "/home/user");
-        assert_eq!(req.cols, 120);
-        assert_eq!(req.keymap, "main");
-        assert_eq!(
-            req.env_vars,
-            vec![("PATH".to_owned(), "/usr/bin".to_owned())]
-        );
-        Ok(())
-    }
+    fn test_parse_shell_request_round_trip_cases() -> Result<(), Box<dyn std::error::Error>> {
+        let cases = [
+            (
+                b"42\t0\t1500\t/home/user\t120\tmain\tPATH=/usr/bin".as_slice(),
+                42,
+                0,
+                Some(1500),
+                "/home/user",
+                120,
+                "main",
+                vec![("PATH".to_owned(), "/usr/bin".to_owned())],
+            ),
+            (
+                b"1\t127\t\t/tmp\t80\tmain\t".as_slice(),
+                1,
+                127,
+                None,
+                "/tmp",
+                80,
+                "main",
+                vec![],
+            ),
+            (
+                b"1\t-1\t\t/tmp\t80\tmain\t".as_slice(),
+                1,
+                -1,
+                None,
+                "/tmp",
+                80,
+                "main",
+                vec![],
+            ),
+        ];
 
-    #[test]
-    fn test_parse_shell_request_empty_duration() -> Result<(), Box<dyn std::error::Error>> {
-        let line = b"1\t127\t\t/tmp\t80\tmain\t";
-        let req = parse_shell_request(line, test_session_id())?;
-        assert_eq!(req.generation, PromptGeneration::new(1));
-        assert_eq!(req.last_exit_code, 127);
-        assert_eq!(req.duration_ms, None);
-        assert_eq!(req.cwd, "/tmp");
-        assert!(req.env_vars.is_empty());
-        Ok(())
-    }
+        for (line, generation, last_exit_code, duration_ms, cwd, cols, keymap, env_vars) in cases {
+            let req = parse_shell_request(line, test_session_id())?;
+            assert_eq!(req.version, PROTOCOL_VERSION);
+            assert_eq!(req.session_id, test_session_id());
+            assert_eq!(req.generation, PromptGeneration::new(generation));
+            assert_eq!(req.last_exit_code, last_exit_code);
+            assert_eq!(req.duration_ms, duration_ms);
+            assert_eq!(req.cwd, cwd);
+            assert_eq!(req.cols, cols);
+            assert_eq!(req.keymap, keymap);
+            assert_eq!(req.env_vars, env_vars);
+        }
 
-    #[test]
-    fn test_parse_shell_request_multiple_env_vars() -> Result<(), Box<dyn std::error::Error>> {
         let mut line = Vec::new();
         line.extend_from_slice(b"1\t0\t\t/tmp\t80\tmain\tPATH=/usr/bin");
-        line.push(0); // null separator
+        line.push(0); // null separator between env vars
         line.extend_from_slice(b"HOME=/home/user");
         let req = parse_shell_request(&line, test_session_id())?;
         assert_eq!(req.env_vars.len(), 2);
@@ -616,14 +631,6 @@ mod tests {
             req.env_vars[1],
             ("HOME".to_owned(), "/home/user".to_owned())
         );
-        Ok(())
-    }
-
-    #[test]
-    fn test_parse_shell_request_negative_exit_code() -> Result<(), Box<dyn std::error::Error>> {
-        let line = b"1\t-1\t\t/tmp\t80\tmain\t";
-        let req = parse_shell_request(line, test_session_id())?;
-        assert_eq!(req.last_exit_code, -1);
         Ok(())
     }
 
@@ -676,35 +683,30 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_env_meta_empty() {
-        assert!(parse_env_meta(b"").is_empty());
+    fn test_parse_env_meta_cases() {
+        let cases = [
+            (b"".as_slice(), vec![]),
+            (
+                b"PATH=/usr/bin:/usr/local/bin".as_slice(),
+                vec![("PATH".to_owned(), "/usr/bin:/usr/local/bin".to_owned())],
+            ),
+            (
+                b"PATH=/usr/bin\0HOME=/home/user".as_slice(),
+                vec![
+                    ("PATH".to_owned(), "/usr/bin".to_owned()),
+                    ("HOME".to_owned(), "/home/user".to_owned()),
+                ],
+            ),
+            (b"MALFORMED".as_slice(), vec![]),
+        ];
+
+        for (meta, expected) in cases {
+            assert_eq!(parse_env_meta(meta), expected);
+        }
     }
 
     #[test]
-    fn test_parse_env_meta_single() {
-        let vars = parse_env_meta(b"PATH=/usr/bin:/usr/local/bin");
-        assert_eq!(vars.len(), 1);
-        assert_eq!(
-            vars[0],
-            ("PATH".to_owned(), "/usr/bin:/usr/local/bin".to_owned())
-        );
-    }
-
-    #[test]
-    fn test_parse_env_meta_multiple() {
-        let meta = b"PATH=/usr/bin\0HOME=/home/user";
-        let vars = parse_env_meta(meta);
-        assert_eq!(vars.len(), 2);
-    }
-
-    #[test]
-    fn test_parse_env_meta_no_equals_dropped() {
-        let vars = parse_env_meta(b"MALFORMED");
-        assert!(vars.is_empty());
-    }
-
-    #[test]
-    fn test_generate_session_id_produces_valid_id() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_generate_session_id() -> Result<(), Box<dyn std::error::Error>> {
         let id = generate_session_id()?;
         // Session ID should be 8 bytes, displayed as 16 hex chars
         assert_eq!(id.to_string().len(), 16);

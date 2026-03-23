@@ -224,7 +224,7 @@ mod tests {
     // -- parse_format ---------------------------------------------------------
 
     #[test]
-    fn test_parse_literal_only() {
+    fn parse_literal_only() {
         let segments = parse_format("hello world");
         assert_eq!(
             segments,
@@ -233,7 +233,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_single_variable() {
+    fn parse_single_variable() {
         let segments = parse_format("{version}");
         assert_eq!(
             segments,
@@ -242,7 +242,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_variable_with_surrounding_text() {
+    fn parse_variable_with_text() {
         let segments = parse_format("v{version}!");
         assert_eq!(
             segments,
@@ -255,7 +255,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_multiple_variables() {
+    fn parse_multiple_variables() {
         let segments = parse_format("{profile} ({region})");
         assert_eq!(
             segments,
@@ -269,7 +269,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_optional_section() {
+    fn parse_optional_section() {
         let segments = parse_format("{profile}[ ({region})]");
         assert_eq!(
             segments,
@@ -285,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_escaped_braces() {
+    fn parse_escaped_braces() {
         let segments = parse_format("{{literal}}");
         // `{{` → literal `{`, then `}}` → `}` closes nothing (no open `{` for variable) + trailing `}`
         assert_eq!(
@@ -295,7 +295,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_escaped_brackets() {
+    fn parse_escaped_brackets() {
         let segments = parse_format("[[literal]]");
         assert_eq!(
             segments,
@@ -304,7 +304,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_empty_string() {
+    fn parse_empty_string() {
         let segments = parse_format("");
         assert!(segments.is_empty());
     }
@@ -312,7 +312,7 @@ mod tests {
     // -- render_format --------------------------------------------------------
 
     #[test]
-    fn test_render_all_variables_resolved() {
+    fn render_all_variables() {
         let segments = parse_format("{profile} ({region})");
         let mut values = HashMap::new();
         values.insert("profile", "prod".to_owned());
@@ -324,7 +324,7 @@ mod tests {
     }
 
     #[test]
-    fn test_render_required_variable_missing_returns_none() {
+    fn render_missing_required_returns_none() {
         let segments = parse_format("{profile} ({region})");
         let mut values = HashMap::new();
         values.insert("profile", "prod".to_owned());
@@ -333,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn test_render_optional_section_with_resolved_variable() {
+    fn render_optional_section_present() {
         let segments = parse_format("{profile}[ ({region})]");
         let mut values = HashMap::new();
         values.insert("profile", "prod".to_owned());
@@ -345,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn test_render_optional_section_with_missing_variable() {
+    fn render_optional_section_omitted() {
         let segments = parse_format("{profile}[ ({region})]");
         let mut values = HashMap::new();
         values.insert("profile", "prod".to_owned());
@@ -354,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn test_render_all_optional_missing_required_present() {
+    fn render_optional_sections_without_values() {
         let segments = parse_format("{name}[ v{version}][ @{scope}]");
         let mut values = HashMap::new();
         values.insert("name", "capsule".to_owned());
@@ -365,7 +365,7 @@ mod tests {
     }
 
     #[test]
-    fn test_render_literal_only() {
+    fn render_literal_only() {
         let segments = parse_format("static text");
         let values = HashMap::new();
         assert_eq!(
@@ -375,7 +375,7 @@ mod tests {
     }
 
     #[test]
-    fn test_render_no_recursive_expansion() {
+    fn render_no_recursive_expansion() {
         let segments = parse_format("prefix-{value}-suffix");
         let mut values = HashMap::new();
         values.insert("value", "{value}".to_owned());

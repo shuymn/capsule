@@ -71,28 +71,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_format_time_with_seconds() {
+    fn format_with_seconds() {
         assert_eq!(format_time(14, 5, 9, true), "14:05:09");
     }
 
     #[test]
-    fn test_format_time_without_seconds() {
+    fn format_without_seconds() {
         assert_eq!(format_time(14, 5, 9, false), "14:05");
     }
 
     #[test]
-    fn test_render_time_returns_none_for_unavailable_time() {
+    fn render_none() {
         assert!(render_time(None, true).is_none());
     }
 
     #[test]
-    fn test_render_time_formats_with_seconds() {
+    fn render_with_seconds() {
         let output = render_time(Some((14, 5, 9)), true);
         assert_eq!(output.map(|o| o.content), Some("14:05:09".to_owned()));
     }
 
     #[test]
-    fn test_render_time_formats_without_seconds() {
+    fn render_without_seconds() {
         let output = render_time(Some((14, 5, 9)), false);
         assert_eq!(output.map(|o| o.content), Some("14:05".to_owned()));
     }

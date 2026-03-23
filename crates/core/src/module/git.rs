@@ -1145,7 +1145,7 @@ mod tests {
     }
 
     #[test]
-    fn test_format_git_output_uses_custom_styles_and_color_map() {
+    fn test_format_git_output_custom_styles() {
         let status = GitStatus {
             branch: Some("main".to_owned()),
             modified: 1,
@@ -1206,7 +1206,7 @@ mod tests {
     }
 
     #[test]
-    fn test_write_state_with_progress() {
+    fn test_write_state_progress() {
         let state = GitOperationState {
             state: GitState::Rebase,
             step: Some(2),
@@ -1216,13 +1216,13 @@ mod tests {
     }
 
     #[test]
-    fn test_write_state_without_progress() {
+    fn test_write_state_no_progress() {
         let state = GitOperationState::without_progress(GitState::Merge);
         assert_eq!(state_to_string(&state), "(MERGING)");
     }
 
     #[test]
-    fn test_write_state_partial_progress_shows_no_progress() {
+    fn test_write_state_partial_progress_falls_back() {
         let state = GitOperationState {
             state: GitState::Rebase,
             step: Some(3),
@@ -1238,7 +1238,7 @@ mod tests {
     // -- format_git_output with state tests --
 
     #[test]
-    fn test_format_git_output_with_rebase_state() {
+    fn test_format_git_output_rebase_state() {
         let status = GitStatus {
             branch: Some("main".to_owned()),
             state: Some(GitOperationState {
@@ -1254,7 +1254,7 @@ mod tests {
     }
 
     #[test]
-    fn test_format_git_output_with_merge_state() {
+    fn test_format_git_output_merge_state() {
         let status = GitStatus {
             branch: Some("main".to_owned()),
             state: Some(GitOperationState::without_progress(GitState::Merge)),
@@ -1266,7 +1266,7 @@ mod tests {
     }
 
     #[test]
-    fn test_format_git_output_state_with_indicators() {
+    fn test_format_git_output_state_indicators() {
         let status = GitStatus {
             branch: Some("main".to_owned()),
             state: Some(GitOperationState {
@@ -1284,7 +1284,7 @@ mod tests {
     }
 
     #[test]
-    fn test_format_git_output_detached_with_state() {
+    fn test_format_git_output_detached_state() {
         let status = GitStatus {
             branch: None,
             head_oid: Some("abcdef0123456789".to_owned()),
@@ -1297,7 +1297,7 @@ mod tests {
     }
 
     #[test]
-    fn test_format_git_output_state_styled_yellow_bold() {
+    fn test_format_git_output_state_style() {
         let status = GitStatus {
             branch: Some("main".to_owned()),
             state: Some(GitOperationState::without_progress(GitState::Merge)),
