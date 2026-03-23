@@ -1,6 +1,9 @@
 use std::{
     collections::{HashMap, HashSet},
+    future::Future,
     path::{Path, PathBuf},
+    pin::Pin,
+    sync::Arc,
 };
 
 use regex_lite::Regex;
@@ -13,6 +16,11 @@ use super::{
     detect::{apply_regex, format_module},
 };
 use crate::config::ModuleWhen;
+
+pub type CommandResolverFuture = Pin<Box<dyn Future<Output = Option<String>> + Send + 'static>>;
+pub type CommandResolver = dyn Fn(PathBuf, Option<String>, Vec<String>, Option<Regex>) -> CommandResolverFuture
+    + Send
+    + Sync;
 
 impl ModuleDependencyInputs {
     fn push_env(&mut self, name: &str) {
@@ -82,6 +90,9 @@ impl RequestFacts {
             env_vars,
             path_env: None,
             read_only,
+            command_resolver: Arc::new(|cwd, path_env, args, regex| {
+                Box::pin(resolve_command_source(cwd, path_env, args, regex))
+            }),
         }
     }
 
@@ -94,6 +105,12 @@ impl RequestFacts {
     #[must_use]
     pub(crate) fn with_forwarded_path_env(mut self) -> Self {
         self.path_env = self.env_value("PATH").map(ToOwned::to_owned);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_command_resolver(mut self, resolver: Arc<CommandResolver>) -> Self {
+        self.command_resolver = resolver;
         self
     }
 
@@ -192,9 +209,17 @@ impl RequestFacts {
                     let cwd = self.cwd.clone();
                     let env_vars = self.env_vars.clone();
                     let path_env = self.command_path_env().map(ToOwned::to_owned);
+                    let command_resolver = Arc::clone(&self.command_resolver);
                     let source = (*source).clone();
                     join_set.spawn(async move {
-                        resolve_source_ref(&cwd, &env_vars, path_env.as_deref(), &source).await
+                        resolve_source_ref(
+                            &cwd,
+                            &env_vars,
+                            path_env.as_deref(),
+                            &*command_resolver,
+                            &source,
+                        )
+                        .await
                     });
                 }
 
@@ -215,7 +240,25 @@ impl RequestFacts {
     }
 
     async fn resolve_source(&self, source: &ResolvedSource) -> Option<String> {
-        resolve_source_ref(&self.cwd, &self.env_vars, self.command_path_env(), source).await
+        resolve_source_ref(
+            &self.cwd,
+            &self.env_vars,
+            self.command_path_env(),
+            &*self.command_resolver,
+            source,
+        )
+        .await
+    }
+}
+
+impl std::fmt::Debug for RequestFacts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RequestFacts")
+            .field("cwd", &self.cwd)
+            .field("env_vars", &self.env_vars)
+            .field("path_env", &self.path_env)
+            .field("read_only", &self.read_only)
+            .finish_non_exhaustive()
     }
 }
 
@@ -292,6 +335,7 @@ async fn resolve_source_ref(
     cwd: &Path,
     env_vars: &[(String, String)],
     path_env: Option<&str>,
+    command_resolver: &CommandResolver,
     source: &ResolvedSource,
 ) -> Option<String> {
     match source {
@@ -307,7 +351,7 @@ async fn resolve_source_ref(
             validate_file_content(&content, regex.as_ref())
         }
         ResolvedSource::Command { args, regex } => {
-            resolve_command_source(
+            (command_resolver)(
                 cwd.to_path_buf(),
                 path_env.map(ToOwned::to_owned),
                 args.clone(),
