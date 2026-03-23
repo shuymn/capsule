@@ -18,10 +18,16 @@ jobs:
         include:
           - os: macos-latest
             target: aarch64-apple-darwin
+            os_name: darwin
+            arch: arm64
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            os_name: linux
+            arch: amd64
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
+            os_name: linux
+            arch: arm64
             cross: true
 
     steps:
@@ -48,15 +54,17 @@ jobs:
           TARGET: ${{ matrix.target }}
 
       - name: Create archive
-        run: tar -czf "capsule-${GITHUB_REF_NAME}-${TARGET}.tar.gz" -C "target/${TARGET}/release" capsule
+        run: tar -czf "capsule-${GITHUB_REF_NAME}-${OS_NAME}-${ARCH}.tar.gz" -C "target/${TARGET}/release" capsule
         env:
           TARGET: ${{ matrix.target }}
+          OS_NAME: ${{ matrix.os_name }}
+          ARCH: ${{ matrix.arch }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: capsule-${{ matrix.target }}
-          path: capsule-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
+          name: capsule-${{ matrix.os_name }}-${{ matrix.arch }}
+          path: capsule-${{ github.ref_name }}-${{ matrix.os_name }}-${{ matrix.arch }}.tar.gz
 
   release:
     name: Release
@@ -92,9 +100,9 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --title "$TAG_NAME" \
             --notes-file /tmp/release-notes.md \
-            "artifacts/capsule-aarch64-apple-darwin/capsule-${TAG_NAME}-aarch64-apple-darwin.tar.gz" \
-            "artifacts/capsule-x86_64-unknown-linux-gnu/capsule-${TAG_NAME}-x86_64-unknown-linux-gnu.tar.gz" \
-            "artifacts/capsule-aarch64-unknown-linux-gnu/capsule-${TAG_NAME}-aarch64-unknown-linux-gnu.tar.gz"
+            "artifacts/capsule-darwin-arm64/capsule-${TAG_NAME}-darwin-arm64.tar.gz" \
+            "artifacts/capsule-linux-amd64/capsule-${TAG_NAME}-linux-amd64.tar.gz" \
+            "artifacts/capsule-linux-arm64/capsule-${TAG_NAME}-linux-arm64.tar.gz"
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.ref_name }}
