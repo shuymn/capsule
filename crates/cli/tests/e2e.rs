@@ -15,6 +15,24 @@ use capsule_protocol::{
 };
 use common::{DaemonProcess, make_request, test_session_id, wait_for_socket_accept};
 
+#[test]
+fn test_version_flag() -> Result<(), Box<dyn std::error::Error>> {
+    let capsule_bin = env!("CARGO_BIN_EXE_capsule");
+    let output = Command::new(capsule_bin).arg("--version").output()?;
+
+    assert!(
+        output.status.success(),
+        "--version should exit successfully"
+    );
+    assert_eq!(std::str::from_utf8(&output.stderr)?, "");
+    assert_eq!(
+        std::str::from_utf8(&output.stdout)?,
+        concat!("capsule ", env!("CARGO_PKG_VERSION"), "\n"),
+    );
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // E2E Tests
 // ---------------------------------------------------------------------------
