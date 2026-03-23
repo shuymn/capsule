@@ -91,9 +91,11 @@ async fn test_e2e_full_flow() -> Result<(), Box<dyn std::error::Error>> {
 /// When daemon is stopped and restarted, stale socket shall be detected and
 /// removed automatically.
 #[tokio::test]
-async fn test_e2e_stale_socket_recovery() -> Result<(), Box<dyn std::error::Error>> {
+async fn test_e2e_stale_socket() -> Result<(), Box<dyn std::error::Error>> {
     let tmpdir = tempfile::tempdir()?;
-    let socket_path = tmpdir.path().join("capsule.sock");
+    let runtime_dir = tmpdir.path().join(".capsule");
+    std::fs::create_dir_all(&runtime_dir)?;
+    let socket_path = runtime_dir.join("capsule.sock");
 
     // Create a stale socket file (listener dropped, file remains)
     {
@@ -117,7 +119,7 @@ async fn test_e2e_stale_socket_recovery() -> Result<(), Box<dyn std::error::Erro
 /// When `CAPSULE_LOG=debug` is set, the daemon shall output structured log
 /// lines to `$TMPDIR/capsule.log`.
 #[tokio::test]
-async fn test_e2e_structured_logging() -> Result<(), Box<dyn std::error::Error>> {
+async fn test_e2e_logging() -> Result<(), Box<dyn std::error::Error>> {
     let mut daemon = DaemonProcess::start_with_log_level("debug")?;
     let log_path = daemon.tmpdir_path().join("capsule.log");
 
@@ -152,13 +154,12 @@ async fn test_e2e_structured_logging() -> Result<(), Box<dyn std::error::Error>>
 /// netstring wire-format for the daemon, and translate the daemon's
 /// netstring responses back to tab-separated text on stdout.
 #[tokio::test]
-async fn test_e2e_connect_relay() -> Result<(), Box<dyn std::error::Error>> {
+async fn test_e2e_connect() -> Result<(), Box<dyn std::error::Error>> {
     let mut daemon = DaemonProcess::start()?;
 
     let capsule_bin = env!("CARGO_BIN_EXE_capsule");
     let mut child = Command::new(capsule_bin)
         .arg("connect")
-        .env("CAPSULE_SOCK_DIR", daemon.tmpdir_path())
         .env("TMPDIR", daemon.tmpdir_path())
         .env("HOME", daemon.tmpdir_path())
         .stdin(Stdio::piped())
@@ -221,15 +222,13 @@ async fn test_e2e_connect_relay() -> Result<(), Box<dyn std::error::Error>> {
 /// When daemon is killed during an active relay, capsule connect shall
 /// reconnect (via `ensure_daemon`) and resume translating messages.
 #[tokio::test]
-async fn test_e2e_connect_reconnects_after_daemon_restart() -> Result<(), Box<dyn std::error::Error>>
-{
+async fn test_e2e_connect_reconnects() -> Result<(), Box<dyn std::error::Error>> {
     let mut daemon = DaemonProcess::start()?;
     let capsule_bin = env!("CARGO_BIN_EXE_capsule");
 
     // Start capsule connect
     let mut connect = Command::new(capsule_bin)
         .arg("connect")
-        .env("CAPSULE_SOCK_DIR", daemon.tmpdir_path())
         .env("TMPDIR", daemon.tmpdir_path())
         .env("HOME", daemon.tmpdir_path())
         .stdin(Stdio::piped())
@@ -318,7 +317,7 @@ async fn test_e2e_connect_reconnects_after_daemon_restart() -> Result<(), Box<dy
     assert!(status.success(), "connect should exit cleanly");
 
     // Kill daemon started by ensure_daemon (not tracked by DaemonProcess)
-    let lock_path = daemon.tmpdir_path().join("capsule.lock");
+    let lock_path = daemon.tmpdir_path().join(".capsule").join("capsule.lock");
     if let Ok(pid_str) = std::fs::read_to_string(&lock_path) {
         let pid_str = pid_str.trim();
         if !pid_str.is_empty() {
@@ -332,7 +331,7 @@ async fn test_e2e_connect_reconnects_after_daemon_restart() -> Result<(), Box<dy
 /// Daemon shall respond to a Hello message with a HelloAck containing
 /// its build ID.
 #[tokio::test]
-async fn test_e2e_hello_handshake() -> Result<(), Box<dyn std::error::Error>> {
+async fn test_e2e_hello_ack() -> Result<(), Box<dyn std::error::Error>> {
     let mut daemon = DaemonProcess::start()?;
 
     let stream = tokio::net::UnixStream::connect(&daemon.socket_path).await?;

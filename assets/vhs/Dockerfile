@@ -51,7 +51,6 @@ EOF
 RUN cat >/home/demo/.zshrc <<'EOF'
 export PATH="/src/target/debug:$PATH"
 export XDG_CONFIG_HOME="$HOME/.config"
-export CAPSULE_SOCK_DIR="$HOME/.capsule"
 export GIT_CONFIG_GLOBAL=/dev/null
 export GIT_CONFIG_SYSTEM=/dev/null
 clear

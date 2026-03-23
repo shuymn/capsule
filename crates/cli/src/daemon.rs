@@ -181,8 +181,6 @@ fn acquire_flock() -> anyhow::Result<Option<File>> {
 
 /// Determine the socket path.
 ///
-/// Uses `$CAPSULE_SOCK_DIR` (for testing) or `~/.capsule/`.
-///
 /// # Errors
 ///
 /// Returns an error if the base directory cannot be determined.
@@ -201,15 +199,10 @@ pub fn lock_path() -> anyhow::Result<PathBuf> {
 
 /// Base directory for capsule runtime files.
 ///
-/// Uses `$CAPSULE_SOCK_DIR` if set (for testing), otherwise `~/.capsule/`.
-///
 /// # Errors
 ///
-/// Returns an error if neither `$CAPSULE_SOCK_DIR` nor `$HOME` is set.
+/// Returns an error if `$HOME` is not set.
 fn capsule_dir() -> anyhow::Result<PathBuf> {
-    if let Ok(dir) = std::env::var("CAPSULE_SOCK_DIR") {
-        return Ok(PathBuf::from(dir));
-    }
     Ok(home_dir()?.join(".capsule"))
 }
 
@@ -310,7 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_flock_prevents_dual_startup() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_daemon_flock_blocks_second() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let lock_path = dir.path().join("capsule.lock");
 
@@ -337,7 +330,7 @@ mod tests {
     }
 
     #[test]
-    fn test_noop_install_succeeds() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_noop_install() -> Result<(), Box<dyn std::error::Error>> {
         let home = tempfile::tempdir()?;
         let socket = home.path().join("capsule.sock");
         NoopServiceManager.install(home.path(), &socket)?;
@@ -345,14 +338,14 @@ mod tests {
     }
 
     #[test]
-    fn test_noop_uninstall_succeeds() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_noop_uninstall() -> Result<(), Box<dyn std::error::Error>> {
         let home = tempfile::tempdir()?;
         NoopServiceManager.uninstall(home.path())?;
         Ok(())
     }
 
     #[test]
-    fn test_install_build_id_match_skips_restart() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_install_build_id_match() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let socket = dir.path().join("test.sock");
 
@@ -369,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn test_install_build_id_mismatch_triggers_restart() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_install_build_id_mismatch() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let socket = dir.path().join("test.sock");
 
@@ -385,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn test_install_daemon_unreachable_skips_restart() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_install_daemon_unreachable() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let socket = dir.path().join("nonexistent.sock");
 
@@ -402,8 +395,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_wait_until_daemon_ready_succeeds_on_hello_ack() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn test_wait_until_daemon_ready_hello() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let socket = dir.path().join("test.sock");
 
@@ -415,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn test_wait_until_daemon_ready_build_id_match() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_wait_until_daemon_ready_build_id() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let socket = dir.path().join("test.sock");
 
@@ -428,8 +420,7 @@ mod tests {
     }
 
     #[test]
-    fn test_wait_until_daemon_ready_no_listener_times_out() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn test_wait_until_daemon_ready_no_listener() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let socket = dir.path().join("nonexistent.sock");
 

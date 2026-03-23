@@ -31,12 +31,12 @@ impl DaemonProcess {
         tmpdir: tempfile::TempDir,
         log_level: Option<&str>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let socket_path = tmpdir.path().join("capsule.sock");
+        let runtime_dir = tmpdir.path().join(".capsule");
+        let socket_path = runtime_dir.join("capsule.sock");
         let capsule_bin = env!("CARGO_BIN_EXE_capsule");
 
         let mut cmd = Command::new(capsule_bin);
         cmd.arg("daemon")
-            .env("CAPSULE_SOCK_DIR", tmpdir.path())
             .env("TMPDIR", tmpdir.path())
             .env("HOME", tmpdir.path())
             .stdin(std::process::Stdio::null())
