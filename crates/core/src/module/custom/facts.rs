@@ -194,7 +194,7 @@ impl RequestFacts {
                     let path_env = self.command_path_env().map(ToOwned::to_owned);
                     let source = (*source).clone();
                     join_set.spawn(async move {
-                        resolve_source_owned(cwd, env_vars, path_env, source).await
+                        resolve_source_ref(&cwd, &env_vars, path_env.as_deref(), &source).await
                     });
                 }
 
@@ -215,25 +215,7 @@ impl RequestFacts {
     }
 
     async fn resolve_source(&self, source: &ResolvedSource) -> Option<String> {
-        match source {
-            ResolvedSource::Env { name, regex } => {
-                let value = self.env_value(name)?;
-                apply_regex(value, regex.as_ref())
-            }
-            ResolvedSource::File { path, regex } => {
-                let path = self.cwd.join(path);
-                let content = tokio::task::spawn_blocking(move || std::fs::read_to_string(path))
-                    .await
-                    .ok()?
-                    .ok()?;
-                validate_file_content(&content, regex.as_ref())
-            }
-            ResolvedSource::Command { args, regex } => {
-                let path_env = self.command_path_env().map(ToOwned::to_owned);
-                resolve_command_source(self.cwd.clone(), path_env, args.clone(), regex.clone())
-                    .await
-            }
-        }
+        resolve_source_ref(&self.cwd, &self.env_vars, self.command_path_env(), source).await
     }
 }
 
@@ -306,26 +288,32 @@ async fn resolve_command_source(
     apply_regex(trimmed, regex.as_ref())
 }
 
-async fn resolve_source_owned(
-    cwd: PathBuf,
-    env_vars: Vec<(String, String)>,
-    path_env: Option<String>,
-    source: ResolvedSource,
+async fn resolve_source_ref(
+    cwd: &Path,
+    env_vars: &[(String, String)],
+    path_env: Option<&str>,
+    source: &ResolvedSource,
 ) -> Option<String> {
     match source {
         ResolvedSource::Env { name, regex } => {
-            find_env_value(&env_vars, &name).and_then(|v| apply_regex(v, regex.as_ref()))
+            find_env_value(env_vars, name).and_then(|value| apply_regex(value, regex.as_ref()))
         }
         ResolvedSource::File { path, regex } => {
-            let content =
-                tokio::task::spawn_blocking(move || std::fs::read_to_string(cwd.join(path)))
-                    .await
-                    .ok()?
-                    .ok()?;
+            let path = cwd.join(path);
+            let content = tokio::task::spawn_blocking(move || std::fs::read_to_string(path))
+                .await
+                .ok()?
+                .ok()?;
             validate_file_content(&content, regex.as_ref())
         }
         ResolvedSource::Command { args, regex } => {
-            resolve_command_source(cwd, path_env, args, regex).await
+            resolve_command_source(
+                cwd.to_path_buf(),
+                path_env.map(ToOwned::to_owned),
+                args.clone(),
+                regex.clone(),
+            )
+            .await
         }
     }
 }
