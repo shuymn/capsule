@@ -9,7 +9,7 @@ mod compile;
 mod detect;
 mod facts;
 
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 pub use builtins::preset_module_defs;
 pub use compile::resolve_modules;
@@ -142,12 +142,13 @@ impl DetectedModuleCandidate {
 
 /// Shared request-derived facts reused across module detection and prompt
 /// rendering.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct RequestFacts {
     cwd: PathBuf,
     env_vars: Vec<(String, String)>,
     path_env: Option<String>,
     read_only: bool,
+    command_resolver: Arc<facts::CommandResolver>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -163,15 +164,41 @@ pub(crate) struct ModuleDependencyInputs {
 #[cfg(test)]
 mod tests {
     use std::{
+        future::pending,
         path::{Path, PathBuf},
+        sync::{Arc, Mutex},
         time::Duration,
     };
+
+    use tokio::sync::oneshot;
 
     use super::*;
     use crate::{
         config::{ModuleDef, RegexPattern, SourceDef, StyleConfig},
         render::style::Color,
     };
+
+    fn mock_command_resolver(
+        fast_rx: Arc<Mutex<Option<oneshot::Receiver<()>>>>,
+    ) -> impl Fn(
+        PathBuf,
+        Option<String>,
+        Vec<String>,
+        Option<regex_lite::Regex>,
+    ) -> facts::CommandResolverFuture {
+        move |_cwd, _path_env, args, _regex| {
+            let is_fast = args.iter().any(|arg| arg.contains("echo fast"));
+            if is_fast {
+                let receiver = fast_rx.lock().ok().and_then(|mut guard| guard.take());
+                Box::pin(async move {
+                    receiver?.await.ok()?;
+                    Some("fast".to_owned())
+                })
+            } else {
+                Box::pin(pending())
+            }
+        }
+    }
 
     fn arbitration(group: &str, priority: u32) -> Arbitration {
         Arbitration {
@@ -1237,17 +1264,25 @@ mod tests {
             return Err("runtime module missing".into());
         };
 
-        let facts = RequestFacts::collect(dir.path().to_path_buf(), vec![]);
-        let started = tokio::time::Instant::now();
-        let detected = facts.detect_module(module).await;
+        let (fast_tx, fast_rx) = oneshot::channel::<()>();
+        let fast_rx = Arc::new(Mutex::new(Some(fast_rx)));
+        let facts = RequestFacts::collect(dir.path().to_path_buf(), vec![])
+            .with_command_resolver(Arc::new(mock_command_resolver(Arc::clone(&fast_rx))));
+
+        let unblock_fast = tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            let _ = fast_tx.send(());
+        });
+        let detected = tokio::time::timeout(Duration::from_secs(1), facts.detect_module(module))
+            .await
+            .map_err(
+                |_elapsed| "detect_module should return after the first successful command source",
+            )?;
+        unblock_fast.await?;
 
         assert_eq!(
             detected.as_ref().map(|info| info.value.as_str()),
             Some("fast")
-        );
-        assert!(
-            started.elapsed() < Duration::from_millis(200),
-            "async command resolution must not wait for slower fallbacks once a winner exists"
         );
         Ok(())
     }
