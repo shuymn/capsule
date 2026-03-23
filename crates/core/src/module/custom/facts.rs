@@ -15,7 +15,10 @@ use super::{
     ResolvedSourceGroup,
     detect::{apply_regex, format_module},
 };
-use crate::config::ModuleWhen;
+use crate::{
+    config::ModuleWhen,
+    module::{DetectedModuleCandidate, arbitrate_detected_modules},
+};
 
 pub type CommandResolverFuture = Pin<Box<dyn Future<Output = Option<String>> + Send + 'static>>;
 pub type CommandResolver = dyn Fn(PathBuf, Option<String>, Vec<String>, Option<Regex>) -> CommandResolverFuture
@@ -179,6 +182,16 @@ impl RequestFacts {
             }
         }
         format_module(def, &values)
+    }
+
+    pub(crate) fn arbitrate_detected_slots(
+        results: Vec<(&ResolvedModule, Option<CustomModuleInfo>)>,
+    ) -> Vec<CustomModuleInfo> {
+        let detected = results
+            .into_iter()
+            .filter_map(|(def, info)| info.map(|info| DetectedModuleCandidate::new(def, info)))
+            .collect();
+        arbitrate_detected_modules(detected)
     }
 
     async fn resolve_group(&self, group: &ResolvedSourceGroup) -> Option<String> {
@@ -359,5 +372,93 @@ async fn resolve_source_ref(
             )
             .await
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{config::Arbitration, render::style::Style};
+
+    fn stub_module(name: &str, arbitration: Option<Arbitration>) -> ResolvedModule {
+        ResolvedModule {
+            name: name.to_owned(),
+            when: ModuleWhen::default(),
+            source_groups: Vec::new(),
+            format_segments: Vec::new(),
+            icon: None,
+            style: Style::default(),
+            connector: None,
+            speed: ModuleSpeed::Fast,
+            arbitration,
+        }
+    }
+
+    fn stub_info(name: &str) -> CustomModuleInfo {
+        CustomModuleInfo {
+            name: name.to_owned(),
+            value: name.to_owned(),
+            icon: None,
+            style: Style::default(),
+            connector: None,
+        }
+    }
+
+    #[test]
+    fn test_none_hole_between_competing_modules() {
+        // Module B (priority 0) would win the group but is undetected (None).
+        // Among detected modules, C (priority 1) beats A (priority 2).
+        let mod_a = stub_module(
+            "a",
+            Some(Arbitration {
+                group: "lang".to_owned(),
+                priority: 2,
+            }),
+        );
+        let mod_b = stub_module(
+            "b",
+            Some(Arbitration {
+                group: "lang".to_owned(),
+                priority: 0,
+            }),
+        );
+        let mod_c = stub_module(
+            "c",
+            Some(Arbitration {
+                group: "lang".to_owned(),
+                priority: 1,
+            }),
+        );
+
+        let results = vec![
+            (&mod_a, Some(stub_info("a"))),
+            (&mod_b, None), // hole — undetected
+            (&mod_c, Some(stub_info("c"))),
+        ];
+
+        let winners = RequestFacts::arbitrate_detected_slots(results);
+
+        assert_eq!(winners.len(), 1);
+        assert_eq!(winners[0].name, "c");
+    }
+
+    #[test]
+    fn test_none_hole_with_non_arbitrated_modules() {
+        // Non-arbitrated modules pass through regardless of holes.
+        let mod_a = stub_module("a", None);
+        let mod_b = stub_module("b", None);
+        let mod_c = stub_module("c", None);
+
+        let results = vec![
+            (&mod_a, Some(stub_info("a"))),
+            (&mod_b, None), // hole
+            (&mod_c, Some(stub_info("c"))),
+        ];
+
+        let winners = RequestFacts::arbitrate_detected_slots(results);
+
+        assert_eq!(winners.len(), 2);
+        assert_eq!(winners[0].name, "a");
+        assert_eq!(winners[1].name, "c");
     }
 }

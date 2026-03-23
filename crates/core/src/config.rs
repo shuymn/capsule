@@ -819,14 +819,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_config_load_missing_file_returns_defaults() {
+    fn load_missing_file_returns_defaults() {
         let config = load_config(Path::new("/nonexistent/config.toml"));
         assert_eq!(config.character.glyph, "\u{276f}");
         assert_eq!(config.cmd_duration.threshold_ms, 2000);
     }
 
     #[test]
-    fn test_config_load_empty_file_returns_defaults() -> Result<(), Box<dyn std::error::Error>> {
+    fn load_empty_file_returns_defaults() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "")?;
@@ -837,7 +837,7 @@ mod tests {
     }
 
     #[test]
-    fn test_config_load_partial_overrides() -> Result<(), Box<dyn std::error::Error>> {
+    fn load_partial_overrides() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -860,7 +860,7 @@ threshold_ms = 5000
     }
 
     #[test]
-    fn test_config_load_syntax_error_returns_defaults() -> Result<(), Box<dyn std::error::Error>> {
+    fn load_syntax_error_returns_defaults() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "invalid = [toml content")?;
@@ -870,7 +870,7 @@ threshold_ms = 5000
     }
 
     #[test]
-    fn test_config_time_disabled() -> Result<(), Box<dyn std::error::Error>> {
+    fn time_disabled() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -886,7 +886,7 @@ disabled = true
     }
 
     #[test]
-    fn test_config_style_fg_deserialization() -> Result<(), Box<dyn std::error::Error>> {
+    fn style_fg_deserializes() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -910,7 +910,7 @@ fg = "blue"
     }
 
     #[test]
-    fn test_config_connector_overrides() -> Result<(), Box<dyn std::error::Error>> {
+    fn connector_overrides() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -932,7 +932,7 @@ connector = "time"
     }
 
     #[test]
-    fn test_config_time_format_show_seconds() {
+    fn time_format_show_seconds() {
         let mut config = TimeConfig::default();
         assert!(config.show_seconds());
 
@@ -944,7 +944,7 @@ connector = "time"
     }
 
     #[test]
-    fn test_config_time_format_deserialization() -> Result<(), Box<dyn std::error::Error>> {
+    fn time_format_deserializes() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -960,8 +960,7 @@ format = "HH:MM"
     }
 
     #[test]
-    fn test_config_time_format_invalid_returns_defaults() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn time_format_invalid_returns_defaults() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -978,8 +977,7 @@ format = "INVALID"
     }
 
     #[test]
-    fn test_config_regex_pattern_invalid_returns_defaults() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn regex_pattern_invalid_returns_defaults() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -1000,7 +998,7 @@ regex = "(unclosed"
     }
 
     #[test]
-    fn test_config_git_disabled() -> Result<(), Box<dyn std::error::Error>> {
+    fn git_disabled() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -1016,13 +1014,13 @@ disabled = true
     }
 
     #[test]
-    fn test_config_git_enabled_by_default() {
+    fn git_enabled_by_default() {
         let config = Config::default();
         assert!(!config.git.disabled);
     }
 
     #[test]
-    fn test_config_git_icon_override() -> Result<(), Box<dyn std::error::Error>> {
+    fn git_icon_override() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -1042,7 +1040,7 @@ fg = "yellow"
     }
 
     #[test]
-    fn test_config_style_overrides_and_color_map() -> Result<(), Box<dyn std::error::Error>> {
+    fn style_overrides_and_color_map() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -1080,8 +1078,7 @@ bright_black = 37
     }
 
     #[test]
-    fn test_config_invalid_color_map_code_fails_loading() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn invalid_color_map_code_fails_loading() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -1099,13 +1096,13 @@ red = 38
     // -- [[module]] config tests -----------------------------------------------
 
     #[test]
-    fn test_config_module_empty_by_default() {
+    fn module_empty_by_default() {
         let config = Config::default();
         assert!(config.module.is_empty());
     }
 
     #[test]
-    fn test_config_module_parse_env_source() -> Result<(), Box<dyn std::error::Error>> {
+    fn module_parse_env_source() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -1136,8 +1133,7 @@ env = "AWS_PROFILE"
     }
 
     #[test]
-    fn test_config_module_parse_command_source_with_regex() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn module_parse_command_source_with_regex() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -1174,7 +1170,7 @@ regex = '(\d[\d.]*)'
     }
 
     #[test]
-    fn test_config_module_default_format() -> Result<(), Box<dyn std::error::Error>> {
+    fn module_default_format() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -1193,7 +1189,7 @@ env = "FOO"
     }
 
     #[test]
-    fn test_config_module_multiple_sources() -> Result<(), Box<dyn std::error::Error>> {
+    fn module_multiple_sources() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -1221,7 +1217,7 @@ regex = 'v?(\d[\d.]*)'
     }
 
     #[test]
-    fn test_config_module_parse_arbitration() -> Result<(), Box<dyn std::error::Error>> {
+    fn module_parse_arbitration() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -1250,7 +1246,7 @@ env = "NODE_VERSION"
     }
 
     #[test]
-    fn test_config_empty_strings_preserve_empty() -> Result<(), Box<dyn std::error::Error>> {
+    fn empty_strings_preserve_empty() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -1279,13 +1275,13 @@ connector = ""
     }
 
     #[test]
-    fn test_config_cache_defaults_to_revalidate() {
+    fn cache_defaults_to_revalidate() {
         let config = Config::default();
         assert_eq!(config.cache.slow, SlowCacheMode::Revalidate);
     }
 
     #[test]
-    fn test_config_cache_slow_off() -> Result<(), Box<dyn std::error::Error>> {
+    fn cache_slow_off() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -1301,7 +1297,7 @@ slow = "off"
     }
 
     #[test]
-    fn test_config_cache_slow_revalidate() -> Result<(), Box<dyn std::error::Error>> {
+    fn cache_slow_revalidate() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -1317,7 +1313,7 @@ slow = "revalidate"
     }
 
     #[test]
-    fn test_config_vicmd_default() {
+    fn vicmd_default() {
         let config = Config::default();
         assert_eq!(
             config.character.vicmd.glyph, "\u{276e}",
@@ -1330,7 +1326,7 @@ slow = "revalidate"
     }
 
     #[test]
-    fn test_config_vicmd_deserialization() -> Result<(), Box<dyn std::error::Error>> {
+    fn vicmd_deserializes() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -1357,7 +1353,7 @@ style = { fg = "green" }
     }
 
     #[test]
-    fn test_config_vicmd_glyph_only() -> Result<(), Box<dyn std::error::Error>> {
+    fn vicmd_glyph_only() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -1377,7 +1373,7 @@ glyph = "N"
     }
 
     #[test]
-    fn test_mode_segment_with_fixed_style() {
+    fn mode_segment_with_fixed_style() {
         let config = CharacterConfig::default();
         let mode = CharacterModeConfig {
             glyph: "❮".to_owned(),
@@ -1390,7 +1386,7 @@ glyph = "N"
     }
 
     #[test]
-    fn test_mode_segment_fallback_to_parent_style() {
+    fn mode_segment_falls_back_to_parent_style() {
         let config = CharacterConfig::default();
         let mode = CharacterModeConfig {
             glyph: "❮".to_owned(),
@@ -1413,7 +1409,7 @@ glyph = "N"
     }
 
     #[test]
-    fn test_config_vicmd_default_glyph_preserved() -> Result<(), Box<dyn std::error::Error>> {
+    fn vicmd_default_glyph_preserved() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -1432,7 +1428,7 @@ style = { fg = "green" }
     }
 
     #[test]
-    fn test_config_partial_style_preserves_parent_bold() -> Result<(), Box<dyn std::error::Error>> {
+    fn partial_style_preserves_parent_bold() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -1453,8 +1449,7 @@ fg = "magenta"
     }
 
     #[test]
-    fn test_config_partial_style_explicit_false_overrides_default()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn partial_style_explicit_false_overrides_default() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -1476,8 +1471,7 @@ bold = false
     }
 
     #[test]
-    fn test_config_git_partial_style_preserves_defaults() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn git_partial_style_preserves_defaults() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
         std::fs::write(
@@ -1506,7 +1500,7 @@ fg = "yellow"
     }
 
     #[test]
-    fn test_config_full_style_override_not_affected() -> Result<(), Box<dyn std::error::Error>> {
+    fn full_style_override_not_affected() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
         std::fs::write(

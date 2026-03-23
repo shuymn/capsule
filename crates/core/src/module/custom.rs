@@ -210,13 +210,13 @@ mod tests {
     // -- resolve_modules ------------------------------------------------------
 
     #[test]
-    fn test_resolve_modules_empty() {
+    fn resolve_modules_empty() {
         let resolved = resolve_modules(&[]);
         assert!(resolved.is_empty());
     }
 
     #[test]
-    fn test_resolve_modules_single_module() {
+    fn resolve_modules_single() {
         let user = vec![ModuleDef {
             name: "aws".to_owned(),
             when: ModuleWhen {
@@ -244,7 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_modules_module_with_command() {
+    fn resolve_modules_with_command() {
         let user = vec![ModuleDef {
             name: "zig".to_owned(),
             when: ModuleWhen {
@@ -279,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_modules_user_module_keeps_arbitration() {
+    fn resolve_modules_keeps_arbitration() {
         let user = vec![ModuleDef {
             name: "deno".to_owned(),
             when: ModuleWhen::default(),
@@ -306,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_modules_speed_fast_only_env() {
+    fn resolve_modules_fast_env() {
         let user = vec![ModuleDef {
             name: "env_only".to_owned(),
             when: ModuleWhen::default(),
@@ -329,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_modules_speed_slow_with_command() {
+    fn resolve_modules_slow_command() {
         let user = vec![ModuleDef {
             name: "mixed".to_owned(),
             when: ModuleWhen::default(),
@@ -361,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_modules_empty_command_args_filtered() {
+    fn resolve_modules_filters_empty_command() {
         let defs = resolve_modules(&[ModuleDef {
             name: "empty_cmd".to_owned(),
             when: ModuleWhen::default(),
@@ -389,7 +389,7 @@ mod tests {
     // -- detect_modules -------------------------------------------------------
 
     #[tokio::test]
-    async fn test_detect_env_source() {
+    async fn detect_env_source() {
         let defs = resolve_modules(&[ModuleDef {
             name: "aws".to_owned(),
             when: ModuleWhen {
@@ -420,7 +420,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_detect_env_source_not_set() {
+    async fn detect_env_source_missing() {
         let defs = resolve_modules(&[ModuleDef {
             name: "aws".to_owned(),
             when: ModuleWhen {
@@ -449,7 +449,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_detect_file_source() -> Result<(), Box<dyn std::error::Error>> {
+    async fn detect_file_source() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         std::fs::write(dir.path().join(".tool-versions"), "erlang 26.0\n")?;
         std::fs::write(dir.path().join("rebar.config"), "")?;
@@ -482,7 +482,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_detect_command_source() -> Result<(), Box<dyn std::error::Error>> {
+    async fn detect_command_source() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         std::fs::write(dir.path().join("build.zig"), "")?;
 
@@ -514,8 +514,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_detect_fast_source_preferred_over_command()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn detect_fast_source_preferred() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         std::fs::write(dir.path().join("marker"), "")?;
 
@@ -561,7 +560,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_detect_format_string() {
+    async fn detect_format_string() {
         let defs = resolve_modules(&[ModuleDef {
             name: "test".to_owned(),
             when: ModuleWhen {
@@ -590,7 +589,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_detect_regex_on_env_source() {
+    async fn detect_env_regex() {
         let defs = resolve_modules(&[ModuleDef {
             name: "test".to_owned(),
             when: ModuleWhen {
@@ -619,7 +618,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_detect_when_files_not_present() -> Result<(), Box<dyn std::error::Error>> {
+    async fn detect_when_missing_files() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         // No marker file
         let defs = resolve_modules(&[ModuleDef {
@@ -652,7 +651,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_detect_when_empty_always_triggers() {
+    async fn detect_when_empty() {
         let defs = resolve_modules(&[ModuleDef {
             name: "always".to_owned(),
             when: ModuleWhen::default(), // empty when
@@ -677,7 +676,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_detect_command_failure_returns_none() -> Result<(), Box<dyn std::error::Error>> {
+    async fn detect_command_failure() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         std::fs::write(dir.path().join("marker"), "")?;
 
@@ -710,7 +709,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_detect_modules_same_group_keeps_lower_priority_user_module() {
+    async fn detect_same_group_keeps_lower_priority() {
         let defs = resolve_modules(&[
             ModuleDef {
                 name: "alpha".to_owned(),
@@ -762,7 +761,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_detect_modules_same_group_equal_priority_keeps_earlier_definition() {
+    async fn detect_same_group_keeps_earlier_definition() {
         let defs = resolve_modules(&[
             ModuleDef {
                 name: "first".to_owned(),
@@ -814,7 +813,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_detect_modules_without_arbitration_are_unaffected() {
+    async fn detect_without_arbitration() {
         let defs = resolve_modules(&[
             ModuleDef {
                 name: "winner".to_owned(),
@@ -863,8 +862,7 @@ mod tests {
     }
 
     #[test]
-    fn test_request_facts_matching_dependency_inputs_only_include_matching_modules()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn request_facts_matching_inputs() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         // Create marker files for the "node" module but not for "terraform"
         std::fs::write(dir.path().join("package.json"), "{}")?;
@@ -932,8 +930,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_request_facts_detect_module_uses_forwarded_path()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn request_facts_uses_forwarded_path() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         std::fs::write(dir.path().join("marker"), "")?;
 
@@ -991,8 +988,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_detect_modules_does_not_treat_forwarded_path_env_as_override()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn detect_ignores_forwarded_path_env() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         std::fs::write(dir.path().join("marker"), "")?;
 
@@ -1047,7 +1043,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_detect_empty_env_var_value() {
+    async fn detect_empty_env_value() {
         let defs = resolve_modules(&[ModuleDef {
             name: "empty_env".to_owned(),
             when: ModuleWhen {
@@ -1080,7 +1076,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_detect_empty_file_content_filtered() -> Result<(), Box<dyn std::error::Error>> {
+    async fn detect_empty_file_filtered() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         std::fs::write(dir.path().join("marker"), "")?;
         std::fs::write(dir.path().join(".version"), "")?;
@@ -1114,8 +1110,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_detect_file_source_path_traversal_rejected()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn detect_file_traversal_rejected() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let sub = dir.path().join("sub");
         std::fs::create_dir(&sub)?;
@@ -1151,7 +1146,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_detect_format_no_recursive_expansion() {
+    async fn detect_format_no_recursive_expansion() {
         let defs = resolve_modules(&[ModuleDef {
             name: "format_inject".to_owned(),
             when: ModuleWhen::default(),
@@ -1181,7 +1176,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_detect_command_no_shell_injection() -> Result<(), Box<dyn std::error::Error>> {
+    async fn detect_command_no_shell_injection() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         std::fs::write(dir.path().join("marker"), "")?;
         let sentinel = dir.path().join("pwned");
@@ -1218,8 +1213,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_detect_module_uses_first_completed_command_source()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn detect_uses_first_command_source() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         std::fs::write(dir.path().join("marker"), "")?;
 
@@ -1288,8 +1282,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_detect_module_resolves_fast_file_source() -> Result<(), Box<dyn std::error::Error>>
-    {
+    async fn detect_resolves_fast_file_source() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         std::fs::write(dir.path().join("marker"), "")?;
         std::fs::write(dir.path().join(".runtime-version"), "2.3.4\n")?;
@@ -1329,7 +1322,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_detect_concurrent_no_corruption() -> Result<(), Box<dyn std::error::Error>> {
+    async fn detect_concurrent_no_corruption() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         std::fs::write(dir.path().join("marker"), "")?;
         std::fs::write(dir.path().join(".version"), "1.0.0\n")?;
@@ -1382,7 +1375,7 @@ mod tests {
     // -- compute_dep_hash -----------------------------------------------------
 
     #[test]
-    fn test_dep_hash_empty_inputs_is_deterministic() {
+    fn dep_hash_empty_inputs() {
         let facts = RequestFacts::collect(PathBuf::from("/tmp"), vec![]);
         let inputs = ModuleDependencyInputs::default();
         let h1 = inputs.compute_dep_hash(&facts);
@@ -1391,7 +1384,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dep_hash_same_env_values_produce_same_hash() {
+    fn dep_hash_same_env() {
         let facts = RequestFacts::collect(
             PathBuf::from("/tmp"),
             vec![("MY_VAR".to_owned(), "val".to_owned())],
@@ -1404,7 +1397,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dep_hash_different_env_values_produce_different_hash() {
+    fn dep_hash_different_env() {
         let facts_a = RequestFacts::collect(
             PathBuf::from("/tmp"),
             vec![("MY_VAR".to_owned(), "a".to_owned())],
@@ -1422,7 +1415,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dep_hash_env_present_vs_absent_produce_different_hash() {
+    fn dep_hash_env_present_absent() {
         let facts_present = RequestFacts::collect(
             PathBuf::from("/tmp"),
             vec![("MY_VAR".to_owned(), "x".to_owned())],
@@ -1437,7 +1430,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dep_hash_file_existence_changes_hash() -> Result<(), Box<dyn std::error::Error>> {
+    fn dep_hash_file_existence_changes() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let mut inputs = ModuleDependencyInputs::default();
         inputs.files.push("marker".to_owned());
@@ -1454,7 +1447,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dep_hash_insertion_order_does_not_affect_result() {
+    fn dep_hash_insertion_order_irrelevant() {
         let facts = RequestFacts::collect(
             PathBuf::from("/tmp"),
             vec![

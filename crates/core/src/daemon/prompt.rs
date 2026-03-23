@@ -193,7 +193,7 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_compose_prompt_fast_only() {
+    fn test_fast_only() {
         let fast = FastOutputs {
             time: Some("14:30:45".to_owned()),
             ..make_fast_outputs()
@@ -218,7 +218,7 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_compose_prompt_with_slow() {
+    fn test_with_slow() {
         let fast = make_fast_outputs();
         let slow = SlowOutput {
             git: Some("main".to_owned()),
@@ -239,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_compose_prompt_slow_none_git() {
+    fn test_none_git() {
         let fast = make_fast_outputs();
         let slow = make_slow_output();
         let without_slow = compose_prompt(&fast, None, 80, &default_config());
@@ -248,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_compose_prompt_styled_directory() {
+    fn test_directory_style() {
         let fast = make_fast_outputs();
         let lines = compose_prompt(&fast, None, 80, &default_config());
         assert!(
@@ -259,7 +259,7 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_compose_prompt_styled_character_success() {
+    fn test_character_success_style() {
         let fast = make_fast_outputs();
         let lines = compose_prompt(&fast, None, 80, &default_config());
         assert!(
@@ -270,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_compose_prompt_styled_character_error() {
+    fn test_character_error_style() {
         let fast = FastOutputs {
             last_exit_code: 1,
             ..make_fast_outputs()
@@ -284,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_compose_prompt_toolchain_version_and_color() {
+    fn test_toolchain_style() {
         let fast = make_fast_outputs();
         let slow = SlowOutput {
             custom_modules: vec![make_toolchain_module("rust", "v1.82.0")],
@@ -314,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_compose_prompt_omits_toolchain_when_slow_missing() {
+    fn test_toolchain_omitted_without_slow() {
         let fast = make_fast_outputs();
         let without_slow = compose_prompt(&fast, None, 80, &default_config());
         assert!(
@@ -336,7 +336,7 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_compose_prompt_time_on_line2() {
+    fn test_time_on_line2() {
         let fast = FastOutputs {
             time: Some("14:30:45".to_owned()),
             ..make_fast_outputs()
@@ -360,7 +360,7 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_compose_prompt_connectors_keep_their_styles() {
+    fn test_connector_styles() {
         let fast = FastOutputs {
             time: Some("14:30:45".to_owned()),
             ..make_fast_outputs()
@@ -404,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_compose_prompt_branch_icon_f418() {
+    fn test_branch_icon() {
         let fast = make_fast_outputs();
         let slow = SlowOutput {
             git: Some("main".to_owned()),
@@ -419,7 +419,7 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_compose_prompt_cmd_duration_uses_took() {
+    fn test_cmd_duration_connector() {
         let fast = FastOutputs {
             cmd_duration: Some("3s".to_owned()),
             ..make_fast_outputs()
@@ -438,7 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_compose_prompt_readonly_lock_is_red() {
+    fn test_readonly_lock_style() {
         let fast = FastOutputs {
             read_only: true,
             ..make_fast_outputs()
@@ -460,7 +460,7 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_compose_prompt_writable_no_lock_icon() {
+    fn test_writable_no_lock_icon() {
         let lines = compose_prompt(&make_fast_outputs(), None, 80, &default_config());
         assert!(
             !lines.left1.contains('\u{f023}'),
@@ -470,7 +470,7 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_compose_prompt_custom_character_glyph() {
+    fn test_custom_character_glyph() {
         let fast = FastOutputs {
             character: Some("$".to_owned()),
             ..make_fast_outputs()
@@ -484,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_compose_prompt_custom_character_colors() {
+    fn test_custom_character_colors() {
         let fast = make_fast_outputs();
         let mut config = default_config();
         config.character.success_style.fg = Some(Color::Magenta);
@@ -497,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_compose_prompt_custom_directory_color() {
+    fn test_custom_directory_color() {
         let fast = make_fast_outputs();
         let mut config = default_config();
         config.directory.style.fg = Some(Color::Green);
@@ -510,7 +510,7 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_compose_prompt_custom_connectors() {
+    fn test_custom_connectors() {
         let fast = FastOutputs {
             time: Some("14:30:45".to_owned()),
             cmd_duration: Some("3s".to_owned()),
@@ -543,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_compose_prompt_time_disabled() {
+    fn test_time_disabled() {
         let fast = FastOutputs {
             time: None,
             ..make_fast_outputs()
@@ -557,7 +557,7 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_compose_prompt_custom_git_icon() {
+    fn test_custom_git_icon() {
         let fast = make_fast_outputs();
         let slow = SlowOutput {
             git: Some("main".to_owned()),
@@ -579,7 +579,7 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_compose_prompt_custom_cmd_duration_color() {
+    fn test_custom_cmd_duration_color() {
         let fast = FastOutputs {
             cmd_duration: Some("3s".to_owned()),
             ..make_fast_outputs()
@@ -596,7 +596,7 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_compose_prompt_applies_structured_styles_and_color_map() {
+    fn test_structured_styles_and_color_map() {
         let fast = FastOutputs {
             time: Some("14:30:45".to_owned()),
             cmd_duration: Some("3s".to_owned()),
@@ -669,7 +669,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compose_prompt_char_meta_empty_when_character_disabled() {
+    fn test_char_meta_empty_when_disabled() {
         let fast = FastOutputs {
             character: None,
             ..make_fast_outputs()
@@ -682,7 +682,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compose_prompt_char_meta_with_default_config() {
+    fn test_char_meta_with_default_config() {
         let fast = make_fast_outputs();
         let lines = compose_prompt(&fast, None, 80, &default_config());
         assert!(
@@ -700,7 +700,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compose_prompt_char_meta_with_custom_vicmd_style() {
+    fn test_char_meta_custom_vicmd_style() {
         let fast = make_fast_outputs();
         let mut config = default_config();
         config.character.vicmd = crate::config::CharacterModeConfig {
@@ -715,7 +715,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compose_prompt_char_meta_viins_matches_left2() {
+    fn test_char_meta_viins_matches_left2() {
         let fast = make_fast_outputs();
         let lines = compose_prompt(&fast, None, 80, &default_config());
         // Extract viins styled string from char_meta

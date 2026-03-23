@@ -6,7 +6,7 @@ use std::process::Command;
 const INIT_ZSH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../core/src/init/init.zsh");
 
 #[test]
-fn test_init_zsh_succeeds() -> Result<(), Box<dyn std::error::Error>> {
+fn test_init_zsh() -> Result<(), Box<dyn std::error::Error>> {
     let output = Command::new(env!("CARGO_BIN_EXE_capsule"))
         .args(["init", "zsh"])
         .output()?;
@@ -20,7 +20,7 @@ fn test_init_zsh_succeeds() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn test_init_zsh_output_contains_capsule_functions() -> Result<(), Box<dyn std::error::Error>> {
+fn test_init_zsh_functions() -> Result<(), Box<dyn std::error::Error>> {
     let output = Command::new(env!("CARGO_BIN_EXE_capsule"))
         .args(["init", "zsh"])
         .output()?;
@@ -49,7 +49,7 @@ fn test_init_zsh_output_contains_capsule_functions() -> Result<(), Box<dyn std::
 /// Executable doc test: eval the init script in an isolated zsh session
 /// and verify PROMPT is set to a non-empty value.
 #[test]
-fn test_init_zsh_sets_prompt_in_isolated_session() -> Result<(), Box<dyn std::error::Error>> {
+fn test_init_zsh_sets_prompt() -> Result<(), Box<dyn std::error::Error>> {
     let capsule_bin = env!("CARGO_BIN_EXE_capsule");
     let capsule_dir = std::path::Path::new(capsule_bin)
         .parent()
@@ -110,7 +110,7 @@ fn test_init_zsh_no_netstring_functions() -> Result<(), Box<dyn std::error::Erro
 // -- Tab-separated protocol format tests --------------------------------------
 
 #[test]
-fn test_zsh_precmd_sends_tab_separated_request() -> Result<(), Box<dyn std::error::Error>> {
+fn test_zsh_precmd_uses_tabs() -> Result<(), Box<dyn std::error::Error>> {
     // Verify the precmd constructs a tab-separated request with correct field count.
     // We check the print format string in the source to ensure it uses \t separators.
     let output = Command::new(env!("CARGO_BIN_EXE_capsule"))
@@ -130,7 +130,7 @@ fn test_zsh_precmd_sends_tab_separated_request() -> Result<(), Box<dyn std::erro
 }
 
 #[test]
-fn test_zsh_response_parsing_uses_tab_split() -> Result<(), Box<dyn std::error::Error>> {
+fn test_zsh_response_parses_tabs() -> Result<(), Box<dyn std::error::Error>> {
     // Verify the async callback and precmd parse tab-separated responses
     let output = Command::new(env!("CARGO_BIN_EXE_capsule"))
         .args(["init", "zsh"])
@@ -151,7 +151,7 @@ fn test_zsh_response_parsing_uses_tab_split() -> Result<(), Box<dyn std::error::
 // -- zsh -n syntax check -----------------------------------------------------
 
 #[test]
-fn test_init_zsh_syntax_valid() -> Result<(), Box<dyn std::error::Error>> {
+fn test_init_zsh_syntax() -> Result<(), Box<dyn std::error::Error>> {
     let output = Command::new("zsh").args(["-n", INIT_ZSH]).output()?;
     assert!(
         output.status.success(),
