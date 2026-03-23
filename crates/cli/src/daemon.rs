@@ -16,11 +16,11 @@ use capsule_core::{
 };
 #[cfg(target_os = "macos")]
 pub use service::Launchd;
-pub use service::ServiceManager;
 #[cfg(target_os = "linux")]
 pub use service::Systemd;
 #[cfg(target_os = "macos")]
 use service::launchd::LAUNCHD_SOCKET_NAME;
+pub use service::{InstallOutcome, ServiceManager, reinstall_service_if_present};
 pub use status::status;
 
 /// Initialize tracing subscriber if `CAPSULE_LOG` is set.
@@ -230,13 +230,15 @@ mod tests {
 
     use capsule_protocol::{BuildId, HelloAck, Message, PROTOCOL_VERSION};
 
-    use super::service::{ServiceManager, daemon_needs_restart, wait_until_daemon_ready};
+    use super::service::{
+        InstallOutcome, ServiceManager, daemon_needs_restart, wait_until_daemon_ready,
+    };
 
     struct NoopServiceManager;
 
     impl ServiceManager for NoopServiceManager {
-        fn install(&self, _home: &Path, _socket_path: &Path) -> anyhow::Result<()> {
-            Ok(())
+        fn install(&self, _home: &Path, _socket_path: &Path) -> anyhow::Result<InstallOutcome> {
+            Ok(InstallOutcome::Installed)
         }
 
         fn uninstall(&self, _home: &Path) -> anyhow::Result<()> {
@@ -333,7 +335,8 @@ mod tests {
     fn test_noop_install() -> Result<(), Box<dyn std::error::Error>> {
         let home = tempfile::tempdir()?;
         let socket = home.path().join("capsule.sock");
-        NoopServiceManager.install(home.path(), &socket)?;
+        let outcome = NoopServiceManager.install(home.path(), &socket)?;
+        assert_eq!(outcome, InstallOutcome::Installed);
         Ok(())
     }
 
@@ -426,6 +429,23 @@ mod tests {
 
         let result = wait_until_daemon_ready(&socket, None);
         assert!(result.is_err(), "should fail on nonexistent socket");
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // reinstall_service_if_present tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_reinstall_returns_none_without_service() -> Result<(), Box<dyn std::error::Error>> {
+        let home = tempfile::tempdir()?;
+        let socket = home.path().join("capsule.sock");
+
+        let result = super::service::reinstall_service_if_present(home.path(), &socket)?;
+        assert!(
+            result.is_none(),
+            "should return None when no service is installed"
+        );
         Ok(())
     }
 }

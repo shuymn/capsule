@@ -14,6 +14,18 @@ pub use launchd::Launchd;
 #[cfg(target_os = "linux")]
 pub use systemd::Systemd;
 
+/// Outcome of a [`ServiceManager::install`] operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallOutcome {
+    /// A new service definition was written and the daemon was loaded.
+    Installed,
+    /// The service definition was already current; daemon was restarted
+    /// because the binary was updated.
+    Restarted,
+    /// Everything is already up-to-date; no action was taken.
+    AlreadyCurrent,
+}
+
 /// Abstracts platform-specific service management operations.
 ///
 /// Implementations handle installing, uninstalling, and restarting a daemon
@@ -29,13 +41,13 @@ pub trait ServiceManager {
     /// Idempotent: if the service definition is already current and the
     /// daemon's build ID matches the current binary, no reload occurs.
     ///
-    /// Returns `Ok(())` once the daemon is ready to process requests.
+    /// Returns the [`InstallOutcome`] describing what action was taken.
     ///
     /// # Errors
     ///
     /// Returns an error if the service definition cannot be written or the
     /// service manager operation fails.
-    fn install(&self, home: &Path, socket_path: &Path) -> anyhow::Result<()>;
+    fn install(&self, home: &Path, socket_path: &Path) -> anyhow::Result<InstallOutcome>;
 
     /// Stop the daemon and remove the service definition.
     ///
@@ -54,6 +66,39 @@ pub trait ServiceManager {
     /// Returns an error if the service manager operation fails or the daemon
     /// does not become ready.
     fn restart(&self) -> anyhow::Result<()>;
+}
+
+/// Reinstall the service definition if one is already present.
+///
+/// Checks whether a platform service definition (launchd plist or systemd
+/// unit files) exists. If so, runs the full [`ServiceManager::install`] flow
+/// — which regenerates the definition, reloads it, and restarts the daemon
+/// as needed — then returns the [`InstallOutcome`].
+///
+/// Returns `Ok(None)` if no service definition is installed (i.e. the daemon
+/// runs in standalone mode) or the platform is unsupported.
+///
+/// # Errors
+///
+/// Returns an error if the service reinstall fails.
+pub fn reinstall_service_if_present(
+    home: &Path,
+    socket_path: &Path,
+) -> anyhow::Result<Option<InstallOutcome>> {
+    #[cfg(target_os = "macos")]
+    if launchd::plist_path_for(home).exists() {
+        let sm = Launchd::new(socket_path)?;
+        return Ok(Some(sm.install(home, socket_path)?));
+    }
+
+    #[cfg(target_os = "linux")]
+    if systemd::service_file_path(home).exists() {
+        let sm = Systemd::new(socket_path);
+        return Ok(Some(sm.install(home, socket_path)?));
+    }
+
+    let _ = (home, socket_path);
+    Ok(None)
 }
 
 /// Check if a running daemon needs to be restarted due to a binary update.

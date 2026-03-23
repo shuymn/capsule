@@ -237,8 +237,22 @@ pub fn negotiate_build_id(socket_path: &Path) -> anyhow::Result<BuildIdNegotiati
     }
 }
 
-/// Restart the daemon by sending SIGTERM and re-launching.
+/// Restart the daemon, updating the service definition if one is installed.
+///
+/// If a platform service definition (launchd plist / systemd unit) exists,
+/// runs the full install flow to regenerate the definition and restart the
+/// daemon through the service manager. This ensures that binary updates
+/// (e.g. via `brew upgrade`) take effect without requiring a manual
+/// `capsule daemon install`.
+///
+/// Falls back to a manual SIGTERM + re-launch when no service is installed
+/// (standalone mode).
 fn restart_daemon(socket_path: &Path, lock_path: &Path) -> anyhow::Result<()> {
+    let home = crate::daemon::home_dir()?;
+    if crate::daemon::reinstall_service_if_present(&home, socket_path)?.is_some() {
+        return Ok(());
+    }
+
     if let Ok(pid_str) = std::fs::read_to_string(lock_path) {
         let pid_str = pid_str.trim();
         if !pid_str.is_empty() {

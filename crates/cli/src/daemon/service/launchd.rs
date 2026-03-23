@@ -81,7 +81,7 @@ impl Launchd {
 
 #[cfg(target_os = "macos")]
 impl ServiceManager for Launchd {
-    fn install(&self, home: &Path, socket_path: &Path) -> anyhow::Result<()> {
+    fn install(&self, home: &Path, socket_path: &Path) -> anyhow::Result<super::InstallOutcome> {
         let capsule_bin = std::env::current_exe().context("cannot find capsule binary")?;
         let forwarded_env = super::collect_forwarded_env();
         let plist_content = generate_plist(&capsule_bin, socket_path, &forwarded_env);
@@ -91,11 +91,9 @@ impl ServiceManager for Launchd {
             if existing == plist_content {
                 if super::daemon_needs_restart(socket_path) {
                     self.restart()?;
-                    println!("daemon restarted (binary updated)");
-                } else {
-                    println!("plist is already current, no reload needed");
+                    return Ok(super::InstallOutcome::Restarted);
                 }
-                return Ok(());
+                return Ok(super::InstallOutcome::AlreadyCurrent);
             }
             let _ = self.unload();
         }
@@ -109,9 +107,8 @@ impl ServiceManager for Launchd {
             .with_context(|| format!("failed to write {}", plist.display()))?;
 
         self.load(&plist)?;
-        println!("capsule daemon installed and loaded");
 
-        Ok(())
+        Ok(super::InstallOutcome::Installed)
     }
 
     fn uninstall(&self, home: &Path) -> anyhow::Result<()> {
