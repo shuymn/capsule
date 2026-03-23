@@ -24,7 +24,7 @@ impl Systemd {
 }
 
 impl ServiceManager for Systemd {
-    fn install(&self, home: &Path, socket_path: &Path) -> anyhow::Result<()> {
+    fn install(&self, home: &Path, socket_path: &Path) -> anyhow::Result<super::InstallOutcome> {
         let capsule_bin = std::env::current_exe().context("cannot find capsule binary")?;
         let forwarded_env = super::collect_forwarded_env();
 
@@ -42,11 +42,9 @@ impl ServiceManager for Systemd {
         if service_unchanged && socket_unchanged {
             if super::daemon_needs_restart(&self.socket_path) {
                 self.restart()?;
-                println!("daemon restarted (binary updated)");
-            } else {
-                println!("unit files are already current, no reload needed");
+                return Ok(super::InstallOutcome::Restarted);
             }
-            return Ok(());
+            return Ok(super::InstallOutcome::AlreadyCurrent);
         }
 
         // Stop before rewriting unit files.
@@ -68,8 +66,7 @@ impl ServiceManager for Systemd {
         super::wait_until_daemon_ready(&self.socket_path, None)
             .context("daemon did not become ready after install")?;
 
-        println!("capsule daemon installed and started");
-        Ok(())
+        Ok(super::InstallOutcome::Installed)
     }
 
     fn uninstall(&self, home: &Path) -> anyhow::Result<()> {
@@ -160,7 +157,7 @@ fn unit_dir(home: &Path) -> PathBuf {
 }
 
 /// Path to the `.service` unit file.
-fn service_file_path(home: &Path) -> PathBuf {
+pub(super) fn service_file_path(home: &Path) -> PathBuf {
     unit_dir(home).join("capsule.service")
 }
 

@@ -20,7 +20,7 @@ fn main() -> anyhow::Result<()> {
             None => daemon::run(),
             Some(DaemonAction::Status { json }) => daemon::status(json),
             Some(DaemonAction::Install | DaemonAction::Uninstall) => {
-                use daemon::ServiceManager as _;
+                use daemon::{InstallOutcome, ServiceManager as _};
 
                 let home = daemon::home_dir()?;
                 let socket_path = daemon::socket_path()?;
@@ -33,7 +33,21 @@ fn main() -> anyhow::Result<()> {
                 anyhow::bail!("service management is not supported on this platform");
 
                 match action {
-                    Some(DaemonAction::Install) => sm.install(&home, &socket_path),
+                    Some(DaemonAction::Install) => {
+                        let outcome = sm.install(&home, &socket_path)?;
+                        match outcome {
+                            InstallOutcome::Installed => {
+                                println!("capsule daemon installed and loaded");
+                            }
+                            InstallOutcome::Restarted => {
+                                println!("daemon restarted (binary updated)");
+                            }
+                            InstallOutcome::AlreadyCurrent => {
+                                println!("service is already current, no reload needed");
+                            }
+                        }
+                        Ok(())
+                    }
                     Some(DaemonAction::Uninstall) => sm.uninstall(&home),
                     _ => Ok(()),
                 }
