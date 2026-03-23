@@ -21,6 +21,8 @@ use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
 use crate::daemon::{lock_path, socket_path};
 
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Run the connect relay.
 ///
 /// Auto-starts the daemon if it is not already running, negotiates
@@ -163,7 +165,12 @@ impl BuildIdNegotiation {
 ///
 /// Returns an error if the connection, write, read, or deserialization
 /// fails.
-pub fn sync_request(
+pub fn sync_request(socket_path: &Path, request: &Message) -> anyhow::Result<Message> {
+    sync_request_with_timeout(socket_path, request, DEFAULT_REQUEST_TIMEOUT)
+}
+
+/// Perform a synchronous request-response exchange with a custom timeout.
+pub fn sync_request_with_timeout(
     socket_path: &Path,
     request: &Message,
     timeout: Duration,
@@ -211,7 +218,7 @@ pub fn negotiate_build_id(socket_path: &Path) -> anyhow::Result<BuildIdNegotiati
         build_id: Some(my_build_id.clone()),
     });
 
-    match sync_request(socket_path, &hello, Duration::from_secs(5))? {
+    match sync_request(socket_path, &hello)? {
         Message::HelloAck(ack) => {
             let compatible = ack.build_id.is_none_or(|id| id == my_build_id);
             Ok(if compatible {
