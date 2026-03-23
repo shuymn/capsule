@@ -292,31 +292,31 @@ async fn detect_custom_modules(input: &DetectInput<'_>) -> Vec<CustomModuleInfo>
         return Vec::new();
     }
 
-    let slot_count = matching.len();
-    let mut slots: Vec<Option<CustomModuleInfo>> = vec![None; slot_count];
+    let mut results: Vec<(&ResolvedModule, Option<CustomModuleInfo>)> =
+        matching.into_iter().map(|(_, def)| (def, None)).collect();
     let mut join_set = JoinSet::new();
 
     let mut deferred = Vec::new();
-    for (slot, def) in matching.iter().copied() {
+    for (idx, (def, detected)) in results.iter_mut().enumerate() {
         if should_detect_inline(input.speed, def) {
-            slots[slot] = input.facts.detect_module(def).await;
+            *detected = input.facts.detect_module(def).await;
         } else {
-            deferred.push((slot, def.clone()));
+            deferred.push((idx, (*def).clone()));
         }
     }
 
     if !deferred.is_empty() {
-        for (slot, def) in deferred {
+        for (idx, def) in deferred {
             let facts = Arc::clone(&input.facts);
-            join_set.spawn(async move { (slot, facts.detect_module(&def).await) });
+            join_set.spawn(async move { (idx, facts.detect_module(&def).await) });
         }
 
         let deadline = tokio::time::Instant::now() + input.timeout;
 
         while !join_set.is_empty() {
             match tokio::time::timeout_at(deadline, join_set.join_next()).await {
-                Ok(Some(Ok((slot, info)))) => {
-                    slots[slot] = info;
+                Ok(Some(Ok((idx, info)))) => {
+                    results[idx].1 = info;
                 }
                 Ok(Some(Err(_))) => {} // task panicked
                 Ok(None) => break,     // all done
@@ -334,7 +334,7 @@ async fn detect_custom_modules(input: &DetectInput<'_>) -> Vec<CustomModuleInfo>
         }
     }
 
-    RequestFacts::arbitrate_detected_slots(&matching, slots)
+    RequestFacts::arbitrate_detected_slots(results)
 }
 
 #[expect(

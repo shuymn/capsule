@@ -185,13 +185,11 @@ impl RequestFacts {
     }
 
     pub(crate) fn arbitrate_detected_slots(
-        matching: &[(usize, &ResolvedModule)],
-        slots: Vec<Option<CustomModuleInfo>>,
+        results: Vec<(&ResolvedModule, Option<CustomModuleInfo>)>,
     ) -> Vec<CustomModuleInfo> {
-        let detected = matching
-            .iter()
-            .zip(slots)
-            .filter_map(|((_, def), info)| info.map(|info| DetectedModuleCandidate::new(def, info)))
+        let detected = results
+            .into_iter()
+            .filter_map(|(def, info)| info.map(|info| DetectedModuleCandidate::new(def, info)))
             .collect();
         arbitrate_detected_modules(detected)
     }
