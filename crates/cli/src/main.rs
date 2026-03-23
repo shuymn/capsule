@@ -19,7 +19,7 @@ fn main() -> anyhow::Result<()> {
         Command::Daemon { action } => match action {
             None => daemon::run(),
             Some(DaemonAction::Status { json }) => daemon::status(json),
-            Some(action @ (DaemonAction::Install | DaemonAction::Uninstall)) => {
+            Some(DaemonAction::Install | DaemonAction::Uninstall) => {
                 use daemon::{InstallOutcome, ServiceManager as _};
 
                 let home = daemon::home_dir()?;
@@ -32,22 +32,24 @@ fn main() -> anyhow::Result<()> {
                 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
                 anyhow::bail!("service management is not supported on this platform");
 
-                if matches!(action, DaemonAction::Install) {
-                    let outcome = sm.install(&home, &socket_path)?;
-                    match outcome {
-                        InstallOutcome::Installed => {
-                            println!("capsule daemon installed and loaded");
+                match action {
+                    Some(DaemonAction::Install) => {
+                        let outcome = sm.install(&home, &socket_path)?;
+                        match outcome {
+                            InstallOutcome::Installed => {
+                                println!("capsule daemon installed and loaded");
+                            }
+                            InstallOutcome::Restarted => {
+                                println!("daemon restarted (binary updated)");
+                            }
+                            InstallOutcome::AlreadyCurrent => {
+                                println!("service is already current, no reload needed");
+                            }
                         }
-                        InstallOutcome::Restarted => {
-                            println!("daemon restarted (binary updated)");
-                        }
-                        InstallOutcome::AlreadyCurrent => {
-                            println!("service is already current, no reload needed");
-                        }
+                        Ok(())
                     }
-                    Ok(())
-                } else {
-                    sm.uninstall(&home)
+                    Some(DaemonAction::Uninstall) => sm.uninstall(&home),
+                    _ => unreachable!(),
                 }
             }
         },
