@@ -12,4 +12,4 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    uses: shuymn/github-actions/.github/workflows/security.yml@ac04e25175ec6bfe1c2010eebf392a9f3cf7f108
+    uses: shuymn/github-actions/.github/workflows/security.yml@eeb0b9b795d7bf3f962ed0f585ac729264d0fcdd
