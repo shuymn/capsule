@@ -16,4 +16,4 @@ jobs:
   lint:
     permissions:
       contents: read
-    uses: shuymn/github-actions/.github/workflows/gha.yml@ac04e25175ec6bfe1c2010eebf392a9f3cf7f108
+    uses: shuymn/github-actions/.github/workflows/gha.yml@eeb0b9b795d7bf3f962ed0f585ac729264d0fcdd
