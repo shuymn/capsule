@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.23@sha256:2780b5c3bab67f1f76c781860de469442999ed1a0d7992a5efdf2cffc0e3d769
 
-FROM rust:bookworm@sha256:fdb91abf3cb33f1ebc84a76461d2472fd8cf606df69c181050fa7474bade2895
+FROM rust:bookworm@sha256:f8eed0ed73e75db6cc2f696c589827b2d42f3c34936dafd94b68c206230f1d64
 
 COPY rust-toolchain.toml /tmp/rust-toolchain.toml
 
