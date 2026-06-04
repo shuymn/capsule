@@ -107,31 +107,38 @@ fn test_init_zsh_no_netstring_functions() -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
-// -- Tab-separated protocol format tests --------------------------------------
+// -- Escaped tab-separated protocol format tests ------------------------------
 
 #[test]
 fn test_zsh_precmd_uses_tabs() -> Result<(), Box<dyn std::error::Error>> {
-    // Verify the precmd constructs a tab-separated request with correct field count.
-    // We check the print format string in the source to ensure it uses \t separators.
+    // Verify the precmd constructs an escaped tab-separated request.
     let output = Command::new(env!("CARGO_BIN_EXE_capsule"))
         .args(["init", "zsh"])
         .output()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // The precmd should use tab-separated format with print -nu
+    // The precmd should use tab-separated format with raw print.
     assert!(
-        stdout.contains(r#"\t${_CAPSULE_LAST_EXIT}\t"#),
+        stdout.contains(r#""${_CAPSULE_GENERATION}"$'\t'"${_CAPSULE_LAST_EXIT}""#),
         "precmd should use tab separators"
     );
     assert!(
-        stdout.contains("print -nu $_CAPSULE_FD_IN"),
+        stdout.contains("print -rnu $_CAPSULE_FD_IN"),
         "precmd should write to coproc fd"
+    );
+    assert!(
+        stdout.contains("_cwd_escaped=$(_capsule_escape_field \"$PWD\")"),
+        "cwd should be escaped before writing tab protocol"
+    );
+    assert!(
+        stdout.contains("_meta_escaped=$(_capsule_escape_field \"$_meta\")"),
+        "env metadata should be escaped before writing tab protocol"
     );
     Ok(())
 }
 
 #[test]
 fn test_zsh_response_parses_tabs() -> Result<(), Box<dyn std::error::Error>> {
-    // Verify the async callback and precmd parse tab-separated responses
+    // Verify the async callback and precmd parse escaped tab-separated responses
     let output = Command::new(env!("CARGO_BIN_EXE_capsule"))
         .args(["init", "zsh"])
         .output()?;
@@ -144,6 +151,10 @@ fn test_zsh_response_parses_tabs() -> Result<(), Box<dyn std::error::Error>> {
     assert!(
         stdout.contains(r#"${line#*$'\t'*$'\t'}"#),
         "response parsing should skip type and gen fields"
+    );
+    assert!(
+        stdout.contains("_left1=$(_capsule_unescape_field \"$_left1\")"),
+        "left prompt should be unescaped after tab parsing"
     );
     Ok(())
 }

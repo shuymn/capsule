@@ -63,10 +63,6 @@ where
         evicted
     }
 
-    pub(super) fn clear(&mut self) {
-        self.entries.clear();
-    }
-
     pub(super) fn len(&self) -> usize {
         self.entries.len()
     }

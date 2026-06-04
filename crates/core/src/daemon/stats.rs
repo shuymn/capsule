@@ -5,7 +5,7 @@ use std::{
     time::Instant,
 };
 
-use capsule_protocol::{PROTOCOL_VERSION, StatusResponse};
+use capsule_protocol::StatusResponse;
 
 use super::{ReloadableConfig, SharedState};
 
@@ -76,7 +76,6 @@ impl DaemonStats {
         config: &ReloadableConfig,
     ) -> StatusResponse {
         StatusResponse {
-            version: PROTOCOL_VERSION,
             pid: self.pid,
             uptime_secs: self.started_at.elapsed().as_secs(),
             cache_hits: self.cache_hits.load(Ordering::Relaxed),

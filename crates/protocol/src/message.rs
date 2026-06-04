@@ -12,6 +12,13 @@ use crate::{
 /// Protocol version for v1.
 pub const PROTOCOL_VERSION: u8 = 1;
 
+/// Pre-encoded ASCII form of [`PROTOCOL_VERSION`] for wire emission without per-call allocation.
+const PROTOCOL_VERSION_BYTES: &[u8] = b"1";
+const _: () = assert!(
+    PROTOCOL_VERSION == 1,
+    "PROTOCOL_VERSION_BYTES is out of sync"
+);
+
 /// Wire type discriminator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MessageType {
@@ -140,8 +147,6 @@ const fn hex_digit(b: u8) -> Result<u8, ProtocolError> {
 /// Wire type: `Q` (10 fields).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
-    /// Protocol version (always 1 for v1).
-    pub version: u8,
     /// Session identifier.
     pub session_id: SessionId,
     /// Monotonically increasing generation counter.
@@ -168,8 +173,6 @@ pub struct Request {
 /// Wire type: `R` (8 fields).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderResult {
-    /// Protocol version.
-    pub version: u8,
     /// Session identifier.
     pub session_id: SessionId,
     /// Generation this response corresponds to.
@@ -189,8 +192,6 @@ pub struct RenderResult {
 /// Wire type: `U` (8 fields).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Update {
-    /// Protocol version.
-    pub version: u8,
     /// Session identifier.
     pub session_id: SessionId,
     /// Generation this update corresponds to.
@@ -210,8 +211,6 @@ pub struct Update {
 /// Wire type: `H` (3 fields).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hello {
-    /// Protocol version.
-    pub version: u8,
     /// Binary fingerprint of the sender. `None` = cannot compute, skip negotiation.
     pub build_id: Option<BuildId>,
 }
@@ -221,8 +220,6 @@ pub struct Hello {
 /// Wire type: `A` (4 fields).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HelloAck {
-    /// Protocol version.
-    pub version: u8,
     /// Binary fingerprint of the daemon. `None` = cannot compute.
     pub build_id: Option<BuildId>,
     /// Environment variable names the daemon needs from the shell.
@@ -236,9 +233,7 @@ pub struct HelloAck {
 ///
 /// Wire type: `S` (2 fields: version, type).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StatusRequest {
-    pub version: u8,
-}
+pub struct StatusRequest;
 
 /// Status response: daemon → client.
 ///
@@ -246,7 +241,6 @@ pub struct StatusRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct StatusResponse {
-    pub version: u8,
     pub pid: u32,
     pub uptime_secs: u64,
     // Cache
@@ -302,12 +296,11 @@ pub enum Message {
 /// Write the common header fields (version, type, `session_id`, generation) into `buf`.
 fn encode_header(
     buf: &mut Vec<u8>,
-    version: u8,
     type_tag: MessageType,
     sid: SessionId,
     generation: PromptGeneration,
 ) {
-    netstring::encode_into(buf, version.to_string().as_bytes());
+    netstring::encode_into(buf, PROTOCOL_VERSION_BYTES);
     netstring::encode_into(buf, type_tag.as_bytes());
     netstring::encode_into(buf, sid.to_string().as_bytes());
     netstring::encode_into(buf, generation.get().to_string().as_bytes());
@@ -320,7 +313,6 @@ impl Request {
         let mut buf = Vec::with_capacity(256);
         encode_header(
             &mut buf,
-            self.version,
             MessageType::Request,
             self.session_id,
             self.generation,
@@ -346,7 +338,6 @@ impl RenderResult {
         let mut buf = Vec::with_capacity(256);
         encode_header(
             &mut buf,
-            self.version,
             MessageType::RenderResult,
             self.session_id,
             self.generation,
@@ -366,7 +357,6 @@ impl Update {
         let mut buf = Vec::with_capacity(256);
         encode_header(
             &mut buf,
-            self.version,
             MessageType::Update,
             self.session_id,
             self.generation,
@@ -380,9 +370,9 @@ impl Update {
 }
 
 /// Encode a Hello/HelloAck message (version + type + optional build id).
-fn encode_hello_wire(version: u8, type_tag: MessageType, build_id: Option<&BuildId>) -> Vec<u8> {
+fn encode_hello_wire(type_tag: MessageType, build_id: Option<&BuildId>) -> Vec<u8> {
     let mut buf = Vec::with_capacity(64);
-    netstring::encode_into(&mut buf, version.to_string().as_bytes());
+    netstring::encode_into(&mut buf, PROTOCOL_VERSION_BYTES);
     netstring::encode_into(&mut buf, type_tag.as_bytes());
     let id_bytes = build_id.map_or("", BuildId::as_str);
     netstring::encode_into(&mut buf, id_bytes.as_bytes());
@@ -393,7 +383,7 @@ impl Hello {
     /// Serialize to wire format (without trailing LF).
     #[must_use]
     pub fn to_wire(&self) -> Vec<u8> {
-        encode_hello_wire(self.version, MessageType::Hello, self.build_id.as_ref())
+        encode_hello_wire(MessageType::Hello, self.build_id.as_ref())
     }
 }
 
@@ -401,11 +391,7 @@ impl HelloAck {
     /// Serialize to wire format (without trailing LF).
     #[must_use]
     pub fn to_wire(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(128);
-        netstring::encode_into(&mut buf, self.version.to_string().as_bytes());
-        netstring::encode_into(&mut buf, MessageType::HelloAck.as_bytes());
-        let id_bytes = self.build_id.as_ref().map_or("", BuildId::as_str);
-        netstring::encode_into(&mut buf, id_bytes.as_bytes());
+        let mut buf = encode_hello_wire(MessageType::HelloAck, self.build_id.as_ref());
         // env_var_names: comma-separated list (empty string = no extra vars)
         let names = self.env_var_names.join(",");
         netstring::encode_into(&mut buf, names.as_bytes());
@@ -418,7 +404,7 @@ impl StatusRequest {
     #[must_use]
     pub fn to_wire(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(16);
-        netstring::encode_into(&mut buf, self.version.to_string().as_bytes());
+        netstring::encode_into(&mut buf, PROTOCOL_VERSION_BYTES);
         netstring::encode_into(&mut buf, MessageType::StatusRequest.as_bytes());
         buf
     }
@@ -431,7 +417,7 @@ impl StatusResponse {
     #[must_use]
     pub fn to_wire(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(512);
-        netstring::encode_into(&mut buf, self.version.to_string().as_bytes());
+        netstring::encode_into(&mut buf, PROTOCOL_VERSION_BYTES);
         netstring::encode_into(&mut buf, MessageType::StatusResponse.as_bytes());
         for val in [
             u64::from(self.pid),
@@ -502,21 +488,19 @@ impl Message {
         }
 
         match MessageType::from_bytes(fields[1]) {
-            Some(MessageType::Request) => {
-                Ok(Self::Request(Request::from_fields(version, &fields)?))
+            Some(MessageType::Request) => Ok(Self::Request(Request::from_fields(&fields)?)),
+            Some(MessageType::RenderResult) => {
+                Ok(Self::RenderResult(RenderResult::from_fields(&fields)?))
             }
-            Some(MessageType::RenderResult) => Ok(Self::RenderResult(RenderResult::from_fields(
-                version, &fields,
-            )?)),
-            Some(MessageType::Update) => Ok(Self::Update(Update::from_fields(version, &fields)?)),
-            Some(MessageType::Hello) => Ok(Self::Hello(Hello::from_fields(version, &fields)?)),
-            Some(MessageType::HelloAck) => {
-                Ok(Self::HelloAck(HelloAck::from_fields(version, &fields)?))
+            Some(MessageType::Update) => Ok(Self::Update(Update::from_fields(&fields)?)),
+            Some(MessageType::Hello) => Ok(Self::Hello(Hello::from_fields(&fields)?)),
+            Some(MessageType::HelloAck) => Ok(Self::HelloAck(HelloAck::from_fields(&fields)?)),
+            Some(MessageType::StatusRequest) => {
+                Ok(Self::StatusRequest(StatusRequest::from_fields(&fields)?))
             }
-            Some(MessageType::StatusRequest) => Ok(Self::StatusRequest(StatusRequest { version })),
-            Some(MessageType::StatusResponse) => Ok(Self::StatusResponse(
-                StatusResponse::from_fields(version, &fields)?,
-            )),
+            Some(MessageType::StatusResponse) => {
+                Ok(Self::StatusResponse(StatusResponse::from_fields(&fields)?))
+            }
             None => Err(ProtocolError::UnknownMessageType),
         }
     }
@@ -619,7 +603,7 @@ fn field_to_string(field: &[u8], name: &'static str) -> Result<String, ProtocolE
 impl Request {
     const FIELD_COUNT: usize = 10;
 
-    fn from_fields(version: u8, fields: &[&[u8]]) -> Result<Self, ProtocolError> {
+    fn from_fields(fields: &[&[u8]]) -> Result<Self, ProtocolError> {
         if fields.len() != Self::FIELD_COUNT {
             return Err(ProtocolError::WrongFieldCount {
                 expected: Self::FIELD_COUNT,
@@ -627,7 +611,6 @@ impl Request {
             });
         }
         Ok(Self {
-            version,
             session_id: SessionId::from_hex(fields[2])?,
             generation: PromptGeneration::from_wire(parse_field::<u64>(fields[3], "generation")?)?,
             cwd: field_to_string(fields[4], "cwd")?,
@@ -643,7 +626,7 @@ impl Request {
 impl RenderResult {
     const FIELD_COUNT: usize = 8;
 
-    fn from_fields(version: u8, fields: &[&[u8]]) -> Result<Self, ProtocolError> {
+    fn from_fields(fields: &[&[u8]]) -> Result<Self, ProtocolError> {
         if fields.len() != Self::FIELD_COUNT {
             return Err(ProtocolError::WrongFieldCount {
                 expected: Self::FIELD_COUNT,
@@ -651,7 +634,6 @@ impl RenderResult {
             });
         }
         Ok(Self {
-            version,
             session_id: SessionId::from_hex(fields[2])?,
             generation: PromptGeneration::from_wire(parse_field::<u64>(fields[3], "generation")?)?,
             left1: field_to_string(fields[4], "left1")?,
@@ -665,7 +647,7 @@ impl RenderResult {
 impl Update {
     const FIELD_COUNT: usize = 8;
 
-    fn from_fields(version: u8, fields: &[&[u8]]) -> Result<Self, ProtocolError> {
+    fn from_fields(fields: &[&[u8]]) -> Result<Self, ProtocolError> {
         if fields.len() != Self::FIELD_COUNT {
             return Err(ProtocolError::WrongFieldCount {
                 expected: Self::FIELD_COUNT,
@@ -673,7 +655,6 @@ impl Update {
             });
         }
         Ok(Self {
-            version,
             session_id: SessionId::from_hex(fields[2])?,
             generation: PromptGeneration::from_wire(parse_field::<u64>(fields[3], "generation")?)?,
             left1: field_to_string(fields[4], "left1")?,
@@ -693,44 +674,10 @@ fn parse_opt_build_id(field: &[u8]) -> Result<Option<BuildId>, ProtocolError> {
     }
 }
 
-/// Validate field count for a Hello/HelloAck message (3 fields).
-const HELLO_FIELD_COUNT: usize = 3;
-
 impl Hello {
-    fn from_fields(version: u8, fields: &[&[u8]]) -> Result<Self, ProtocolError> {
-        if fields.len() != HELLO_FIELD_COUNT {
-            return Err(ProtocolError::WrongFieldCount {
-                expected: HELLO_FIELD_COUNT,
-                got: fields.len(),
-            });
-        }
-        Ok(Self {
-            version,
-            build_id: parse_opt_build_id(fields[2])?,
-        })
-    }
-}
+    const FIELD_COUNT: usize = 3;
 
-const HELLO_ACK_FIELD_COUNT: usize = 4;
-
-impl HelloAck {
-    fn from_fields(version: u8, fields: &[&[u8]]) -> Result<Self, ProtocolError> {
-        if fields.len() != HELLO_ACK_FIELD_COUNT {
-            return Err(ProtocolError::WrongFieldCount {
-                expected: HELLO_ACK_FIELD_COUNT,
-                got: fields.len(),
-            });
-        }
-        Ok(Self {
-            version,
-            build_id: parse_opt_build_id(fields[2])?,
-            env_var_names: parse_comma_list(fields[3]),
-        })
-    }
-}
-
-impl StatusResponse {
-    fn from_fields(version: u8, fields: &[&[u8]]) -> Result<Self, ProtocolError> {
+    fn from_fields(fields: &[&[u8]]) -> Result<Self, ProtocolError> {
         if fields.len() != Self::FIELD_COUNT {
             return Err(ProtocolError::WrongFieldCount {
                 expected: Self::FIELD_COUNT,
@@ -738,7 +685,51 @@ impl StatusResponse {
             });
         }
         Ok(Self {
-            version,
+            build_id: parse_opt_build_id(fields[2])?,
+        })
+    }
+}
+
+impl HelloAck {
+    const FIELD_COUNT: usize = 4;
+
+    fn from_fields(fields: &[&[u8]]) -> Result<Self, ProtocolError> {
+        if fields.len() != Self::FIELD_COUNT {
+            return Err(ProtocolError::WrongFieldCount {
+                expected: Self::FIELD_COUNT,
+                got: fields.len(),
+            });
+        }
+        Ok(Self {
+            build_id: parse_opt_build_id(fields[2])?,
+            env_var_names: parse_comma_list(fields[3]),
+        })
+    }
+}
+
+impl StatusRequest {
+    const FIELD_COUNT: usize = 2;
+
+    const fn from_fields(fields: &[&[u8]]) -> Result<Self, ProtocolError> {
+        if fields.len() != Self::FIELD_COUNT {
+            return Err(ProtocolError::WrongFieldCount {
+                expected: Self::FIELD_COUNT,
+                got: fields.len(),
+            });
+        }
+        Ok(Self)
+    }
+}
+
+impl StatusResponse {
+    fn from_fields(fields: &[&[u8]]) -> Result<Self, ProtocolError> {
+        if fields.len() != Self::FIELD_COUNT {
+            return Err(ProtocolError::WrongFieldCount {
+                expected: Self::FIELD_COUNT,
+                got: fields.len(),
+            });
+        }
+        Ok(Self {
             pid: parse_field::<u32>(fields[2], "pid")?,
             uptime_secs: parse_field(fields[3], "uptime_secs")?,
             cache_hits: parse_field(fields[4], "cache_hits")?,
@@ -768,456 +759,4 @@ impl StatusResponse {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn sample_session_id() -> SessionId {
-        SessionId::from_bytes([0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef])
-    }
-
-    fn sample_request() -> Request {
-        Request {
-            version: PROTOCOL_VERSION,
-            session_id: sample_session_id(),
-            generation: PromptGeneration::new(42),
-            cwd: "/home/user/project".to_owned(),
-            cols: 120,
-            last_exit_code: 0,
-            duration_ms: Some(1500),
-            keymap: "main".to_owned(),
-            env_vars: vec![],
-        }
-    }
-
-    fn sample_render_result() -> RenderResult {
-        RenderResult {
-            version: PROTOCOL_VERSION,
-            session_id: sample_session_id(),
-            generation: PromptGeneration::new(42),
-            left1: "~/project  main".to_owned(),
-            left2: "❯ ".to_owned(),
-            meta: String::new(),
-        }
-    }
-
-    fn sample_update() -> Update {
-        Update {
-            version: PROTOCOL_VERSION,
-            session_id: sample_session_id(),
-            generation: PromptGeneration::new(42),
-            left1: "~/project  main *2".to_owned(),
-            left2: "❯ ".to_owned(),
-            meta: String::new(),
-        }
-    }
-
-    fn sample_hello() -> Hello {
-        Hello {
-            version: PROTOCOL_VERSION,
-            build_id: Some(BuildId::new("12345:1700000000000000000".to_owned())),
-        }
-    }
-
-    fn sample_hello_ack() -> HelloAck {
-        HelloAck {
-            version: PROTOCOL_VERSION,
-            build_id: Some(BuildId::new("12345:1700000000000000000".to_owned())),
-            env_var_names: vec![],
-        }
-    }
-
-    // -- SessionId --
-
-    #[test]
-    fn test_session_id_hex_round_trip() -> Result<(), ProtocolError> {
-        let sid = sample_session_id();
-        let hex = sid.to_string();
-        assert_eq!(hex, "0123456789abcdef");
-
-        let parsed = SessionId::from_hex(hex.as_bytes())?;
-        assert_eq!(parsed, sid);
-        Ok(())
-    }
-
-    #[test]
-    fn test_session_id_uppercase_hex() -> Result<(), ProtocolError> {
-        let parsed = SessionId::from_hex(b"0123456789ABCDEF")?;
-        assert_eq!(parsed, sample_session_id());
-        Ok(())
-    }
-
-    #[test]
-    fn test_session_id_invalid_length() {
-        let result = SessionId::from_hex(b"0123");
-        assert!(matches!(result, Err(ProtocolError::InvalidField { .. })));
-    }
-
-    #[test]
-    fn test_session_id_invalid_hex() {
-        let result = SessionId::from_hex(b"012345678XABCDEF");
-        assert!(matches!(result, Err(ProtocolError::InvalidField { .. })));
-    }
-
-    // -- Request round-trip --
-
-    #[test]
-    fn test_request_round_trip() -> Result<(), ProtocolError> {
-        let req = sample_request();
-        let wire = req.to_wire();
-        let parsed = Message::from_wire(&wire)?;
-        assert_eq!(parsed, Message::Request(req));
-        Ok(())
-    }
-
-    #[test]
-    fn test_request_with_none_duration() -> Result<(), ProtocolError> {
-        let mut req = sample_request();
-        req.duration_ms = None;
-        let wire = req.to_wire();
-        let parsed = Message::from_wire(&wire)?;
-        assert_eq!(parsed, Message::Request(req));
-        Ok(())
-    }
-
-    #[test]
-    fn test_request_with_negative_exit_code() -> Result<(), ProtocolError> {
-        let mut req = sample_request();
-        req.last_exit_code = -1;
-        let wire = req.to_wire();
-        let parsed = Message::from_wire(&wire)?;
-        assert_eq!(parsed, Message::Request(req));
-        Ok(())
-    }
-
-    #[test]
-    fn test_request_with_utf8_cwd() -> Result<(), ProtocolError> {
-        let mut req = sample_request();
-        req.cwd = "/home/ユーザー/プロジェクト".to_owned();
-        let wire = req.to_wire();
-        let parsed = Message::from_wire(&wire)?;
-        assert_eq!(parsed, Message::Request(req));
-        Ok(())
-    }
-
-    fn assert_env_vars_round_trip(env_vars: Vec<(String, String)>) -> Result<(), ProtocolError> {
-        let mut req = sample_request();
-        req.env_vars = env_vars;
-        let wire = req.to_wire();
-        let parsed = Message::from_wire(&wire)?;
-        assert_eq!(parsed, Message::Request(req));
-        Ok(())
-    }
-
-    #[test]
-    fn test_request_env_vars_round_trip_cases() -> Result<(), ProtocolError> {
-        for env_vars in [
-            vec![],
-            vec![("PATH".to_owned(), "/usr/local/bin:/usr/bin".to_owned())],
-            vec![
-                ("PATH".to_owned(), "/usr/local/bin:/usr/bin".to_owned()),
-                ("HOME".to_owned(), "/home/user".to_owned()),
-            ],
-        ] {
-            assert_env_vars_round_trip(env_vars)?;
-        }
-        Ok(())
-    }
-
-    // -- RenderResult round-trip --
-
-    #[test]
-    fn test_render_result_round_trip() -> Result<(), ProtocolError> {
-        let rr = sample_render_result();
-        let wire = rr.to_wire();
-        let parsed = Message::from_wire(&wire)?;
-        assert_eq!(parsed, Message::RenderResult(rr));
-        Ok(())
-    }
-
-    #[test]
-    fn test_render_result_empty_prompts() -> Result<(), ProtocolError> {
-        let rr = RenderResult {
-            version: PROTOCOL_VERSION,
-            session_id: sample_session_id(),
-            generation: PromptGeneration::new(0),
-            left1: String::new(),
-            left2: String::new(),
-            meta: String::new(),
-        };
-        let wire = rr.to_wire();
-        let parsed = Message::from_wire(&wire)?;
-        assert_eq!(parsed, Message::RenderResult(rr));
-        Ok(())
-    }
-
-    #[test]
-    fn test_render_result_with_meta_round_trip() -> Result<(), ProtocolError> {
-        let rr = RenderResult {
-            meta: "viins\x1e\x1b[32m❯\x1b[0m\x1fvicmd\x1e\x1b[32m❮\x1b[0m".to_owned(),
-            ..sample_render_result()
-        };
-        let wire = rr.to_wire();
-        let parsed = Message::from_wire(&wire)?;
-        assert_eq!(parsed, Message::RenderResult(rr));
-        Ok(())
-    }
-
-    // -- Update round-trip --
-
-    #[test]
-    fn test_update_round_trip() -> Result<(), ProtocolError> {
-        let upd = sample_update();
-        let wire = upd.to_wire();
-        let parsed = Message::from_wire(&wire)?;
-        assert_eq!(parsed, Message::Update(upd));
-        Ok(())
-    }
-
-    #[test]
-    fn test_update_with_meta_round_trip() -> Result<(), ProtocolError> {
-        let upd = Update {
-            meta: "viins\x1e\x1b[32m❯\x1b[0m\x1fvicmd\x1e\x1b[32m❮\x1b[0m".to_owned(),
-            ..sample_update()
-        };
-        let wire = upd.to_wire();
-        let parsed = Message::from_wire(&wire)?;
-        assert_eq!(parsed, Message::Update(upd));
-        Ok(())
-    }
-
-    // -- Hello round-trip --
-
-    #[test]
-    fn test_hello_round_trip() -> Result<(), ProtocolError> {
-        let hello = sample_hello();
-        let wire = hello.to_wire();
-        let parsed = Message::from_wire(&wire)?;
-        assert_eq!(parsed, Message::Hello(hello));
-        Ok(())
-    }
-
-    #[test]
-    fn test_hello_none_build_id() -> Result<(), ProtocolError> {
-        let hello = Hello {
-            version: PROTOCOL_VERSION,
-            build_id: None,
-        };
-        let wire = hello.to_wire();
-        let parsed = Message::from_wire(&wire)?;
-        assert_eq!(parsed, Message::Hello(hello));
-        Ok(())
-    }
-
-    // -- HelloAck round-trip --
-
-    #[test]
-    fn test_hello_ack_round_trip() -> Result<(), ProtocolError> {
-        let ack = sample_hello_ack();
-        let wire = ack.to_wire();
-        let parsed = Message::from_wire(&wire)?;
-        assert_eq!(parsed, Message::HelloAck(ack));
-        Ok(())
-    }
-
-    #[test]
-    fn test_hello_ack_with_env_var_names_round_trip() -> Result<(), ProtocolError> {
-        let ack = HelloAck {
-            version: PROTOCOL_VERSION,
-            build_id: Some(BuildId::new("test:123".to_owned())),
-            env_var_names: vec!["AWS_PROFILE".to_owned(), "TERRAFORM_WORKSPACE".to_owned()],
-        };
-        let wire = ack.to_wire();
-        let parsed = Message::from_wire(&wire)?;
-        assert_eq!(parsed, Message::HelloAck(ack));
-        Ok(())
-    }
-
-    // -- Error cases --
-
-    #[test]
-    fn test_from_wire_empty_input() {
-        let result = Message::from_wire(b"");
-        assert!(matches!(
-            result,
-            Err(ProtocolError::WrongFieldCount {
-                expected: 2,
-                got: 0
-            })
-        ));
-    }
-
-    #[test]
-    fn test_from_wire_unknown_type() {
-        // Build: version=1, type=X
-        let mut wire = netstring::encode(b"1");
-        wire.extend_from_slice(&netstring::encode(b"X"));
-        let result = Message::from_wire(&wire);
-        assert!(matches!(result, Err(ProtocolError::UnknownMessageType)));
-    }
-
-    #[test]
-    fn test_from_wire_wrong_field_count() {
-        // Build a Q message with only 5 fields instead of 10
-        let mut wire = netstring::encode(b"1");
-        wire.extend_from_slice(&netstring::encode(b"Q"));
-        wire.extend_from_slice(&netstring::encode(b"0123456789abcdef"));
-        wire.extend_from_slice(&netstring::encode(b"1"));
-        wire.extend_from_slice(&netstring::encode(b"/tmp"));
-        let result = Message::from_wire(&wire);
-        assert!(matches!(
-            result,
-            Err(ProtocolError::WrongFieldCount { expected: 10, .. })
-        ));
-    }
-
-    #[test]
-    fn test_from_wire_invalid_generation() {
-        let mut req = sample_request();
-        req.generation = PromptGeneration::new(0);
-        let mut wire = req.to_wire();
-        // Corrupt the generation field: replace "0" with "abc"
-        // Easier: build manually with invalid generation
-        wire.clear();
-        wire.extend_from_slice(&netstring::encode(b"1"));
-        wire.extend_from_slice(&netstring::encode(b"Q"));
-        wire.extend_from_slice(&netstring::encode(b"0123456789abcdef"));
-        wire.extend_from_slice(&netstring::encode(b"not_a_number"));
-        wire.extend_from_slice(&netstring::encode(b"/tmp"));
-        wire.extend_from_slice(&netstring::encode(b"80"));
-        wire.extend_from_slice(&netstring::encode(b"0"));
-        wire.extend_from_slice(&netstring::encode(b""));
-        wire.extend_from_slice(&netstring::encode(b"main"));
-        wire.extend_from_slice(&netstring::encode(b""));
-        let result = Message::from_wire(&wire);
-        assert!(matches!(result, Err(ProtocolError::InvalidField { .. })));
-    }
-
-    // -- Env var edge cases --
-
-    #[test]
-    fn test_request_env_vars_edge_cases() -> Result<(), ProtocolError> {
-        let cases = [
-            vec![(String::new(), "value".to_owned())],
-            vec![("PATH".to_owned(), String::new())],
-            vec![(String::new(), String::new())],
-            vec![("PATH".to_owned(), "/usr/bin:dir=with=equals".to_owned())],
-            vec![("PATH".to_owned(), "/usr/local/bin:".repeat(500))],
-            vec![(
-                "PATH".to_owned(),
-                "/usr/bin;rm -rf /:$(evil):`evil`:$((1+1))".to_owned(),
-            )],
-        ];
-
-        for env_vars in cases {
-            assert_env_vars_round_trip(env_vars)?;
-        }
-        Ok(())
-    }
-
-    // -- Env var wire-level edge cases (hand-crafted bytes) --
-
-    /// Build a 10-field Q message from raw bytes with a custom meta field,
-    /// then decode it and return the `env_vars`.
-    fn env_vars_from_wire(meta: &[u8]) -> Result<Vec<(String, String)>, ProtocolError> {
-        let mut wire = Vec::new();
-        netstring::encode_into(&mut wire, b"1");
-        netstring::encode_into(&mut wire, b"Q");
-        netstring::encode_into(&mut wire, b"0123456789abcdef");
-        netstring::encode_into(&mut wire, b"1");
-        netstring::encode_into(&mut wire, b"/tmp");
-        netstring::encode_into(&mut wire, b"80");
-        netstring::encode_into(&mut wire, b"0");
-        netstring::encode_into(&mut wire, b"");
-        netstring::encode_into(&mut wire, b"main");
-        netstring::encode_into(&mut wire, meta);
-        let Message::Request(req) = Message::from_wire(&wire)? else {
-            unreachable!("expected Message::Request from wire with meta: {meta:?}");
-        };
-        Ok(req.env_vars)
-    }
-
-    /// Null byte in the wire meta field splits into separate entries.
-    /// Rust `String` cannot contain null bytes, so the encoder never produces
-    /// this — the decoder handles it consistently by treating null as separator.
-    fn assert_env_vars_from_wire(
-        meta: &[u8],
-        expected: &[(&str, &str)],
-    ) -> Result<(), ProtocolError> {
-        let vars = env_vars_from_wire(meta)?;
-        let expected = expected
-            .iter()
-            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
-            .collect::<Vec<_>>();
-        assert_eq!(vars, expected);
-        Ok(())
-    }
-
-    #[test]
-    fn test_request_env_vars_wire_cases() -> Result<(), ProtocolError> {
-        type ExpectedEnvVar<'a> = &'a [(&'a str, &'a str)];
-        type WireEnvVarCase<'a> = (&'a [u8], ExpectedEnvVar<'a>);
-
-        let cases: [WireEnvVarCase<'_>; 5] = [
-            (
-                b"PATH=/usr/bin\0INJECT=evil",
-                &[("PATH", "/usr/bin"), ("INJECT", "evil")],
-            ),
-            (b"PATH=\xff\xfe/usr/bin", &[]),
-            (b"", &[]),
-            (b"=", &[("", "")]),
-            (b"MALFORMED_NO_EQUALS", &[]),
-        ];
-
-        for (meta, expected) in cases {
-            assert_env_vars_from_wire(meta, expected)?;
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn test_status_request_round_trip() -> Result<(), ProtocolError> {
-        let req = StatusRequest {
-            version: PROTOCOL_VERSION,
-        };
-        let wire = Message::StatusRequest(req).to_wire();
-        let parsed = Message::from_wire(&wire)?;
-        assert_eq!(
-            parsed,
-            Message::StatusRequest(StatusRequest {
-                version: PROTOCOL_VERSION,
-            })
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn test_status_response_round_trip() -> Result<(), ProtocolError> {
-        let resp = StatusResponse {
-            version: PROTOCOL_VERSION,
-            pid: 12345,
-            uptime_secs: 3600,
-            cache_hits: 100,
-            cache_misses: 10,
-            cache_evictions: 2,
-            cache_entries: 42,
-            inflight_coalesces: 5,
-            requests_total: 110,
-            stale_discards: 3,
-            slow_computes_started: 10,
-            slow_compute_duration_us: 500_000,
-            git_timeouts: 1,
-            custom_module_timeouts: 0,
-            active_sessions: 3,
-            sessions_pruned: 7,
-            connections_total: 50,
-            connections_active: 2,
-            config_generation: ConfigGeneration::new(1),
-            config_reloads: 1,
-            config_reload_errors: 0,
-        };
-        let wire = Message::StatusResponse(resp.clone()).to_wire();
-        let parsed = Message::from_wire(&wire)?;
-        assert_eq!(parsed, Message::StatusResponse(resp));
-        Ok(())
-    }
-}
+mod tests;

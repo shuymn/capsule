@@ -1,4 +1,4 @@
-use capsule_protocol::{Message, PROTOCOL_VERSION, StatusRequest};
+use capsule_protocol::{Message, StatusRequest};
 
 use super::socket_path;
 
@@ -9,9 +9,7 @@ use super::socket_path;
 /// Returns an error if the daemon is not running or the status exchange fails.
 pub fn status(json: bool) -> anyhow::Result<()> {
     let sock = socket_path()?;
-    let req = Message::StatusRequest(StatusRequest {
-        version: PROTOCOL_VERSION,
-    });
+    let req = Message::StatusRequest(StatusRequest);
 
     match crate::connect::sync_request(&sock, &req)? {
         Message::StatusResponse(resp) => {

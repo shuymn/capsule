@@ -136,6 +136,21 @@ _capsule_cleanup_fds() {
     unset _CAPSULE_STALE_FDS 2>/dev/null
 }
 
+_capsule_escape_field() {
+    emulate -L zsh
+    local _s="$1"
+    _s=${_s//\\/\\\\}
+    _s=${_s//$'\t'/\\t}
+    _s=${_s//$'\n'/\\n}
+    _s=${_s//$'\r'/\\r}
+    print -rn -- "$_s"
+}
+
+_capsule_unescape_field() {
+    emulate -L zsh
+    printf '%b' "$1"
+}
+
 _capsule_precmd() {
     # Capture $? immediately — must be the very first statement.
     # NOTE: If another plugin prepends to precmd_functions after capsule,
@@ -182,17 +197,21 @@ _capsule_precmd() {
         return
     }
 
-    # Send tab-separated request:
+    # Send tab-separated request with escaped payload fields:
     # <gen>\t<exit>\t<dur>\t<cwd>\t<cols>\t<keymap>\t<env_meta>\n
-    if ! print -nu $_CAPSULE_FD_IN \
-        "${_CAPSULE_GENERATION}\t${_CAPSULE_LAST_EXIT}\t${_CAPSULE_DURATION_MS:-}\t${PWD}\t${COLUMNS}\t${KEYMAP:-main}\t${_meta}"$'\n' 2>/dev/null; then
+    local _cwd_escaped _keymap_escaped _meta_escaped
+    _cwd_escaped=$(_capsule_escape_field "$PWD")
+    _keymap_escaped=$(_capsule_escape_field "${KEYMAP:-main}")
+    _meta_escaped=$(_capsule_escape_field "$_meta")
+    if ! print -rnu $_CAPSULE_FD_IN \
+        "${_CAPSULE_GENERATION}"$'\t'"${_CAPSULE_LAST_EXIT}"$'\t'"${_CAPSULE_DURATION_MS:-}"$'\t'"${_cwd_escaped}"$'\t'"${COLUMNS}"$'\t'"${_keymap_escaped}"$'\t'"${_meta_escaped}"$'\n' 2>/dev/null; then
         _capsule_cleanup_fds
         PROMPT=$_CAPSULE_FALLBACK
         return
     fi
 
     # Read response (consume stale Updates, wait for RenderResult)
-    # Response format: <type>\t<gen>\t<left1>\t<left2>[\t<char_meta>]
+    # Response format: <type>\t<gen>\t<left1>\t<left2>[\t<char_meta>] with escaped payload fields
     local line attempts=0 got_render=0
     local _left1 _left2
     while (( attempts < 3 )) && IFS= read -rt 1 -u $_CAPSULE_FD_OUT line 2>/dev/null; do
@@ -206,11 +225,13 @@ _capsule_precmd() {
             local _after_left1=${_payload#*$'\t'}
             if [[ "$_after_left1" == *$'\t'* ]]; then
                 _left2=${_after_left1%%$'\t'*}
-                _capsule_parse_char_meta "${_after_left1#*$'\t'}"
+                _capsule_parse_char_meta "$(_capsule_unescape_field "${_after_left1#*$'\t'}")"
             else
                 _left2=$_after_left1
                 _capsule_parse_char_meta ""
             fi
+            _left1=$(_capsule_unescape_field "$_left1")
+            _left2=$(_capsule_unescape_field "$_left2")
             break
         fi
     done
@@ -249,11 +270,13 @@ _capsule_async_callback() {
                 local _left2
                 if [[ "$_after_left1" == *$'\t'* ]]; then
                     _left2=${_after_left1%%$'\t'*}
-                    _capsule_parse_char_meta "${_after_left1#*$'\t'}"
+                    _capsule_parse_char_meta "$(_capsule_unescape_field "${_after_left1#*$'\t'}")"
                 else
                     _left2=$_after_left1
                     _capsule_parse_char_meta ""
                 fi
+                _left1=$(_capsule_unescape_field "$_left1")
+                _left2=$(_capsule_unescape_field "$_left2")
                 _capsule_apply_prompt "$_left1" "$_left2"
                 zle reset-prompt 2>/dev/null
             fi

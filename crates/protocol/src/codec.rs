@@ -7,6 +7,8 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader
 
 use crate::{ProtocolError, message::Message};
 
+const MAX_MESSAGE_SIZE: usize = 1024 * 1024;
+
 /// Reads messages from an async byte stream.
 ///
 /// Wraps the underlying reader in a [`BufReader`] and reads one LF-delimited
@@ -35,15 +37,35 @@ impl<R: AsyncRead + Unpin + Send> MessageReader<R> {
     /// Returns [`ProtocolError`] on I/O failure or if the message cannot be parsed.
     pub async fn read_message(&mut self) -> Result<Option<Message>, ProtocolError> {
         self.buf.clear();
-        let n = self.inner.read_until(b'\n', &mut self.buf).await?;
-        if n == 0 {
-            return Ok(None);
+        loop {
+            let available = self.inner.fill_buf().await?;
+            if available.is_empty() {
+                if self.buf.is_empty() {
+                    return Ok(None);
+                }
+                return Message::from_wire(&self.buf).map(Some);
+            }
+
+            if let Some(pos) = available.iter().position(|&b| b == b'\n') {
+                if self.buf.len() + pos > MAX_MESSAGE_SIZE {
+                    return Err(ProtocolError::MessageTooLarge {
+                        limit: MAX_MESSAGE_SIZE,
+                    });
+                }
+                self.buf.extend_from_slice(&available[..pos]);
+                self.inner.consume(pos + 1);
+                return Message::from_wire(&self.buf).map(Some);
+            }
+
+            if self.buf.len() + available.len() > MAX_MESSAGE_SIZE {
+                return Err(ProtocolError::MessageTooLarge {
+                    limit: MAX_MESSAGE_SIZE,
+                });
+            }
+            let consumed = available.len();
+            self.buf.extend_from_slice(available);
+            self.inner.consume(consumed);
         }
-        // Strip trailing LF
-        if self.buf.last() == Some(&b'\n') {
-            self.buf.pop();
-        }
-        Message::from_wire(&self.buf).map(Some)
     }
 }
 
@@ -90,7 +112,6 @@ mod tests {
 
     fn sample_request() -> Request {
         Request {
-            version: 1,
             session_id: sample_session_id(),
             generation: PromptGeneration::new(1),
             cwd: "/tmp".to_owned(),
@@ -104,7 +125,6 @@ mod tests {
 
     fn sample_render_result() -> RenderResult {
         RenderResult {
-            version: 1,
             session_id: sample_session_id(),
             generation: PromptGeneration::new(1),
             left1: "/tmp".to_owned(),
@@ -115,7 +135,6 @@ mod tests {
 
     fn sample_update() -> Update {
         Update {
-            version: 1,
             session_id: sample_session_id(),
             generation: PromptGeneration::new(1),
             left1: "/tmp  main".to_owned(),
@@ -196,14 +215,12 @@ mod tests {
 
     fn sample_hello() -> Hello {
         Hello {
-            version: 1,
             build_id: Some(crate::BuildId::new("12345:1700000000000000000".to_owned())),
         }
     }
 
     fn sample_hello_ack() -> HelloAck {
         HelloAck {
-            version: 1,
             build_id: Some(crate::BuildId::new("12345:1700000000000000000".to_owned())),
             env_var_names: vec![],
         }
@@ -247,6 +264,23 @@ mod tests {
         let mut reader = MessageReader::new(server);
         let result = reader.read_message().await?;
         assert_eq!(result, None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_codec_rejects_message_line_over_size_cap() -> Result<(), ProtocolError> {
+        let (mut client, server) = tokio::io::duplex(4096);
+        let mut reader = MessageReader::new(server);
+
+        let writer = tokio::spawn(async move {
+            let oversized = vec![b'x'; MAX_MESSAGE_SIZE + 1];
+            client.write_all(&oversized).await?;
+            client.write_all(b"\n").await
+        });
+
+        let result = reader.read_message().await;
+        assert!(matches!(result, Err(ProtocolError::MessageTooLarge { .. })));
+        writer.abort();
         Ok(())
     }
 }

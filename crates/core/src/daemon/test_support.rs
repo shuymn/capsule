@@ -8,7 +8,7 @@ use std::{
 };
 
 use capsule_protocol::{
-    BuildId, MessageReader, MessageWriter, PROTOCOL_VERSION, PromptGeneration, Request, SessionId,
+    BuildId, MessageReader, MessageWriter, PromptGeneration, Request, SessionId,
 };
 use tokio::net::UnixStream;
 
@@ -49,7 +49,6 @@ pub(super) fn test_sid() -> SessionId {
 
 pub(super) fn make_request(cwd: &str, generation: u64, cols: u16) -> Request {
     Request {
-        version: PROTOCOL_VERSION,
         session_id: test_sid(),
         generation: PromptGeneration::new(generation),
         cwd: cwd.to_owned(),

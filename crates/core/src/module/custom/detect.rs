@@ -11,8 +11,7 @@ use super::{
 /// `env_vars` provides environment variable values forwarded from the shell.
 /// `path_env` overrides PATH for command execution (launchd support).
 ///
-/// Fast modules only try env/file sources. Slow modules try env/file first,
-/// then race all command sources and take the first successful result.
+/// Sources within each fallback group are tried in declaration order.
 pub async fn detect_modules(
     defs: &[ResolvedModule],
     cwd: &Path,
@@ -23,7 +22,7 @@ pub async fn detect_modules(
     let facts = RequestFacts::collect(cwd.to_path_buf(), env_vars.to_vec())
         .with_command_path_env(path_env.map(ToOwned::to_owned));
     let mut detected = Vec::new();
-    for (_, module) in facts.matching_modules(defs, only_speed) {
+    for module in facts.matching_modules(defs, only_speed) {
         if let Some(info) = facts.detect_module(module).await {
             detected.push(DetectedModuleCandidate::new(module, info));
         }

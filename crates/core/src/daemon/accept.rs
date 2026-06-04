@@ -1,9 +1,14 @@
-use std::{os::unix::fs::MetadataExt as _, path::PathBuf, sync::Arc};
+use std::{
+    os::unix::fs::MetadataExt as _,
+    path::PathBuf,
+    sync::{Arc, atomic::Ordering},
+};
 
 use capsule_protocol::BuildId;
 use tokio::{
     net::{UnixListener, UnixStream},
     sync::Mutex,
+    task::JoinSet,
 };
 
 use super::{
@@ -19,15 +24,26 @@ pub(super) struct AcceptCtx<G> {
     pub(super) state: Arc<Mutex<SharedState>>,
     pub(super) config: Arc<Mutex<ReloadableConfig>>,
     pub(super) stats: Arc<DaemonStats>,
+    pub(super) worker_tasks: Arc<Mutex<JoinSet<()>>>,
+}
+
+struct ActiveConnectionGuard {
+    stats: Arc<DaemonStats>,
+}
+
+impl Drop for ActiveConnectionGuard {
+    fn drop(&mut self) {
+        self.stats
+            .connections_active
+            .fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 impl<G> AcceptCtx<G> {
-    fn spawn_handler(&self, stream: UnixStream)
+    fn spawn_handler(&self, stream: UnixStream, handlers: &mut JoinSet<()>)
     where
         G: GitProvider + Clone + Send + 'static,
     {
-        use std::sync::atomic::Ordering;
-
         self.stats.connections_total.fetch_add(1, Ordering::Relaxed);
         self.stats
             .connections_active
@@ -40,14 +56,26 @@ impl<G> AcceptCtx<G> {
             build_id: Arc::clone(&self.build_id),
             config: Arc::clone(&self.config),
             stats: Arc::clone(&self.stats),
+            worker_tasks: Arc::clone(&self.worker_tasks),
         };
-        tokio::spawn(async move {
+        handlers.spawn(async move {
+            let _active = ActiveConnectionGuard { stats };
             if let Err(e) = request::handle_connection(stream, ctx).await {
                 tracing::warn!(error = %e, "client connection error");
             }
-            stats.connections_active.fetch_sub(1, Ordering::Relaxed);
         });
     }
+}
+
+async fn abort_and_join_handlers(handlers: &mut JoinSet<()>) {
+    handlers.abort_all();
+    while handlers.join_next().await.is_some() {}
+}
+
+async fn abort_and_join_workers(worker_tasks: &Arc<Mutex<JoinSet<()>>>) {
+    let mut tasks = worker_tasks.lock().await;
+    tasks.abort_all();
+    while tasks.join_next().await.is_some() {}
 }
 
 /// Accept loop with inode monitoring (standalone/bound mode).
@@ -66,13 +94,19 @@ pub(super) async fn run_bound<G: GitProvider + Clone + Send + Sync + 'static>(
     inode_check.tick().await;
 
     let mut inode_mismatch = false;
+    let mut handlers = JoinSet::new();
 
     loop {
         tokio::select! {
             result = listener.accept() => {
                 let (stream, _) = result?;
                 tracing::debug!("client connected");
-                ctx.spawn_handler(stream);
+                ctx.spawn_handler(stream, &mut handlers);
+            }
+            Some(joined) = handlers.join_next(), if !handlers.is_empty() => {
+                if let Err(error) = joined {
+                    tracing::warn!(error = %error, "client connection task failed");
+                }
             }
             () = &mut shutdown => break,
             _ = inode_check.tick() => {
@@ -93,6 +127,8 @@ pub(super) async fn run_bound<G: GitProvider + Clone + Send + Sync + 'static>(
     }
 
     tracing::info!("daemon shutting down");
+    abort_and_join_handlers(&mut handlers).await;
+    abort_and_join_workers(&ctx.worker_tasks).await;
     if !inode_mismatch {
         let path = Arc::clone(&socket_path);
         let _ = tokio::task::spawn_blocking(move || std::fs::remove_file(&*path)).await;
@@ -108,18 +144,27 @@ pub(super) async fn run_activated<G: GitProvider + Clone + Send + Sync + 'static
 ) -> Result<(), DaemonError> {
     tokio::pin!(shutdown);
 
+    let mut handlers = JoinSet::new();
+
     loop {
         tokio::select! {
             result = listener.accept() => {
                 let (stream, _) = result?;
                 tracing::debug!("client connected");
-                ctx.spawn_handler(stream);
+                ctx.spawn_handler(stream, &mut handlers);
+            }
+            Some(joined) = handlers.join_next(), if !handlers.is_empty() => {
+                if let Err(error) = joined {
+                    tracing::warn!(error = %error, "client connection task failed");
+                }
             }
             () = &mut shutdown => break,
         }
     }
 
     tracing::info!("daemon shutting down");
+    abort_and_join_handlers(&mut handlers).await;
+    abort_and_join_workers(&ctx.worker_tasks).await;
     Ok(())
 }
 
