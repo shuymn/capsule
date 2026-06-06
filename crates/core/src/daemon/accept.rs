@@ -48,7 +48,9 @@ impl<G> AcceptCtx<G> {
         self.stats
             .connections_active
             .fetch_add(1, Ordering::Relaxed);
-        let stats = Arc::clone(&self.stats);
+        let active = ActiveConnectionGuard {
+            stats: Arc::clone(&self.stats),
+        };
         let ctx = request::ConnectionCtx {
             state: Arc::clone(&self.state),
             home_dir: Arc::clone(&self.home_dir),
@@ -59,7 +61,7 @@ impl<G> AcceptCtx<G> {
             worker_tasks: Arc::clone(&self.worker_tasks),
         };
         handlers.spawn(async move {
-            let _active = ActiveConnectionGuard { stats };
+            let _active = active;
             if let Err(e) = request::handle_connection(stream, ctx).await {
                 tracing::warn!(error = %e, "client connection error");
             }

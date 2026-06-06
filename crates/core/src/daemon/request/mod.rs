@@ -129,15 +129,23 @@ struct DetectInput<'a> {
     stats: Option<Arc<DaemonStats>>,
 }
 
-fn cache_key_for_request(
-    cwd: &str,
+async fn cache_key_for_request(
+    cwd: String,
     config_generation: ConfigGeneration,
-    modules: &[ResolvedModule],
-    facts: &RequestFacts,
+    modules: Arc<Vec<ResolvedModule>>,
+    facts: Arc<RequestFacts>,
 ) -> CacheKey {
-    let deps = facts.matching_dependency_inputs(modules, ModuleSpeed::Slow);
-    let dep_hash = DepHash::new(deps.compute_dep_hash(facts));
-    CacheKey::new(cwd.to_owned(), config_generation, dep_hash)
+    let fallback_cwd = cwd.clone();
+    tokio::task::spawn_blocking(move || {
+        let deps = facts.matching_dependency_inputs(&modules, ModuleSpeed::Slow);
+        let dep_hash = DepHash::new(deps.compute_dep_hash(&facts));
+        CacheKey::new(cwd, config_generation, dep_hash)
+    })
+    .await
+    .unwrap_or_else(|error| {
+        tracing::warn!(error = %error, "cache key computation failed");
+        CacheKey::new(fallback_cwd, config_generation, DepHash::new(0))
+    })
 }
 
 /// Run git status and slow custom modules concurrently, returning the combined
@@ -246,6 +254,7 @@ async fn spawn_slow_worker<G: GitProvider + Send + 'static>(
             tracing::debug!(error = %error, "slow worker task failed");
         }
     }
+    let cleanup = InflightCleanupGuard::new(Arc::clone(&shared_state), cache_key.clone());
     tasks.spawn(async move {
         let updated_slow =
             compute_slow_modules(git_provider, &facts, &modules, &config, &daemon_stats).await;
@@ -269,11 +278,42 @@ async fn spawn_slow_worker<G: GitProvider + Send + 'static>(
             drop(state_locked);
             sender
         };
+        cleanup.disarm();
 
         if changed && let Some(sender) = sender {
             let _ = sender.send(Some(updated_slow));
         }
     });
+}
+
+struct InflightCleanupGuard {
+    state: Arc<Mutex<SharedState>>,
+    cache_key: Option<CacheKey>,
+}
+
+impl InflightCleanupGuard {
+    const fn new(state: Arc<Mutex<SharedState>>, cache_key: CacheKey) -> Self {
+        Self {
+            state,
+            cache_key: Some(cache_key),
+        }
+    }
+
+    fn disarm(mut self) {
+        self.cache_key = None;
+    }
+}
+
+impl Drop for InflightCleanupGuard {
+    fn drop(&mut self) {
+        let Some(cache_key) = self.cache_key.take() else {
+            return;
+        };
+        let state = Arc::clone(&self.state);
+        tokio::spawn(async move {
+            state.lock().await.inflight.remove(&cache_key);
+        });
+    }
 }
 
 struct SlowUpdateTarget {
@@ -420,11 +460,12 @@ async fn handle_request<G: GitProvider + Send + 'static>(
         RequestFacts::collect(PathBuf::from(&gated.cwd), env_vars).with_forwarded_path_env(),
     );
     let cache_key = cache_key_for_request(
-        &gated.cwd,
+        gated.cwd.clone(),
         config_snap.config_generation,
-        &config_snap.modules,
-        facts.as_ref(),
-    );
+        Arc::clone(&config_snap.modules),
+        Arc::clone(&facts),
+    )
+    .await;
     let collected = CollectedFacts { facts, cache_key };
 
     let render_ctx = crate::module::RenderContext {
