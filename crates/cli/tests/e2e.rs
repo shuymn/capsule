@@ -10,9 +10,7 @@ use std::{
     time::Duration,
 };
 
-use capsule_protocol::{
-    Hello, Message, MessageReader, MessageWriter, PROTOCOL_VERSION, PromptGeneration,
-};
+use capsule_protocol::{Hello, Message, MessageReader, MessageWriter, PromptGeneration};
 use common::{DaemonProcess, make_request, test_session_id, wait_for_socket_accept};
 
 #[test]
@@ -358,7 +356,6 @@ async fn test_e2e_hello_ack() -> Result<(), Box<dyn std::error::Error>> {
     let mut writer = MessageWriter::new(writer);
 
     let hello = Hello {
-        version: PROTOCOL_VERSION,
         build_id: Some(capsule_protocol::BuildId::new("test:123".to_owned())),
     };
     writer.write_message(&Message::Hello(hello)).await?;
@@ -366,7 +363,6 @@ async fn test_e2e_hello_ack() -> Result<(), Box<dyn std::error::Error>> {
     let resp = tokio::time::timeout(Duration::from_secs(5), reader.read_message()).await??;
     match resp {
         Some(Message::HelloAck(ack)) => {
-            assert_eq!(ack.version, PROTOCOL_VERSION);
             assert!(ack.build_id.is_some(), "daemon should return its build_id");
         }
         other => return Err(format!("expected HelloAck, got {other:?}").into()),

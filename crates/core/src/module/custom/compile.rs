@@ -4,7 +4,7 @@ use super::{
     super::ModuleSpeed, ResolvedModule, ResolvedSource, ResolvedSourceGroup, detect::parse_format,
 };
 use crate::{
-    config::{ModuleDef, SourceDef},
+    config::{ModuleDef, SourceDef, is_safe_relative_module_path},
     render::style::{Color, Style},
 };
 
@@ -17,16 +17,14 @@ pub fn resolve_modules(modules: &[ModuleDef]) -> Vec<ResolvedModule> {
 fn compile_module_def(def: ModuleDef) -> ResolvedModule {
     let source_groups = group_sources(def.source);
     let format_segments = parse_format(&def.format);
-    let speed = {
-        let all_fast = source_groups
-            .iter()
-            .flat_map(|g| &g.sources)
-            .all(ResolvedSource::is_fast);
-        if all_fast {
-            ModuleSpeed::Fast
-        } else {
-            ModuleSpeed::Slow
-        }
+    let speed = if source_groups
+        .iter()
+        .flat_map(|g| &g.sources)
+        .all(ResolvedSource::is_fast)
+    {
+        ModuleSpeed::Fast
+    } else {
+        ModuleSpeed::Slow
     };
     let style = def
         .style
@@ -66,6 +64,13 @@ fn group_sources(sources: Vec<SourceDef>) -> Vec<ResolvedSourceGroup> {
 }
 
 fn compile_source(def: SourceDef) -> Option<ResolvedSource> {
+    let source_count = usize::from(def.env.is_some())
+        + usize::from(def.file.is_some())
+        + usize::from(def.command.is_some());
+    if source_count != 1 {
+        return None;
+    }
+
     let regex = def
         .regex
         .as_ref()
@@ -77,6 +82,9 @@ fn compile_source(def: SourceDef) -> Option<ResolvedSource> {
             regex,
         })
     } else if let Some(file_path) = def.file {
+        if !is_safe_relative_module_path(&file_path) {
+            return None;
+        }
         Some(ResolvedSource::File {
             path: file_path,
             regex,

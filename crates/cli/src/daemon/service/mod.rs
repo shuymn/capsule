@@ -129,17 +129,16 @@ pub(super) fn daemon_needs_restart(socket_path: &Path) -> bool {
 ///
 /// Returns an error if the daemon does not respond within the timeout.
 #[cfg(unix)]
-pub(super) fn wait_until_daemon_ready(
+pub fn wait_until_daemon_ready(
     socket_path: &Path,
     expected_build_id: Option<&capsule_protocol::BuildId>,
 ) -> anyhow::Result<()> {
-    use capsule_protocol::{Hello, Message, PROTOCOL_VERSION};
+    use capsule_protocol::{Hello, Message};
 
     const ATTEMPT_TIMEOUT: Duration = Duration::from_millis(200);
     const MAX_ATTEMPTS: u32 = 25;
 
     let hello = Message::Hello(Hello {
-        version: PROTOCOL_VERSION,
         build_id: crate::build_id::compute(),
     });
 
@@ -148,7 +147,7 @@ pub(super) fn wait_until_daemon_ready(
             crate::connect::sync_request_with_timeout(socket_path, &hello, ATTEMPT_TIMEOUT)
         {
             let id_ok = match expected_build_id {
-                Some(expected) => ack.build_id.as_ref().is_none_or(|id| id == expected),
+                Some(expected) => ack.build_id.as_ref() == Some(expected),
                 None => true,
             };
             if id_ok {
@@ -167,7 +166,7 @@ pub(super) fn wait_until_daemon_ready(
 }
 
 #[cfg(not(unix))]
-pub(super) fn wait_until_daemon_ready(
+pub fn wait_until_daemon_ready(
     _socket_path: &Path,
     _expected_build_id: Option<&capsule_protocol::BuildId>,
 ) -> anyhow::Result<()> {

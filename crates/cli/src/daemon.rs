@@ -20,6 +20,8 @@ pub use service::Launchd;
 pub use service::Systemd;
 #[cfg(target_os = "macos")]
 use service::launchd::LAUNCHD_SOCKET_NAME;
+#[cfg(unix)]
+pub use service::wait_until_daemon_ready;
 pub use service::{InstallOutcome, ServiceManager, reinstall_service_if_present};
 pub use status::status;
 
@@ -228,7 +230,7 @@ mod tests {
         time::Duration,
     };
 
-    use capsule_protocol::{BuildId, HelloAck, Message, PROTOCOL_VERSION};
+    use capsule_protocol::{BuildId, HelloAck, Message};
 
     use super::service::{
         InstallOutcome, ServiceManager, daemon_needs_restart, wait_until_daemon_ready,
@@ -293,7 +295,6 @@ mod tests {
 
             // Send `HelloAck`
             let ack = Message::HelloAck(HelloAck {
-                version: PROTOCOL_VERSION,
                 build_id: respond_build_id,
                 env_var_names: vec![],
             });
@@ -419,6 +420,26 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
 
         wait_until_daemon_ready(&socket, my_id.as_ref())?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_wait_until_daemon_ready_rejects_missing_expected_build_id()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let Some(my_id) = crate::build_id::compute() else {
+            return Ok(());
+        };
+        let dir = tempfile::tempdir()?;
+        let socket = dir.path().join("test.sock");
+
+        start_mock_daemon(&socket, None)?;
+        std::thread::sleep(Duration::from_millis(50));
+
+        let result = wait_until_daemon_ready(&socket, Some(&my_id));
+        assert!(
+            result.is_err(),
+            "daemon without build id must not satisfy expected restart build id"
+        );
         Ok(())
     }
 

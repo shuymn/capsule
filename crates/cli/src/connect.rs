@@ -1,10 +1,10 @@
 //! `capsule connect` — coproc relay between stdin/stdout and the daemon socket.
 //!
-//! Translates between the simple tab-separated text protocol used by the shell
+//! Translates between the escaped tab-separated text protocol used by the shell
 //! and the netstring wire protocol used by the daemon.
 //!
-//! Shell → connect: `<gen>\t<exit>\t<dur>\t<cwd>\t<cols>\t<keymap>\t<env_meta>\n`
-//! Connect → shell: `<type>\t<gen>\t<left1>\t<left2>\n`
+//! Shell → connect: `<gen>\t<exit>\t<dur>\t<escaped cwd>\t<cols>\t<escaped keymap>\t<escaped env_meta>\n`
+//! Connect → shell: `<type>\t<gen>\t<escaped left1>\t<escaped left2>\n`
 
 use std::{
     io::{BufRead as _, Read as _, Write as _},
@@ -14,8 +14,7 @@ use std::{
 
 use anyhow::Context as _;
 use capsule_protocol::{
-    Hello, Message, MessageReader, MessageWriter, PROTOCOL_VERSION, PromptGeneration, Request,
-    SessionId,
+    Hello, Message, MessageReader, MessageWriter, PromptGeneration, Request, SessionId,
 };
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
@@ -41,13 +40,18 @@ pub fn run() -> anyhow::Result<()> {
 
     ensure_daemon(&socket_path)?;
 
-    let negotiation =
+    let mut negotiation =
         negotiate_build_id(&socket_path).unwrap_or(BuildIdNegotiation::Incompatible {
             env_var_names: vec![],
         });
 
     if negotiation.needs_daemon_restart() {
         restart_daemon(&socket_path, &lock_path()?)?;
+        negotiation = negotiate_build_id(&socket_path)
+            .context("failed to negotiate build id after daemon restart")?;
+        if negotiation.needs_daemon_restart() {
+            anyhow::bail!("daemon build id still differs after restart");
+        }
     }
 
     // Emit env var metadata to stdout so the zsh glue knows which
@@ -115,6 +119,34 @@ fn ensure_daemon(socket_path: &Path) -> anyhow::Result<()> {
     }
 
     anyhow::bail!("daemon failed to start within 1s")
+}
+
+fn signal_process(pid: &str, signal: &str) -> bool {
+    let Ok(pid) = pid.parse::<u32>() else {
+        return false;
+    };
+    if pid == 0 {
+        return false;
+    }
+    let pid = pid.to_string();
+    std::process::Command::new("kill")
+        .args([signal, &pid])
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn process_is_alive(pid: &str) -> bool {
+    signal_process(pid, "-0")
+}
+
+fn wait_for_standalone_daemon_exit(pid: &str) -> bool {
+    for _ in 0..100 {
+        std::thread::sleep(Duration::from_millis(10));
+        if !process_is_alive(pid) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Outcome of comparing this binary's build ID with the running daemon.
@@ -214,7 +246,6 @@ pub fn negotiate_build_id(socket_path: &Path) -> anyhow::Result<BuildIdNegotiati
     };
 
     let hello = Message::Hello(Hello {
-        version: PROTOCOL_VERSION,
         build_id: Some(my_build_id.clone()),
     });
 
@@ -256,21 +287,18 @@ fn restart_daemon(socket_path: &Path, lock_path: &Path) -> anyhow::Result<()> {
     if let Ok(pid_str) = std::fs::read_to_string(lock_path) {
         let pid_str = pid_str.trim();
         if !pid_str.is_empty() {
-            let _ = std::process::Command::new("kill")
-                .args(["-TERM", pid_str])
-                .status();
-
-            // Wait for daemon to shut down (socket becomes unavailable)
-            for _ in 0..100 {
-                std::thread::sleep(Duration::from_millis(10));
-                if std::os::unix::net::UnixStream::connect(socket_path).is_err() {
-                    break;
+            let _ = signal_process(pid_str, "-TERM");
+            if !wait_for_standalone_daemon_exit(pid_str) {
+                let _ = signal_process(pid_str, "-KILL");
+                if !wait_for_standalone_daemon_exit(pid_str) {
+                    anyhow::bail!("failed to stop daemon process {pid_str}");
                 }
             }
         }
     }
 
-    ensure_daemon(socket_path)
+    ensure_daemon(socket_path)?;
+    crate::daemon::wait_until_daemon_ready(socket_path, crate::build_id::compute().as_ref())
 }
 
 /// Tab-prefixed line sent from connect back to the zsh glue for render/update rows.
@@ -298,7 +326,7 @@ const RETRY_INTERVAL: Duration = Duration::from_millis(100);
 /// Number of tab-separated fields in a shell request line.
 const SHELL_REQUEST_FIELDS: usize = 7;
 
-/// Message-aware relay: stdin (tab text) ↔ socket (netstring) ↔ stdout (tab text).
+/// Message-aware relay: stdin (escaped tab text) ↔ socket (netstring) ↔ stdout (escaped tab text).
 ///
 /// Translates between the shell's tab-separated text protocol and the daemon's
 /// netstring wire protocol. Automatically reconnects when the daemon connection
@@ -417,10 +445,10 @@ async fn translate_daemon_to_stdout<R: tokio::io::AsyncRead + Unpin + Send>(
     }
 }
 
-/// Format a tab-separated response line.
+/// Format an escaped tab-separated response line.
 ///
-/// Without meta: `<type>\t<gen>\t<left1>\t<left2>\n`
-/// With meta:    `<type>\t<gen>\t<left1>\t<left2>\t<meta>\n`
+/// Without meta: `<type>\t<gen>\t<escaped left1>\t<escaped left2>\n`
+/// With meta:    `<type>\t<gen>\t<escaped left1>\t<escaped left2>\t<escaped meta>\n`
 #[expect(
     clippy::too_many_arguments,
     reason = "meta is a single new field for vim mode"
@@ -439,19 +467,19 @@ fn format_tab_response(
     buf.push(b'\t');
     let _ = write!(buf, "{generation}");
     buf.push(b'\t');
-    buf.extend_from_slice(left1.as_bytes());
+    escape_tab_field_into(buf, left1.as_bytes());
     buf.push(b'\t');
-    buf.extend_from_slice(left2.as_bytes());
+    escape_tab_field_into(buf, left2.as_bytes());
     if !meta.is_empty() {
         buf.push(b'\t');
-        buf.extend_from_slice(meta.as_bytes());
+        escape_tab_field_into(buf, meta.as_bytes());
     }
     buf.push(b'\n');
 }
 
-/// Parse a tab-separated shell request line into a [`Request`].
+/// Parse an escaped tab-separated shell request line into a [`Request`].
 ///
-/// Format: `<gen>\t<exit>\t<dur>\t<cwd>\t<cols>\t<keymap>\t<env_meta>`
+/// Format: `<gen>\t<exit>\t<dur>\t<escaped cwd>\t<cols>\t<escaped keymap>\t<escaped env_meta>`
 ///
 /// The `env_meta` field (last) may contain null bytes as separators between
 /// `KEY=VALUE` pairs.
@@ -493,13 +521,13 @@ fn parse_shell_request(line: &[u8], session_id: SessionId) -> anyhow::Result<Req
     } else {
         Some(parse_utf8::<u64>(f_dur, "duration_ms")?)
     };
-    let cwd = str_from_utf8(f_cwd, "cwd")?.to_owned();
+    let cwd = unescape_tab_field(f_cwd, "cwd")?;
     let cols = parse_utf8::<u16>(f_cols, "cols")?;
-    let keymap = str_from_utf8(f_keymap, "keymap")?.to_owned();
-    let env_vars = parse_env_meta(f_env);
+    let keymap = unescape_tab_field(f_keymap, "keymap")?;
+    let env_meta = unescape_tab_field_bytes(f_env, "env_meta")?;
+    let env_vars = parse_env_meta(&env_meta);
 
     Ok(Request {
-        version: PROTOCOL_VERSION,
         session_id,
         generation,
         cwd,
@@ -509,6 +537,47 @@ fn parse_shell_request(line: &[u8], session_id: SessionId) -> anyhow::Result<Req
         keymap,
         env_vars,
     })
+}
+
+fn escape_tab_field_into(buf: &mut Vec<u8>, field: &[u8]) {
+    for &byte in field {
+        match byte {
+            b'\\' => buf.extend_from_slice(b"\\\\"),
+            b'\t' => buf.extend_from_slice(b"\\t"),
+            b'\n' => buf.extend_from_slice(b"\\n"),
+            b'\r' => buf.extend_from_slice(b"\\r"),
+            0 => buf.extend_from_slice(b"\\0"),
+            _ => buf.push(byte),
+        }
+    }
+}
+
+fn unescape_tab_field(bytes: &[u8], name: &str) -> anyhow::Result<String> {
+    let unescaped = unescape_tab_field_bytes(bytes, name)?;
+    String::from_utf8(unescaped).with_context(|| format!("{name} is not valid utf-8"))
+}
+
+fn unescape_tab_field_bytes(bytes: &[u8], name: &str) -> anyhow::Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut iter = bytes.iter().copied();
+    while let Some(byte) = iter.next() {
+        if byte != b'\\' {
+            out.push(byte);
+            continue;
+        }
+        let Some(escaped) = iter.next() else {
+            anyhow::bail!("invalid escape in {name}");
+        };
+        match escaped {
+            b'\\' => out.push(b'\\'),
+            b't' => out.push(b'\t'),
+            b'n' => out.push(b'\n'),
+            b'r' => out.push(b'\r'),
+            b'0' => out.push(0),
+            _ => anyhow::bail!("invalid escape in {name}"),
+        }
+    }
+    Ok(out)
 }
 
 /// Parse a UTF-8 byte slice into a value via `FromStr`.
@@ -623,7 +692,6 @@ mod tests {
 
         for (line, generation, last_exit_code, duration_ms, cwd, cols, keymap, env_vars) in cases {
             let req = parse_shell_request(line, test_session_id())?;
-            assert_eq!(req.version, PROTOCOL_VERSION);
             assert_eq!(req.session_id, test_session_id());
             assert_eq!(req.generation, PromptGeneration::new(generation));
             assert_eq!(req.last_exit_code, last_exit_code);
@@ -653,6 +721,25 @@ mod tests {
         let line = b"1\t0\t\t/tmp";
         let result = parse_shell_request(line, test_session_id());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_shell_request_unescapes_payload_fields() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let line =
+            b"7\t0\t\t/tmp/has\\ttab\\nand\\\\slash\t120\tvi\\rmode\tPATH=/bin\\0CUSTOM=a\\tb";
+        let req = parse_shell_request(line, test_session_id())?;
+
+        assert_eq!(req.cwd, "/tmp/has\ttab\nand\\slash");
+        assert_eq!(req.keymap, "vi\rmode");
+        assert_eq!(
+            req.env_vars,
+            vec![
+                ("PATH".to_owned(), "/bin".to_owned()),
+                ("CUSTOM".to_owned(), "a\tb".to_owned())
+            ]
+        );
+        Ok(())
     }
 
     #[test]
@@ -693,6 +780,23 @@ mod tests {
         assert!(
             buf.windows(meta.len()).any(|w| w == meta.as_bytes()),
             "output should contain meta"
+        );
+    }
+
+    #[test]
+    fn test_format_tab_response_escapes_payload_fields() {
+        let mut buf = Vec::new();
+        format_tab_response(
+            &mut buf,
+            ShellTabLineKind::RenderResult,
+            1,
+            "left\tone\nline\\slash",
+            "right\rprompt",
+            "meta\tvalue",
+        );
+        assert_eq!(
+            buf,
+            b"R\t1\tleft\\tone\\nline\\\\slash\tright\\rprompt\tmeta\\tvalue\n"
         );
     }
 

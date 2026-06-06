@@ -1,13 +1,13 @@
 use std::{
     collections::{HashMap, HashSet},
     future::Future,
+    hash::{DefaultHasher, Hash, Hasher},
     path::{Path, PathBuf},
     pin::Pin,
     sync::Arc,
 };
 
 use regex_lite::Regex;
-use tokio::task::JoinSet;
 
 use super::{
     super::ModuleSpeed,
@@ -16,7 +16,7 @@ use super::{
     detect::{apply_regex, format_module},
 };
 use crate::{
-    config::ModuleWhen,
+    config::{ModuleWhen, is_safe_relative_module_path},
     module::{DetectedModuleCandidate, arbitrate_detected_modules},
 };
 
@@ -30,16 +30,18 @@ impl ModuleDependencyInputs {
         push_unique(&mut self.env_vars, name);
     }
 
-    fn push_file(&mut self, path: &str) {
-        push_unique(&mut self.files, path);
+    fn push_trigger_file(&mut self, path: &str) {
+        push_unique(&mut self.trigger_files, path);
+    }
+
+    fn push_source_file(&mut self, path: &str) {
+        push_unique(&mut self.source_files, path);
     }
 
     /// Env var values come from the request; file dependencies are resolved as
     /// existence checks against the request's cwd.
     #[must_use]
     pub(crate) fn compute_dep_hash(&self, facts: &RequestFacts) -> u64 {
-        use std::hash::{DefaultHasher, Hash, Hasher};
-
         let mut hasher = DefaultHasher::new();
 
         let mut env_sorted: Vec<&str> = self.env_vars.iter().map(String::as_str).collect();
@@ -55,11 +57,25 @@ impl ModuleDependencyInputs {
             }
         }
 
-        let mut files_sorted: Vec<&str> = self.files.iter().map(String::as_str).collect();
-        files_sorted.sort_unstable();
-        for file in &files_sorted {
+        let mut trigger_files_sorted: Vec<&str> =
+            self.trigger_files.iter().map(String::as_str).collect();
+        trigger_files_sorted.sort_unstable();
+        for file in &trigger_files_sorted {
             file.hash(&mut hasher);
             facts.cwd().join(file).is_file().hash(&mut hasher);
+        }
+
+        let mut source_files_sorted: Vec<&str> =
+            self.source_files.iter().map(String::as_str).collect();
+        source_files_sorted.sort_unstable();
+        for file in &source_files_sorted {
+            file.hash(&mut hasher);
+            hash_source_file(facts.cwd(), file, &mut hasher);
+        }
+
+        self.uses_command_path.hash(&mut hasher);
+        if self.uses_command_path {
+            facts.command_path_env().hash(&mut hasher);
         }
 
         hasher.finish()
@@ -70,15 +86,30 @@ impl ModuleDependencyInputs {
             self.push_env(env_name);
         }
         for file_path in &module.when.files {
-            self.push_file(file_path);
+            self.push_trigger_file(file_path);
         }
         for source in module.all_sources() {
             match source {
                 ResolvedSource::Env { name, .. } => self.push_env(name),
-                ResolvedSource::File { path, .. } => self.push_file(path),
-                ResolvedSource::Command { .. } => {}
+                ResolvedSource::File { path, .. } => self.push_source_file(path),
+                ResolvedSource::Command { .. } => self.uses_command_path = true,
             }
         }
+    }
+}
+
+fn hash_source_file(cwd: &Path, file: &str, hasher: &mut DefaultHasher) {
+    if !is_safe_relative_module_path(file) {
+        false.hash(hasher);
+        return;
+    }
+
+    match std::fs::read(cwd.join(file)) {
+        Ok(bytes) => {
+            true.hash(hasher);
+            bytes.hash(hasher);
+        }
+        Err(_) => false.hash(hasher),
     }
 }
 
@@ -111,12 +142,6 @@ impl RequestFacts {
         self
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_command_resolver(mut self, resolver: Arc<CommandResolver>) -> Self {
-        self.command_resolver = resolver;
-        self
-    }
-
     #[must_use]
     pub(crate) fn cwd(&self) -> &Path {
         &self.cwd
@@ -132,17 +157,14 @@ impl RequestFacts {
         self.read_only
     }
 
-    #[must_use]
     pub(crate) fn matching_modules<'a>(
         &'a self,
         defs: &'a [ResolvedModule],
         speed: ModuleSpeed,
-    ) -> Vec<(usize, &'a ResolvedModule)> {
+    ) -> impl Iterator<Item = &'a ResolvedModule> + 'a {
         defs.iter()
-            .filter(|module| module.speed == speed)
-            .filter(|module| self.check_when(&module.when))
-            .enumerate()
-            .collect()
+            .filter(move |module| module.speed == speed)
+            .filter(move |module| self.check_when(&module.when))
     }
 
     #[must_use]
@@ -153,7 +175,7 @@ impl RequestFacts {
     ) -> ModuleDependencyInputs {
         let mut inputs = ModuleDependencyInputs::default();
 
-        for (_, module) in self.matching_modules(defs, speed) {
+        for module in self.matching_modules(defs, speed) {
             inputs.add_module(module);
         }
 
@@ -195,57 +217,12 @@ impl RequestFacts {
     }
 
     async fn resolve_group(&self, group: &ResolvedSourceGroup) -> Option<String> {
-        let fast_sources: Vec<&ResolvedSource> = group
-            .sources
-            .iter()
-            .filter(|source| source.is_fast())
-            .collect();
-        if let Some(raw) = self.resolve_sources(&fast_sources).await {
-            return Some(raw);
-        }
-
-        let slow_sources: Vec<&ResolvedSource> = group
-            .sources
-            .iter()
-            .filter(|source| !source.is_fast())
-            .collect();
-        self.resolve_sources(&slow_sources).await
-    }
-
-    async fn resolve_sources(&self, sources: &[&ResolvedSource]) -> Option<String> {
-        match sources {
-            [] => None,
-            [source] => self.resolve_source(source).await,
-            _ => {
-                let mut join_set = JoinSet::new();
-                for source in sources {
-                    let cwd = self.cwd.clone();
-                    let env_vars = self.env_vars.clone();
-                    let path_env = self.command_path_env().map(ToOwned::to_owned);
-                    let command_resolver = Arc::clone(&self.command_resolver);
-                    let source = (*source).clone();
-                    join_set.spawn(async move {
-                        resolve_source_ref(
-                            &cwd,
-                            &env_vars,
-                            path_env.as_deref(),
-                            &*command_resolver,
-                            &source,
-                        )
-                        .await
-                    });
-                }
-
-                while let Some(joined) = join_set.join_next().await {
-                    if let Ok(Some(raw)) = joined {
-                        join_set.abort_all();
-                        return Some(raw);
-                    }
-                }
-
-                None
+        for source in &group.sources {
+            if let Some(raw) = self.resolve_source(source).await {
+                return Some(raw);
             }
         }
+        None
     }
 
     fn env_value(&self, name: &str) -> Option<&str> {
@@ -356,6 +333,9 @@ async fn resolve_source_ref(
             find_env_value(env_vars, name).and_then(|value| apply_regex(value, regex.as_ref()))
         }
         ResolvedSource::File { path, regex } => {
+            if !is_safe_relative_module_path(path) {
+                return None;
+            }
             let path = cwd.join(path);
             let content = tokio::task::spawn_blocking(move || std::fs::read_to_string(path))
                 .await

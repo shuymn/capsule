@@ -81,6 +81,18 @@ pub(super) struct SharedState {
     inflight: HashMap<CacheKey, watch::Sender<Option<Arc<prompt::SlowOutput>>>>,
 }
 
+enum SlowWorkClaim {
+    Cached {
+        slow: Arc<prompt::SlowOutput>,
+        receiver: watch::Receiver<Option<Arc<prompt::SlowOutput>>>,
+        should_start: bool,
+    },
+    Pending {
+        receiver: watch::Receiver<Option<Arc<prompt::SlowOutput>>>,
+        should_start: bool,
+    },
+}
+
 impl SharedState {
     fn new() -> Self {
         Self {
@@ -96,6 +108,36 @@ impl SharedState {
 
     pub(super) fn session_len(&self) -> usize {
         self.sessions.len()
+    }
+
+    fn claim_slow_work(&mut self, key: &CacheKey, cache_enabled: bool) -> SlowWorkClaim {
+        if cache_enabled && let Some(slow) = self.cache.get(key).cloned() {
+            let (receiver, should_start) = self.claim_inflight(key);
+            return SlowWorkClaim::Cached {
+                slow,
+                receiver,
+                should_start,
+            };
+        }
+
+        let (receiver, should_start) = self.claim_inflight(key);
+        SlowWorkClaim::Pending {
+            receiver,
+            should_start,
+        }
+    }
+
+    fn claim_inflight(
+        &mut self,
+        key: &CacheKey,
+    ) -> (watch::Receiver<Option<Arc<prompt::SlowOutput>>>, bool) {
+        if let Some(sender) = self.inflight.get(key) {
+            return (sender.subscribe(), false);
+        }
+
+        let (sender, receiver) = watch::channel(None);
+        self.inflight.insert(key.clone(), sender);
+        (receiver, true)
     }
 }
 
@@ -129,10 +171,9 @@ impl ReloadableConfig {
 
     async fn snapshot(
         &mut self,
-        state: &Arc<Mutex<SharedState>>,
         metrics: &stats::DaemonStats,
     ) -> (Arc<Config>, Arc<Vec<ResolvedModule>>, ConfigGeneration) {
-        if let Err(error) = self.reload_if_needed(state, metrics).await {
+        if let Err(error) = self.reload_if_needed(metrics).await {
             metrics
                 .config_reload_errors
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -147,7 +188,6 @@ impl ReloadableConfig {
 
     async fn reload_if_needed(
         &mut self,
-        state: &Arc<Mutex<SharedState>>,
         metrics: &stats::DaemonStats,
     ) -> Result<(), ConfigLoadError> {
         let Some(path) = self.path.clone() else {
@@ -175,9 +215,6 @@ impl ReloadableConfig {
                 metrics
                     .config_reloads
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-                let mut shared = state.lock().await;
-                shared.cache.clear();
             }
             None => {
                 self.modified_at = None;
@@ -296,6 +333,7 @@ impl<G: GitProvider + Clone + Send + Sync + 'static> Server<G> {
                 self.config_source.path,
             ))),
             stats: Arc::new(stats::DaemonStats::new()),
+            worker_tasks: Arc::new(Mutex::new(tokio::task::JoinSet::new())),
         };
 
         match self.listener_mode {

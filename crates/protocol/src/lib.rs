@@ -58,6 +58,13 @@ pub enum ProtocolError {
         reason: &'static str,
     },
 
+    /// A message line exceeded the codec's maximum frame size.
+    #[error("message: exceeds maximum size of {limit} bytes")]
+    MessageTooLarge {
+        /// Maximum allowed message size in bytes.
+        limit: usize,
+    },
+
     /// An I/O error occurred during codec read/write.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),

@@ -17,9 +17,7 @@ use capsule_prompt_bench::{
     DEFAULT_ITERATIONS, RENDER_RESULT_WAIT_SECS, RunMetadata, ScenarioResult, UPDATE_WAIT_MS,
     build_path_env, resolve_binary, summarize,
 };
-use capsule_protocol::{
-    Message, PROTOCOL_VERSION, Request, SessionId, generation::PromptGeneration,
-};
+use capsule_protocol::{Message, Request, SessionId, generation::PromptGeneration};
 use clap::Parser;
 use serde::Serialize;
 
@@ -421,7 +419,6 @@ impl CapsuleConn {
         let generation = CAPSULE_PROMPT_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
         let session_id = SessionId::from_hex(b"deadbeefcafebabe").context("bench session id")?;
         let req = Request {
-            version: PROTOCOL_VERSION,
             session_id,
             generation: PromptGeneration::new(generation),
             cwd: cwd.display().to_string(),
@@ -445,18 +442,30 @@ impl CapsuleConn {
             .context("send request to daemon")?;
         self.write.flush().context("flush daemon socket")?;
 
+        let requested_generation = PromptGeneration::new(generation);
         let mut line = Vec::new();
-        self.read
-            .read_until(b'\n', &mut line)
-            .context("read RenderResult line")?;
-        if line.last() == Some(&b'\n') {
-            line.pop();
+        loop {
+            line.clear();
+            match self.read.read_until(b'\n', &mut line) {
+                Ok(0) => anyhow::bail!(
+                    "daemon closed before RenderResult for generation {}",
+                    requested_generation.get()
+                ),
+                Ok(_) => {
+                    if line.last() == Some(&b'\n') {
+                        line.pop();
+                    }
+                    if let Message::RenderResult(rr) =
+                        Message::from_wire(&line).context("parse RenderResult")?
+                        && rr.generation == requested_generation
+                    {
+                        break;
+                    }
+                }
+                Err(e) => return Err(e).context("read RenderResult line"),
+            }
         }
         let fast_ms = start.elapsed().as_secs_f64() * 1000.0;
-        let msg = Message::from_wire(&line).context("parse RenderResult")?;
-        if !matches!(msg, Message::RenderResult(_)) {
-            anyhow::bail!("expected RenderResult, got {msg:?}");
-        }
 
         self.read
             .get_mut()
@@ -464,23 +473,30 @@ impl CapsuleConn {
             .context("set read timeout for Update")?;
 
         let mut total_ms = fast_ms;
-        line.clear();
-        match self.read.read_until(b'\n', &mut line) {
-            Ok(0) => {}
-            Ok(_) => {
-                if line.last() == Some(&b'\n') {
-                    line.pop();
+        loop {
+            line.clear();
+            match self.read.read_until(b'\n', &mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if line.last() == Some(&b'\n') {
+                        line.pop();
+                    }
+                    let message = Message::from_wire(&line).context("parse Update line")?;
+                    if let Message::Update(update) = message
+                        && update.generation == requested_generation
+                    {
+                        total_ms = start.elapsed().as_secs_f64() * 1000.0;
+                        break;
+                    }
                 }
-                if let Ok(msg) = Message::from_wire(&line)
-                    && matches!(msg, Message::Update(_))
+                Err(e)
+                    if e.kind() == io::ErrorKind::WouldBlock
+                        || e.kind() == io::ErrorKind::TimedOut =>
                 {
-                    total_ms = start.elapsed().as_secs_f64() * 1000.0;
+                    break;
                 }
+                Err(e) => return Err(e).context("read Update line"),
             }
-            Err(e)
-                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => {
-            }
-            Err(e) => return Err(e).context("read Update line"),
         }
 
         Ok(CapsuleSample { fast_ms, total_ms })
@@ -600,15 +616,15 @@ fn run_benchmark(
         step += 1;
         eprintln!("[{step}/{total}] starship {name}");
 
-        for _ in 0..2 {
-            measure_starship(starship_bin, &workload.path)
+        for warmup_cwd in workload.subdirs.iter().take(2) {
+            measure_starship(starship_bin, warmup_cwd)
                 .with_context(|| format!("starship warm-up {name}"))?;
         }
 
         let mut starship_values = Vec::with_capacity(iterations);
-        for _ in 0..iterations {
+        for sample_cwd in workload.subdirs.iter().skip(2).take(iterations) {
             starship_values.push(
-                measure_starship(starship_bin, &workload.path)
+                measure_starship(starship_bin, sample_cwd)
                     .with_context(|| format!("starship sample {name}"))?,
             );
         }
