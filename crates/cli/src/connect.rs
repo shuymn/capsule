@@ -122,8 +122,15 @@ fn ensure_daemon(socket_path: &Path) -> anyhow::Result<()> {
 }
 
 fn signal_process(pid: &str, signal: &str) -> bool {
+    let Ok(pid) = pid.parse::<u32>() else {
+        return false;
+    };
+    if pid == 0 {
+        return false;
+    }
+    let pid = pid.to_string();
     std::process::Command::new("kill")
-        .args([signal, pid])
+        .args([signal, &pid])
         .status()
         .is_ok_and(|status| status.success())
 }
