@@ -481,7 +481,8 @@ impl CapsuleConn {
                     if line.last() == Some(&b'\n') {
                         line.pop();
                     }
-                    if let Ok(Message::Update(update)) = Message::from_wire(&line)
+                    let message = Message::from_wire(&line).context("parse Update line")?;
+                    if let Message::Update(update) = message
                         && update.generation == requested_generation
                     {
                         total_ms = start.elapsed().as_secs_f64() * 1000.0;
