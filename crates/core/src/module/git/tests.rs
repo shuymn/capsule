@@ -483,19 +483,16 @@ fn test_module_speed_is_slow() {
 
 // -- Integration test with real git --
 
-#[test]
-fn test_module_real_git_repo_with_staged_file() -> Result<(), Box<dyn std::error::Error>> {
+fn staged_git_repo() -> Result<tempfile::TempDir, Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
     let path = dir.path();
 
-    // Initialize a git repo
     let init = Command::new("git")
         .args(["init", "-b", "main"])
         .current_dir(path)
         .output()?;
     assert!(init.status.success(), "git init failed");
 
-    // Configure git identity (needed in CI)
     Command::new("git")
         .args(["config", "user.name", "test"])
         .current_dir(path)
@@ -505,13 +502,20 @@ fn test_module_real_git_repo_with_staged_file() -> Result<(), Box<dyn std::error
         .current_dir(path)
         .output()?;
 
-    // Create and stage a file
     std::fs::write(path.join("hello.txt"), "hello")?;
     let add = Command::new("git")
         .args(["add", "hello.txt"])
         .current_dir(path)
         .output()?;
     assert!(add.status.success(), "git add failed");
+
+    Ok(dir)
+}
+
+#[test]
+fn test_module_real_git_repo_with_staged_file() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = staged_git_repo()?;
+    let path = dir.path();
 
     // Query via CommandGitProvider
     let provider = CommandGitProvider;
@@ -544,6 +548,34 @@ fn test_module_not_a_git_repo() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
     let provider = CommandGitProvider;
     let status = provider.status(dir.path(), None)?;
+    assert!(status.is_none(), "non-git dir should return None");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_command_git_provider_status_async_real_repo_with_staged_file()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = staged_git_repo()?;
+    let path = dir.path();
+
+    let status = CommandGitProvider
+        .status_async(path.to_path_buf(), None)
+        .await?;
+    assert!(status.is_some(), "should detect git repo");
+    assert!(
+        status.as_ref().is_some_and(|status| status.staged > 0),
+        "should have staged files"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_command_git_provider_status_async_not_a_git_repo()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let status = CommandGitProvider
+        .status_async(dir.path().to_path_buf(), None)
+        .await?;
     assert!(status.is_none(), "non-git dir should return None");
     Ok(())
 }
