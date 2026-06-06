@@ -812,3 +812,23 @@ dimmed = true
     assert_eq!(config.character.success_style.dimmed, Some(true));
     Ok(())
 }
+
+#[test]
+fn module_source_command_rejects_empty_argument() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+[[module]]
+name = "empty-command"
+source = [{ command = ["echo", ""] }]
+"#,
+    )?;
+
+    assert!(matches!(
+        read_config(&path),
+        Err(ConfigLoadError::Parse { .. })
+    ));
+    Ok(())
+}

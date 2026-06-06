@@ -683,6 +683,15 @@ impl<'de> serde::Deserialize<'de> for SourceDef {
                 "module source command must contain at least one argument",
             ));
         }
+        if raw
+            .command
+            .as_ref()
+            .is_some_and(|args| args.iter().any(String::is_empty))
+        {
+            return Err(serde::de::Error::custom(
+                "module source command arguments must not be empty",
+            ));
+        }
 
         Ok(Self {
             name: raw.name,
