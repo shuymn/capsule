@@ -153,8 +153,42 @@ fn test_zsh_response_parses_tabs() -> Result<(), Box<dyn std::error::Error>> {
         "response parsing should skip type and gen fields"
     );
     assert!(
-        stdout.contains("_left1=$(_capsule_unescape_field \"$_left1\")"),
+        stdout.contains("_capsule_unescape_field _left1 \"$_left1\""),
         "left prompt should be unescaped after tab parsing"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_zsh_unescape_preserves_trailing_newline() -> Result<(), Box<dyn std::error::Error>> {
+    let output = Command::new("zsh")
+        .args([
+            "-c",
+            r#"source "$1"
+_capsule_unescape_field out "left\\n"
+print -rn -- ${#out}
+print -rn -- "$out" | od -An -tx1"#,
+            "zsh",
+            INIT_ZSH,
+        ])
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "zsh exited with {}: stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.starts_with('5'),
+        "expected preserved byte length: {stdout}"
+    );
+    let hex: Vec<&str> = stdout.split_whitespace().skip(1).collect();
+    assert_eq!(
+        hex,
+        ["6c", "65", "66", "74", "0a"],
+        "expected trailing newline byte in output: {stdout}"
     );
     Ok(())
 }

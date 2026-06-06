@@ -148,7 +148,8 @@ _capsule_escape_field() {
 
 _capsule_unescape_field() {
     emulate -L zsh
-    printf '%b' "$1"
+    local _target=$1
+    printf -v "$_target" '%b' "$2"
 }
 
 _capsule_precmd() {
@@ -225,13 +226,15 @@ _capsule_precmd() {
             local _after_left1=${_payload#*$'\t'}
             if [[ "$_after_left1" == *$'\t'* ]]; then
                 _left2=${_after_left1%%$'\t'*}
-                _capsule_parse_char_meta "$(_capsule_unescape_field "${_after_left1#*$'\t'}")"
+                local _char_meta
+                _capsule_unescape_field _char_meta "${_after_left1#*$'\t'}"
+                _capsule_parse_char_meta "$_char_meta"
             else
                 _left2=$_after_left1
                 _capsule_parse_char_meta ""
             fi
-            _left1=$(_capsule_unescape_field "$_left1")
-            _left2=$(_capsule_unescape_field "$_left2")
+            _capsule_unescape_field _left1 "$_left1"
+            _capsule_unescape_field _left2 "$_left2"
             break
         fi
     done
@@ -270,13 +273,15 @@ _capsule_async_callback() {
                 local _left2
                 if [[ "$_after_left1" == *$'\t'* ]]; then
                     _left2=${_after_left1%%$'\t'*}
-                    _capsule_parse_char_meta "$(_capsule_unescape_field "${_after_left1#*$'\t'}")"
+                    local _char_meta
+                    _capsule_unescape_field _char_meta "${_after_left1#*$'\t'}"
+                    _capsule_parse_char_meta "$_char_meta"
                 else
                     _left2=$_after_left1
                     _capsule_parse_char_meta ""
                 fi
-                _left1=$(_capsule_unescape_field "$_left1")
-                _left2=$(_capsule_unescape_field "$_left2")
+                _capsule_unescape_field _left1 "$_left1"
+                _capsule_unescape_field _left2 "$_left2"
                 _capsule_apply_prompt "$_left1" "$_left2"
                 zle reset-prompt 2>/dev/null
             fi
