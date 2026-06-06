@@ -37,8 +37,22 @@ fn write_config(path: &Path, content: &str) -> Result<(), Box<dyn std::error::Er
 }
 
 async fn rewrite_config(path: &Path, content: &str) -> Result<(), Box<dyn std::error::Error>> {
-    sleep(HOT_RELOAD_WAIT).await;
-    write_config(path, content)
+    let before = std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+
+    loop {
+        sleep(HOT_RELOAD_WAIT).await;
+        write_config(path, content)?;
+        let after = std::fs::metadata(path)?.modified()?;
+        if before != Some(after) {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err("config mtime did not change after rewrite".into());
+        }
+    }
 }
 
 fn character_config(glyph: &str) -> String {
