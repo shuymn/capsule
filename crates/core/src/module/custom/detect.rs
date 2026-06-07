@@ -209,6 +209,7 @@ pub(super) fn format_module(
         icon: def.icon.clone(),
         style: def.style,
         connector: def.connector.clone(),
+        slot: def.slot,
     })
 }
 

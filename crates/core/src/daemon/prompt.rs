@@ -1,9 +1,9 @@
 use crate::{
-    config::Config,
+    config::{Config, ModuleSlot},
     module::{
         CmdDurationModule, CustomModuleInfo, DirectoryModule, Module, RenderContext, TimeModule,
     },
-    render::{PromptLines, compose_segments},
+    render::{PromptLines, compose_segments, segment::Segment, style::Style},
 };
 
 /// ASCII Record Separator — delimits key from value in `char_meta` entries.
@@ -96,20 +96,29 @@ pub(super) fn compose_prompt(
         line1.push(config.git.to_segment(git, connector_style));
     }
 
-    for module in &fast.custom_modules {
-        line1.push(module.to_segment(connector_style));
-    }
-    if let Some(custom_modules) = slow.map(|output| &output.custom_modules) {
-        for module in custom_modules {
-            line1.push(module.to_segment(connector_style));
-        }
-    }
+    let slow_custom_modules = slow.map(|output| output.custom_modules.as_slice());
+
+    append_custom_modules(
+        &mut line1,
+        &fast.custom_modules,
+        slow_custom_modules,
+        ModuleSlot::Line1,
+        connector_style,
+    );
 
     if let Some(duration) = &fast.cmd_duration {
         line1.push(config.cmd_duration.to_segment(duration, connector_style));
     }
 
     let mut line2 = Vec::with_capacity(2);
+
+    append_custom_modules(
+        &mut line2,
+        &fast.custom_modules,
+        slow_custom_modules,
+        ModuleSlot::Line2,
+        connector_style,
+    );
 
     if let Some(time) = &fast.time {
         line2.push(config.time.to_segment(time, connector_style));
@@ -135,6 +144,22 @@ pub(super) fn compose_prompt(
     }
 
     result
+}
+
+fn append_custom_modules(
+    line: &mut Vec<Segment>,
+    fast_modules: &[CustomModuleInfo],
+    slow_modules: Option<&[CustomModuleInfo]>,
+    slot: ModuleSlot,
+    connector_style: Style,
+) {
+    for module in fast_modules
+        .iter()
+        .chain(slow_modules.unwrap_or(&[]).iter())
+        .filter(|module| module.slot == slot)
+    {
+        line.push(module.to_segment(connector_style));
+    }
 }
 
 #[cfg(test)]
@@ -183,7 +208,14 @@ mod tests {
             icon: preset.and_then(|def| def.icon.clone()),
             style,
             connector: Some("via".to_owned()),
+            slot: ModuleSlot::default(),
         }
+    }
+
+    fn make_line2_module(name: &str, version: &str) -> CustomModuleInfo {
+        let mut module = make_toolchain_module(name, version);
+        module.slot = ModuleSlot::Line2;
+        module
     }
 
     fn contains_yellow_ansi(line: &str) -> bool {
@@ -279,6 +311,73 @@ mod tests {
         assert!(
             lines.left2.contains("\x1b[31m"),
             "character should be red on error: {}",
+            lines.left2
+        );
+    }
+
+    #[test]
+    fn test_line2_module_on_left2_only() {
+        let mut fast = make_fast_outputs();
+        fast.custom_modules = vec![make_line2_module("node", "v20.0")];
+        let lines = compose_prompt(&fast, None, 80, &default_config());
+        assert!(
+            lines.left2.contains("v20.0"),
+            "line2 module should appear on left2: {}",
+            lines.left2
+        );
+        assert!(
+            !lines.left1.contains("v20.0"),
+            "line2 module should not appear on left1: {}",
+            lines.left1
+        );
+    }
+
+    #[test]
+    fn test_line1_module_not_on_left2() {
+        let fast = make_fast_outputs();
+        let slow = SlowOutput {
+            custom_modules: vec![make_toolchain_module("rust", "v1.82.0")],
+            ..make_slow_output()
+        };
+        let lines = compose_prompt(&fast, Some(&slow), 80, &default_config());
+        assert!(
+            lines.left1.contains("v1.82.0"),
+            "line1 module should appear on left1: {}",
+            lines.left1
+        );
+        assert!(
+            !lines.left2.contains("v1.82.0"),
+            "line1 module should not appear on left2: {}",
+            lines.left2
+        );
+    }
+
+    #[test]
+    fn test_mixed_slots_both_lines() {
+        let mut fast = make_fast_outputs();
+        fast.custom_modules = vec![
+            make_toolchain_module("rust", "v1.82.0"),
+            make_line2_module("node", "v20.0"),
+        ];
+        let lines = compose_prompt(&fast, None, 80, &default_config());
+        assert!(
+            lines.left1.contains("v1.82.0"),
+            "line1 module should appear on left1: {}",
+            lines.left1
+        );
+        assert!(
+            !lines.left1.contains("v20.0"),
+            "line2 module should not appear on left1: {}",
+            lines.left1
+        );
+        assert!(
+            lines.left2.contains("v20.0"),
+            "line2 module should appear on left2: {}",
+            lines.left2
+        );
+        assert!(
+            !lines.left2.contains("v1.82.0"),
+            "line1 module should not appear on left2: {}",
             lines.left2
         );
     }

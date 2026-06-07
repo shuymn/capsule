@@ -20,8 +20,8 @@ use super::super::test_support::{
 };
 use crate::{
     config::{
-        CacheConfig, Config, ModuleDef, ModuleWhen, SlowCacheMode, SourceDef, StyleConfig,
-        TimeoutConfig,
+        CacheConfig, Config, ModuleDef, ModuleSlot, ModuleWhen, SlowCacheMode, SourceDef,
+        StyleConfig, TimeoutConfig,
     },
     module::GitStatus,
 };
@@ -579,6 +579,7 @@ async fn test_daemon_env_dep_cache_hit() -> Result<(), Box<dyn std::error::Error
             style: StyleConfig::default(),
             connector: Some("via".to_owned()),
             arbitration: None,
+            slot: ModuleSlot::default(),
         }],
         ..Config::default()
     };
@@ -674,6 +675,7 @@ async fn test_fast_env_module_no_blocking_pool() -> Result<(), Box<dyn std::erro
             style: StyleConfig::default(),
             connector: None,
             arbitration: None,
+            slot: ModuleSlot::default(),
         }],
         timeout: TimeoutConfig {
             fast_ms: 0,
@@ -1081,6 +1083,7 @@ async fn test_daemon_env_dep_prevents_cache_reuse() -> Result<(), Box<dyn std::e
             style: StyleConfig::default(),
             connector: Some("via".to_owned()),
             arbitration: None,
+            slot: ModuleSlot::default(),
         }],
         ..Config::default()
     };

@@ -1,5 +1,7 @@
 use crate::{
-    config::{Arbitration, ModuleDef, ModuleWhen, RegexPattern, SourceDef, StyleConfig},
+    config::{
+        Arbitration, ModuleDef, ModuleSlot, ModuleWhen, RegexPattern, SourceDef, StyleConfig,
+    },
     render::style::Color,
 };
 
@@ -29,6 +31,7 @@ pub fn preset_module_defs() -> Vec<ModuleDef> {
             style: StyleConfig::fg(Color::Red),
             connector: Some("via".to_owned()),
             arbitration: None,
+            slot: ModuleSlot::default(),
         },
         ModuleDef {
             name: "bun".to_owned(),
@@ -64,6 +67,7 @@ pub fn preset_module_defs() -> Vec<ModuleDef> {
                 group: JS_RUNTIME_ARBITRATION_GROUP.to_owned(),
                 priority: BUN_ARBITRATION_PRIORITY,
             }),
+            slot: ModuleSlot::default(),
         },
         ModuleDef {
             name: "node".to_owned(),
@@ -95,6 +99,7 @@ pub fn preset_module_defs() -> Vec<ModuleDef> {
                 group: JS_RUNTIME_ARBITRATION_GROUP.to_owned(),
                 priority: NODE_ARBITRATION_PRIORITY,
             }),
+            slot: ModuleSlot::default(),
         },
         ModuleDef {
             name: "go".to_owned(),
@@ -114,6 +119,7 @@ pub fn preset_module_defs() -> Vec<ModuleDef> {
             style: StyleConfig::fg(Color::Cyan),
             connector: Some("via".to_owned()),
             arbitration: None,
+            slot: ModuleSlot::default(),
         },
         ModuleDef {
             name: "python".to_owned(),
@@ -133,6 +139,7 @@ pub fn preset_module_defs() -> Vec<ModuleDef> {
             style: StyleConfig::fg(Color::Yellow),
             connector: Some("via".to_owned()),
             arbitration: None,
+            slot: ModuleSlot::default(),
         },
         ModuleDef {
             name: "ruby".to_owned(),
@@ -154,6 +161,7 @@ pub fn preset_module_defs() -> Vec<ModuleDef> {
             style: StyleConfig::fg(Color::Red),
             connector: Some("via".to_owned()),
             arbitration: None,
+            slot: ModuleSlot::default(),
         },
     ]
 }

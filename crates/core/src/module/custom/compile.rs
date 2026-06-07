@@ -40,6 +40,7 @@ fn compile_module_def(def: ModuleDef) -> ResolvedModule {
         connector: def.connector,
         speed,
         arbitration: def.arbitration,
+        slot: def.slot,
     }
 }
 

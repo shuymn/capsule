@@ -120,6 +120,7 @@ cyan = 36
 ```toml
 [[module]]
 name = "rust"
+slot = "line1"              # default line1; use line2 for the input line
 when.files = ["Cargo.toml"]
 format = "v{version}"
 icon = "🦀"
@@ -181,3 +182,4 @@ capsule preset              Print built-in module definitions as TOML
 - `crates/prompt-bench`: benchmark harness
 - `crates/protocol`: wire protocol and message codec
 - `crates/sys`: platform-specific FFI (launchd on macOS, systemd socket activation on Linux)
+- `docs/extending.md`: extension guide (custom modules, agent workflow)
