@@ -553,6 +553,17 @@ impl<'de> serde::Deserialize<'de> for RegexPattern {
     }
 }
 
+/// Prompt line placement for a custom module.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModuleSlot {
+    /// Line 1: after git, before command duration (default).
+    #[default]
+    Line1,
+    /// Line 2: before time.
+    Line2,
+}
+
 /// User-defined prompt module entry from `[[module]]` in config.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct ModuleDef {
@@ -578,6 +589,9 @@ pub struct ModuleDef {
     /// Optional arbitration metadata for collapsing competing modules.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arbitration: Option<Arbitration>,
+    /// Prompt line placement.
+    #[serde(default)]
+    pub slot: ModuleSlot,
 }
 
 fn default_module_format() -> String {

@@ -371,6 +371,67 @@ env = "FOO"
 }
 
 #[test]
+fn module_slot_line2_deserializes() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+[[module]]
+name = "node"
+slot = "line2"
+
+[[module.source]]
+env = "NODE_VERSION"
+"#,
+    )?;
+    let config = load_config(&path);
+    assert_eq!(config.module[0].slot, ModuleSlot::Line2);
+    Ok(())
+}
+
+#[test]
+fn module_slot_invalid_rejected() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+[[module]]
+name = "test"
+slot = "line3"
+
+[[module.source]]
+env = "FOO"
+"#,
+    )?;
+    assert!(matches!(
+        read_config(&path),
+        Err(ConfigLoadError::Parse { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn module_slot_defaults_to_line1() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+[[module]]
+name = "test"
+
+[[module.source]]
+env = "FOO"
+"#,
+    )?;
+    let config = load_config(&path);
+    assert_eq!(config.module[0].slot, ModuleSlot::Line1);
+    Ok(())
+}
+
+#[test]
 fn module_multiple_sources() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("config.toml");

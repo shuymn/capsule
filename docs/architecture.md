@@ -184,6 +184,35 @@ Line 2 (input):  at [time] [character]
 | Cache | LRU (1024 entries, key = cwd + config_generation + dep_hash) | slow module 結果の再利用。dep_hash が env/file 依存を反映するため TTL 不要 |
 | Slow coalescing | watch channel per cache key | 同一 cwd への concurrent request で重複 spawn を防止 |
 
+## Intentionally Not in Core
+
+| Capability | Why not core | Extension path |
+|---|---|---|
+| Toolchain display | Per-language variance | `[[module]]` / `capsule preset` |
+| 3+ line layouts | v1 Starship-compatible 2 lines | `slot = "line2"` only; line-1 order fixed |
+| glob `when.files` | perf / escaping | exact filename match |
+| truecolor / style DSL | out of Theme 25 scope | `[color_map]` + `StyleConfig` |
+| Third-party Rust modules | sealed trait policy | config DSL (`[[module]]`) |
+| Linux / non-zsh shells | target platform scope | best-effort fallback |
+| org-wide config registry | single user config path | shared preset TOML + manual paste |
+
+Additional v1 non-goals live in [TODO.md](../TODO.md) (Open Questions).
+
+## Request Pipeline Stages
+
+Named stages in `crates/core/src/daemon/request/pipeline.rs` and `handle_request`:
+
+| Stage | Role | Extension today |
+|---|---|---|
+| `ConfigSnapshot` | User config hot-reload (mtime) | — |
+| `GatedPromptRequest` | Stale generation discard | — |
+| `CollectedFacts` | cwd env/file facts, cache key | — |
+| Fast detect | env/file `[[module]]` | module `slot` at compose |
+| Slow detect | command sources + git | same |
+| `compose_prompt` | 2-line layout | `line1` / `line2` slots |
+
+See [extending.md](extending.md) for agent workflow.
+
 ## Revisit Trigger
 
 - multi-user / multi-session を同一 daemon で扱う必要 -> runtime を multi-thread に変更

@@ -20,7 +20,7 @@ use regex_lite::Regex;
 
 use super::ModuleSpeed;
 use crate::{
-    config::{Arbitration, ModuleWhen},
+    config::{Arbitration, ModuleSlot, ModuleWhen},
     render::{
         segment::{Connector, Icon, Segment},
         style::Style,
@@ -48,6 +48,8 @@ pub struct ResolvedModule {
     pub speed: ModuleSpeed,
     /// Optional arbitration rule for collapsing competing detected modules.
     pub arbitration: Option<Arbitration>,
+    /// Prompt line placement.
+    pub slot: ModuleSlot,
 }
 
 impl ResolvedModule {
@@ -99,6 +101,8 @@ pub struct CustomModuleInfo {
     pub style: Style,
     /// Connector word.
     pub connector: Option<String>,
+    /// Prompt line placement.
+    pub slot: ModuleSlot,
 }
 
 impl CustomModuleInfo {

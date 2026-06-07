@@ -118,6 +118,7 @@ cyan = 36
 ```toml
 [[module]]
 name = "rust"
+slot = "line1"              # 省略時 line1; line2 で入力行へ
 when.files = ["Cargo.toml"]
 format = "v{version}"
 icon = "🦀"
@@ -178,3 +179,4 @@ capsule preset              組み込みモジュール定義を TOML として�
 - `crates/prompt-bench`: ベンチマークハーネス
 - `crates/protocol`: wireプロトコルとメッセージコーデック
 - `crates/sys`: プラットフォーム固有の FFI（macOS: launchd、Linux: systemd socketの有効化）
+- `docs/extending.md`: 拡張ガイド（カスタムモジュール、エージェント向け手順）

@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use super::*;
 use crate::{
-    config::{ModuleDef, RegexPattern, SourceDef, StyleConfig},
+    config::{ModuleDef, ModuleSlot, RegexPattern, SourceDef, StyleConfig},
     render::style::Color,
 };
 
@@ -41,6 +41,7 @@ fn resolve_modules_single() {
         style: StyleConfig::fg(Color::Yellow),
         connector: None,
         arbitration: None,
+        slot: ModuleSlot::default(),
     }];
     let resolved = resolve_modules(&user);
     assert_eq!(resolved.len(), 1);
@@ -69,6 +70,7 @@ fn resolve_modules_with_command() {
         style: StyleConfig::fg(Color::Yellow),
         connector: Some("via".to_owned()),
         arbitration: None,
+        slot: ModuleSlot::default(),
     }];
     let resolved = resolve_modules(&user);
     assert_eq!(resolved.len(), 1);
@@ -101,6 +103,7 @@ fn resolve_modules_keeps_arbitration() {
         style: StyleConfig::default(),
         connector: None,
         arbitration: Some(arbitration("javascript", 30)),
+        slot: ModuleSlot::default(),
     }];
 
     let resolved = resolve_modules(&user);
@@ -128,6 +131,7 @@ fn resolve_modules_fast_env() {
         style: StyleConfig::default(),
         connector: None,
         arbitration: None,
+        slot: ModuleSlot::default(),
     }];
     let resolved = resolve_modules(&user);
     let m = resolved.iter().find(|r| r.name == "env_only");
@@ -160,6 +164,7 @@ fn resolve_modules_slow_command() {
         style: StyleConfig::default(),
         connector: None,
         arbitration: None,
+        slot: ModuleSlot::default(),
     }];
     let resolved = resolve_modules(&user);
     let m = resolved.iter().find(|r| r.name == "mixed");
@@ -183,6 +188,7 @@ fn resolve_modules_filters_empty_command() {
         style: StyleConfig::default(),
         connector: None,
         arbitration: None,
+        slot: ModuleSlot::default(),
     }]);
 
     let m = defs.iter().find(|r| r.name == "empty_cmd");
@@ -214,6 +220,7 @@ async fn detect_env_source() {
         style: StyleConfig::fg(Color::Yellow),
         connector: None,
         arbitration: None,
+        slot: ModuleSlot::default(),
     }]);
 
     let env_vars = vec![("AWS_PROFILE".to_owned(), "production".to_owned())];
@@ -245,6 +252,7 @@ async fn detect_env_source_missing() {
         style: StyleConfig::default(),
         connector: None,
         arbitration: None,
+        slot: ModuleSlot::default(),
     }]);
 
     let results = detect_modules(&defs, Path::new("/tmp"), &[], None, ModuleSpeed::Fast).await;
@@ -278,6 +286,7 @@ async fn detect_file_source() -> Result<(), Box<dyn std::error::Error>> {
         style: StyleConfig::default(),
         connector: Some("via".to_owned()),
         arbitration: None,
+        slot: ModuleSlot::default(),
     }]);
 
     let results = detect_modules(&defs, dir.path(), &[], None, ModuleSpeed::Fast).await;
@@ -310,6 +319,7 @@ async fn detect_command_source() -> Result<(), Box<dyn std::error::Error>> {
         style: StyleConfig::default(),
         connector: None,
         arbitration: None,
+        slot: ModuleSlot::default(),
     }]);
 
     let results = detect_modules(&defs, dir.path(), &[], None, ModuleSpeed::Slow).await;
@@ -351,6 +361,7 @@ async fn detect_fast_source_preferred() -> Result<(), Box<dyn std::error::Error>
         style: StyleConfig::default(),
         connector: None,
         arbitration: None,
+        slot: ModuleSlot::default(),
     }]);
 
     let env_vars = vec![("MY_VERSION".to_owned(), "from-env".to_owned())];
@@ -385,6 +396,7 @@ async fn detect_format_string() {
         style: StyleConfig::default(),
         connector: None,
         arbitration: None,
+        slot: ModuleSlot::default(),
     }]);
 
     let env_vars = vec![("FOO".to_owned(), "1.0".to_owned())];
@@ -414,6 +426,7 @@ async fn detect_env_regex() {
         style: StyleConfig::default(),
         connector: None,
         arbitration: None,
+        slot: ModuleSlot::default(),
     }]);
 
     let env_vars = vec![("VERSION_STR".to_owned(), "v1.23.456-beta".to_owned())];
@@ -445,6 +458,7 @@ async fn detect_when_missing_files() -> Result<(), Box<dyn std::error::Error>> {
         style: StyleConfig::default(),
         connector: None,
         arbitration: None,
+        slot: ModuleSlot::default(),
     }]);
 
     let env_vars = vec![("FOO".to_owned(), "bar".to_owned())];
@@ -473,6 +487,7 @@ async fn detect_when_empty() {
         style: StyleConfig::default(),
         connector: None,
         arbitration: None,
+        slot: ModuleSlot::default(),
     }]);
 
     let env_vars = vec![("FOO".to_owned(), "bar".to_owned())];
@@ -504,6 +519,7 @@ async fn detect_command_failure() -> Result<(), Box<dyn std::error::Error>> {
         style: StyleConfig::default(),
         connector: None,
         arbitration: None,
+        slot: ModuleSlot::default(),
     }]);
 
     let results = detect_modules(&defs, dir.path(), &[], None, ModuleSpeed::Slow).await;
@@ -532,6 +548,7 @@ async fn detect_same_group_keeps_lower_priority() {
             style: StyleConfig::default(),
             connector: None,
             arbitration: Some(arbitration("runtime", 20)),
+            slot: ModuleSlot::default(),
         },
         ModuleDef {
             name: "beta".to_owned(),
@@ -548,6 +565,7 @@ async fn detect_same_group_keeps_lower_priority() {
             style: StyleConfig::default(),
             connector: None,
             arbitration: Some(arbitration("runtime", 10)),
+            slot: ModuleSlot::default(),
         },
     ]);
 
@@ -584,6 +602,7 @@ async fn detect_same_group_keeps_earlier_definition() {
             style: StyleConfig::default(),
             connector: None,
             arbitration: Some(arbitration("runtime", 10)),
+            slot: ModuleSlot::default(),
         },
         ModuleDef {
             name: "second".to_owned(),
@@ -600,6 +619,7 @@ async fn detect_same_group_keeps_earlier_definition() {
             style: StyleConfig::default(),
             connector: None,
             arbitration: Some(arbitration("runtime", 10)),
+            slot: ModuleSlot::default(),
         },
     ]);
 
@@ -636,6 +656,7 @@ async fn detect_without_arbitration() {
             style: StyleConfig::default(),
             connector: None,
             arbitration: Some(arbitration("runtime", 10)),
+            slot: ModuleSlot::default(),
         },
         ModuleDef {
             name: "plain".to_owned(),
@@ -652,6 +673,7 @@ async fn detect_without_arbitration() {
             style: StyleConfig::default(),
             connector: None,
             arbitration: None,
+            slot: ModuleSlot::default(),
         },
     ]);
 
@@ -693,6 +715,7 @@ fn request_facts_matching_inputs() -> Result<(), Box<dyn std::error::Error>> {
             style: StyleConfig::default(),
             connector: None,
             arbitration: None,
+            slot: ModuleSlot::default(),
         },
         ModuleDef {
             name: "terraform".to_owned(),
@@ -721,6 +744,7 @@ fn request_facts_matching_inputs() -> Result<(), Box<dyn std::error::Error>> {
             style: StyleConfig::default(),
             connector: None,
             arbitration: None,
+            slot: ModuleSlot::default(),
         },
     ]);
 
@@ -756,6 +780,7 @@ async fn request_facts_uses_forwarded_path() -> Result<(), Box<dyn std::error::E
         style: StyleConfig::default(),
         connector: None,
         arbitration: None,
+        slot: ModuleSlot::default(),
     }]);
     let module = defs.iter().find(|resolved| resolved.name == "tool");
     let Some(module) = module else {
@@ -814,6 +839,7 @@ async fn detect_ignores_forwarded_path_env() -> Result<(), Box<dyn std::error::E
         style: StyleConfig::default(),
         connector: None,
         arbitration: None,
+        slot: ModuleSlot::default(),
     }]);
 
     let bin_dir = tempfile::tempdir()?;
@@ -866,6 +892,7 @@ async fn detect_empty_env_value() {
         style: StyleConfig::default(),
         connector: None,
         arbitration: None,
+        slot: ModuleSlot::default(),
     }]);
 
     let env_vars = vec![("EMPTY_VAR".to_owned(), String::new())];
@@ -903,6 +930,7 @@ async fn detect_empty_file_filtered() -> Result<(), Box<dyn std::error::Error>> 
         style: StyleConfig::default(),
         connector: None,
         arbitration: None,
+        slot: ModuleSlot::default(),
     }]);
 
     let results = detect_modules(&defs, dir.path(), &[], None, ModuleSpeed::Fast).await;
@@ -939,6 +967,7 @@ async fn detect_file_traversal_rejected() -> Result<(), Box<dyn std::error::Erro
         style: StyleConfig::default(),
         connector: None,
         arbitration: None,
+        slot: ModuleSlot::default(),
     }]);
 
     let results = detect_modules(&defs, &sub, &[], None, ModuleSpeed::Fast).await;
@@ -966,6 +995,7 @@ async fn detect_format_no_recursive_expansion() {
         style: StyleConfig::default(),
         connector: None,
         arbitration: None,
+        slot: ModuleSlot::default(),
     }]);
 
     let env_vars = vec![("INJECT_VAR".to_owned(), "{value}".to_owned())];
@@ -1006,6 +1036,7 @@ async fn detect_command_no_shell_injection() -> Result<(), Box<dyn std::error::E
         style: StyleConfig::default(),
         connector: None,
         arbitration: None,
+        slot: ModuleSlot::default(),
     }]);
 
     let _results = detect_modules(&defs, dir.path(), &[], None, ModuleSpeed::Slow).await;
@@ -1056,6 +1087,7 @@ async fn detect_uses_declared_command_source_order() -> Result<(), Box<dyn std::
         style: StyleConfig::default(),
         connector: None,
         arbitration: None,
+        slot: ModuleSlot::default(),
     }]);
     let module = defs.iter().find(|resolved| resolved.name == "runtime");
     let Some(module) = module else {
@@ -1097,6 +1129,7 @@ async fn detect_resolves_fast_file_source() -> Result<(), Box<dyn std::error::Er
         style: StyleConfig::default(),
         connector: None,
         arbitration: None,
+        slot: ModuleSlot::default(),
     }]);
     let module = defs.iter().find(|resolved| resolved.name == "runtime");
     let Some(module) = module else {
@@ -1137,6 +1170,7 @@ async fn detect_concurrent_no_corruption() -> Result<(), Box<dyn std::error::Err
         style: StyleConfig::default(),
         connector: None,
         arbitration: None,
+        slot: ModuleSlot::default(),
     }]);
 
     let defs = std::sync::Arc::new(defs);

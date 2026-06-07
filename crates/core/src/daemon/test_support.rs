@@ -17,7 +17,7 @@ use super::{
     listener::{self, ListenerMode},
 };
 use crate::{
-    config::{Config, ModuleDef, ModuleWhen, SourceDef, StyleConfig},
+    config::{Config, ModuleDef, ModuleSlot, ModuleWhen, SourceDef, StyleConfig},
     module::{GitError, GitProvider, GitStatus},
     sealed,
 };
@@ -86,6 +86,7 @@ pub(super) fn make_sleep_module(name: &str, sleep_ms: u32, output: &str) -> Modu
         style: StyleConfig::default(),
         connector: Some("via".to_owned()),
         arbitration: None,
+        slot: ModuleSlot::default(),
     }
 }
 

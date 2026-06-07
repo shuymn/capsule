@@ -371,6 +371,7 @@ mod tests {
             connector: None,
             speed: ModuleSpeed::Fast,
             arbitration,
+            slot: crate::config::ModuleSlot::default(),
         }
     }
 
@@ -381,6 +382,7 @@ mod tests {
             icon: None,
             style: Style::default(),
             connector: None,
+            slot: crate::config::ModuleSlot::default(),
         }
     }
 
