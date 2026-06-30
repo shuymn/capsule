@@ -44,7 +44,7 @@ impl MessageType {
         }
     }
 
-    pub(crate) fn from_bytes(b: &[u8]) -> Option<Self> {
+    pub(crate) const fn from_bytes(b: &[u8]) -> Option<Self> {
         match b {
             b"Q" => Some(Self::Request),
             b"R" => Some(Self::RenderResult),
@@ -112,9 +112,9 @@ impl SessionId {
             });
         }
         let mut bytes = [0u8; 8];
-        for (i, chunk) in hex.chunks_exact(2).enumerate() {
-            let hi = hex_digit(chunk[0])?;
-            let lo = hex_digit(chunk[1])?;
+        for (i, &[hi, lo]) in hex.as_chunks::<2>().0.iter().enumerate() {
+            let hi = hex_digit(hi)?;
+            let lo = hex_digit(lo)?;
             bytes[i] = (hi << 4) | lo;
         }
         Ok(Self(bytes))
