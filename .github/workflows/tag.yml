@@ -8,9 +8,6 @@ on:
       - completed
   workflow_dispatch:
 
-env:
-  RELEASE_CHECKOUT_REF: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.event.workflow_run.head_sha }}
-
 jobs:
   should-run:
     name: Should run
@@ -75,9 +72,21 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
-          ref: ${{ env.RELEASE_CHECKOUT_REF }}
+          ref: main
           persist-credentials: false
           token: ${{ steps.app-token.outputs.token }}
+
+      - name: Verify checked out commit
+        if: github.event_name == 'workflow_run'
+        run: |
+          set -euo pipefail
+          checked_out_sha="$(git rev-parse HEAD)"
+          if [[ "$checked_out_sha" != "$EXPECTED_HEAD_SHA" ]]; then
+            echo "checked out $checked_out_sha, expected $EXPECTED_HEAD_SHA" >&2
+            exit 1
+          fi
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
 
       - name: Run release-plz release
         uses: release-plz/action@e8792575c7f2366cf6ff3ccc33ead9ace5b691c7 # v0.5.130
@@ -113,9 +122,21 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
-          ref: ${{ env.RELEASE_CHECKOUT_REF }}
+          ref: main
           persist-credentials: false
           token: ${{ steps.app-token.outputs.token }}
+
+      - name: Verify checked out commit
+        if: github.event_name == 'workflow_run'
+        run: |
+          set -euo pipefail
+          checked_out_sha="$(git rev-parse HEAD)"
+          if [[ "$checked_out_sha" != "$EXPECTED_HEAD_SHA" ]]; then
+            echo "checked out $checked_out_sha, expected $EXPECTED_HEAD_SHA" >&2
+            exit 1
+          fi
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
 
       - name: Run release-plz release-pr
         uses: release-plz/action@e8792575c7f2366cf6ff3ccc33ead9ace5b691c7 # v0.5.130
