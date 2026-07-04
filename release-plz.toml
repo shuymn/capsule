@@ -2,7 +2,6 @@
 release = false
 publish = false
 git_release_enable = false
-git_only = true
 release_always = false
 
 [[package]]
