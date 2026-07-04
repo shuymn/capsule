@@ -87,6 +87,12 @@ impl ServiceManager for Launchd {
         let plist_content = generate_plist(&capsule_bin, socket_path, &forwarded_env);
         let plist = plist_path_for(home);
 
+        if super::is_nix_managed_definition(&plist) {
+            anyhow::bail!(
+                "capsule daemon is managed by Nix; change your Nix configuration instead of running `capsule daemon install`"
+            );
+        }
+
         if let Ok(existing) = std::fs::read_to_string(&plist) {
             if existing == plist_content {
                 if super::daemon_needs_restart(socket_path) {
@@ -113,6 +119,12 @@ impl ServiceManager for Launchd {
 
     fn uninstall(&self, home: &Path) -> anyhow::Result<()> {
         let plist = plist_path_for(home);
+
+        if super::is_nix_managed_definition(&plist) {
+            anyhow::bail!(
+                "capsule daemon is managed by Nix; disable the Nix module instead of running `capsule daemon uninstall`"
+            );
+        }
 
         if !self.unload()? {
             eprintln!("warning: service unload exited with non-zero status");

@@ -98,6 +98,8 @@ fn ensure_daemon(socket_path: &Path) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    bail_if_nix_managed_daemon(&crate::daemon::home_dir()?, "starting a standalone daemon")?;
+
     // Spawn daemon process.
     // Intentionally detach: the daemon outlives this process and tracks
     // its own PID via the lock file.
@@ -280,6 +282,8 @@ pub fn negotiate_build_id(socket_path: &Path) -> anyhow::Result<BuildIdNegotiati
 /// (standalone mode).
 fn restart_daemon(socket_path: &Path, lock_path: &Path) -> anyhow::Result<()> {
     let home = crate::daemon::home_dir()?;
+    bail_if_nix_managed_daemon(&home, "reinstalling it imperatively")?;
+
     if crate::daemon::reinstall_service_if_present(&home, socket_path)?.is_some() {
         return Ok(());
     }
@@ -348,7 +352,7 @@ async fn relay(socket_path: &Path, session_id: SessionId) -> anyhow::Result<()> 
                 Err(e) if retries >= MAX_RETRIES => return Err(e.into()),
                 Err(_) => {
                     retries += 1;
-                    reconnect_daemon(socket_path).await;
+                    reconnect_daemon(socket_path).await?;
                 }
             }
         };
@@ -378,7 +382,7 @@ async fn relay(socket_path: &Path, session_id: SessionId) -> anyhow::Result<()> 
         if retries >= MAX_RETRIES {
             return Ok(());
         }
-        reconnect_daemon(socket_path).await;
+        reconnect_daemon(socket_path).await?;
     }
 }
 
@@ -611,11 +615,25 @@ fn parse_env_meta(meta: &[u8]) -> Vec<(String, String)> {
     vars
 }
 
+fn bail_if_nix_managed_daemon(home: &Path, action: &str) -> anyhow::Result<()> {
+    if let Some(definition) = crate::daemon::nix_managed_service_definition(home) {
+        anyhow::bail!(
+            "capsule daemon is managed by Nix at {}; activate or restart the Nix-managed service/socket instead of {action}",
+            definition.display()
+        );
+    }
+    Ok(())
+}
+
 /// Wait briefly, then ensure the daemon is running for reconnection.
-async fn reconnect_daemon(socket_path: &Path) {
+async fn reconnect_daemon(socket_path: &Path) -> anyhow::Result<()> {
     tokio::time::sleep(RETRY_INTERVAL).await;
+    if let Ok(home) = crate::daemon::home_dir() {
+        bail_if_nix_managed_daemon(&home, "starting a standalone daemon")?;
+    }
     let path = socket_path.to_owned();
     let _ = tokio::task::spawn_blocking(move || ensure_daemon(&path)).await;
+    Ok(())
 }
 
 /// Returns `true` if the error indicates the socket peer disconnected
@@ -647,12 +665,63 @@ fn is_socket_error(e: &std::io::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use capsule_protocol::PromptGeneration;
 
     use super::*;
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn write_nix_managed_definition(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        #[cfg(target_os = "linux")]
+        {
+            let unit_dir = home.join(".config/systemd/user");
+            std::fs::create_dir_all(&unit_dir)?;
+            std::fs::write(
+                unit_dir.join("capsule.service"),
+                "[Service]\nEnvironment=CAPSULE_NIX_MANAGED=1\n",
+            )?;
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let launch_agents = home.join("Library/LaunchAgents");
+            std::fs::create_dir_all(&launch_agents)?;
+            std::fs::write(
+                launch_agents.join("com.github.shuymn.capsule.plist"),
+                "<key>CAPSULE_NIX_MANAGED</key>\n<string>1</string>\n",
+            )?;
+        }
+
+        Ok(())
+    }
+
     fn test_session_id() -> SessionId {
         SessionId::from_bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22])
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn test_bail_if_nix_managed_daemon_reports_definition() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let home = tempfile::tempdir()?;
+        write_nix_managed_definition(home.path())?;
+
+        let Err(error) = bail_if_nix_managed_daemon(home.path(), "starting a standalone daemon")
+        else {
+            return Err(std::io::Error::other("expected Nix-managed daemon error").into());
+        };
+        let message = error.to_string();
+
+        assert!(
+            message.contains("capsule daemon is managed by Nix at"),
+            "error should explain that the daemon is Nix-managed: {message}"
+        );
+        assert!(
+            message.contains("instead of starting a standalone daemon"),
+            "error should include the blocked action: {message}"
+        );
+        Ok(())
     }
 
     #[test]

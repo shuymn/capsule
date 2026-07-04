@@ -22,7 +22,9 @@ pub use service::Systemd;
 use service::launchd::LAUNCHD_SOCKET_NAME;
 #[cfg(unix)]
 pub use service::wait_until_daemon_ready;
-pub use service::{InstallOutcome, ServiceManager, reinstall_service_if_present};
+pub use service::{
+    InstallOutcome, ServiceManager, nix_managed_service_definition, reinstall_service_if_present,
+};
 pub use status::status;
 
 /// Initialize tracing subscriber if `CAPSULE_LOG` is set.

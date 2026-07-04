@@ -9,6 +9,10 @@ use anyhow::Context as _;
 
 use super::ServiceManager;
 
+const SERVICE_UNIT: &str = "capsule.service";
+const SOCKET_UNIT: &str = "capsule.socket";
+const SYSTEMD_USER_DIR: &str = "systemd/user";
+
 /// Linux systemd user-session service manager.
 pub struct Systemd {
     socket_path: PathBuf,
@@ -25,6 +29,13 @@ impl Systemd {
 
 impl ServiceManager for Systemd {
     fn install(&self, home: &Path, socket_path: &Path) -> anyhow::Result<super::InstallOutcome> {
+        if let Some(path) = nix_managed_service_file_path(home) {
+            anyhow::bail!(
+                "capsule daemon is managed by Nix at {}; change your Nix configuration instead of running `capsule daemon install`",
+                path.display()
+            );
+        }
+
         let capsule_bin = std::env::current_exe().context("cannot find capsule binary")?;
         let forwarded_env = super::collect_forwarded_env();
 
@@ -48,7 +59,7 @@ impl ServiceManager for Systemd {
         }
 
         // Stop before rewriting unit files.
-        let _ = systemctl(&["stop", "capsule.socket", "capsule.service"]);
+        let _ = systemctl(&["stop", SOCKET_UNIT, SERVICE_UNIT]);
 
         let unit_dir = unit_dir(home);
         std::fs::create_dir_all(&unit_dir)
@@ -60,7 +71,7 @@ impl ServiceManager for Systemd {
             .with_context(|| format!("failed to write {}", socket_file.display()))?;
 
         systemctl(&["daemon-reload"]).context("systemctl daemon-reload failed")?;
-        systemctl(&["enable", "--now", "capsule.socket"])
+        systemctl(&["enable", "--now", SOCKET_UNIT])
             .context("systemctl enable --now capsule.socket failed")?;
 
         super::wait_until_daemon_ready(&self.socket_path, None)
@@ -70,10 +81,15 @@ impl ServiceManager for Systemd {
     }
 
     fn uninstall(&self, home: &Path) -> anyhow::Result<()> {
-        systemctl(&["stop", "capsule.socket", "capsule.service"])
-            .context("systemctl stop failed")?;
-        systemctl(&["disable", "capsule.socket", "capsule.service"])
-            .context("systemctl disable failed")?;
+        if let Some(path) = nix_managed_service_file_path(home) {
+            anyhow::bail!(
+                "capsule daemon is managed by Nix at {}; disable the Nix module instead of running `capsule daemon uninstall`",
+                path.display()
+            );
+        }
+
+        systemctl(&["stop", SOCKET_UNIT, SERVICE_UNIT]).context("systemctl stop failed")?;
+        systemctl(&["disable", SOCKET_UNIT, SERVICE_UNIT]).context("systemctl disable failed")?;
 
         for path in [service_file_path(home), socket_file_path(home)] {
             match std::fs::remove_file(&path) {
@@ -93,7 +109,7 @@ impl ServiceManager for Systemd {
     }
 
     fn restart(&self) -> anyhow::Result<()> {
-        systemctl(&["restart", "capsule.service"]).context("systemctl restart failed")?;
+        systemctl(&["restart", SERVICE_UNIT]).context("systemctl restart failed")?;
         let expected = crate::build_id::compute();
         super::wait_until_daemon_ready(&self.socket_path, expected.as_ref())
             .context("daemon did not become ready after restart")?;
@@ -151,19 +167,61 @@ fn generate_socket_unit(socket_path: &Path) -> String {
     )
 }
 
+/// Return the Nix-managed service definition path, if one is present.
+pub(super) fn nix_managed_service_file_path(home: &Path) -> Option<PathBuf> {
+    service_definition_paths(home)
+        .into_iter()
+        .find(|path| super::is_nix_managed_definition(path))
+}
+
+/// Candidate service definition paths owned by capsule, Home Manager, or NixOS.
+fn service_definition_paths(home: &Path) -> Vec<PathBuf> {
+    let mut paths = vec![service_file_path(home)];
+
+    if let Some(xdg_config_home) = std::env::var_os("XDG_CONFIG_HOME") {
+        let xdg_config_path = PathBuf::from(xdg_config_home)
+            .join(SYSTEMD_USER_DIR)
+            .join(SERVICE_UNIT);
+        if !paths.contains(&xdg_config_path) {
+            paths.push(xdg_config_path);
+        }
+    }
+
+    paths.push(data_service_file_path(home));
+    paths.push(
+        PathBuf::from("/etc")
+            .join(SYSTEMD_USER_DIR)
+            .join(SERVICE_UNIT),
+    );
+    paths
+}
+
 /// `~/.config/systemd/user/` directory.
 fn unit_dir(home: &Path) -> PathBuf {
-    home.join(".config/systemd/user")
+    home.join(".config").join(SYSTEMD_USER_DIR)
+}
+
+/// `$XDG_DATA_HOME/systemd/user/` directory.
+fn data_unit_dir(home: &Path) -> PathBuf {
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".local/share"))
+        .join(SYSTEMD_USER_DIR)
 }
 
 /// Path to the `.service` unit file.
 pub(super) fn service_file_path(home: &Path) -> PathBuf {
-    unit_dir(home).join("capsule.service")
+    unit_dir(home).join(SERVICE_UNIT)
+}
+
+/// Path to the Home Manager-generated `.service` unit file.
+fn data_service_file_path(home: &Path) -> PathBuf {
+    data_unit_dir(home).join(SERVICE_UNIT)
 }
 
 /// Path to the `.socket` unit file.
 fn socket_file_path(home: &Path) -> PathBuf {
-    unit_dir(home).join("capsule.socket")
+    unit_dir(home).join(SOCKET_UNIT)
 }
 
 #[cfg(test)]
