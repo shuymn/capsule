@@ -23,7 +23,7 @@ tasks:
       Checks package metadata without building archives.
       This catches missing or stale version requirements on workspace path dependencies.
     cmds:
-      - cargo package --workspace --list --quiet --allow-dirty
+      - cargo package --workspace --list --quiet --allow-dirty --locked
 
   build:release:
     desc: Build optimized artifacts
