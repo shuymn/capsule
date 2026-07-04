@@ -17,6 +17,14 @@ tasks:
     cmds:
       - cargo build --workspace --locked
 
+  package:check:
+    desc: Validate package manifests
+    summary: |
+      Checks package metadata without building archives.
+      This catches missing or stale version requirements on workspace path dependencies.
+    cmds:
+      - cargo package --workspace --list --quiet --allow-dirty
+
   build:release:
     desc: Build optimized artifacts
     summary: |
@@ -102,6 +110,7 @@ tasks:
     cmds:
       - task: fmt:check
       - task: lint
+      - task: package:check
       - task: build
 
   check:full:
@@ -115,6 +124,7 @@ tasks:
     cmds:
       - task: fmt:check
       - task: lint
+      - task: package:check
       - task: test
       - task: doc
       - task: build
@@ -159,4 +169,4 @@ tasks:
       - task: docker:linux:build
         silent: true
     cmds:
-      - docker run --rm -it --user $(id -u):$(id -g) --env CARGO_HOME=/tmp/cargo --env RUSTUP_HOME=/tmp/rustup --volume ${PWD}:/workspace --workdir /workspace ${CAPSULE_LINUX_CI_IMAGE:-capsule-linux-ci} sh -c 'task fmt:check && task lint && task test && task doc && task build'
+      - docker run --rm -it --user $(id -u):$(id -g) --env CARGO_HOME=/tmp/cargo --env RUSTUP_HOME=/tmp/rustup --volume ${PWD}:/workspace --workdir /workspace ${CAPSULE_LINUX_CI_IMAGE:-capsule-linux-ci} sh -c 'task fmt:check && task lint && task package:check && task test && task doc && task build'
