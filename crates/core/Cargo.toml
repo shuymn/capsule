@@ -11,8 +11,8 @@ readme.workspace = true
 publish = false
 
 [dependencies]
-capsule-protocol = { path = "../protocol", version = "0.3.0" }
-capsule-sys = { path = "../sys", version = "0.3.0" }
+capsule-protocol.workspace = true
+capsule-sys.workspace = true
 anstyle = { workspace = true }
 regex-lite = { workspace = true }
 serde = { workspace = true }
