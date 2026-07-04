@@ -1,6 +1,11 @@
 {
   description = "capsule prompt engine";
 
+  nixConfig = {
+    extra-substituters = [ "https://shuymn.cachix.org" ];
+    extra-trusted-public-keys = [ "shuymn.cachix.org-1:bUcNU5/B3gNbM7htHCYmKVVb1bUwNx2vc2W4aOJlloQ=" ];
+  };
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 
