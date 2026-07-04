@@ -12,7 +12,9 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+      # Required by actions/attest to persist artifact attestations.
       attestations: write
+      # Required by actions/attest to request a Sigstore OIDC certificate.
       id-token: write
     strategy:
       fail-fast: false
@@ -124,24 +126,64 @@ jobs:
             assets+=("$archive" "$checksum")
           done
 
-          if gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit "$TAG_NAME" \
+          if release_is_draft="$(
+            gh release view "$TAG_NAME" \
               --repo "$GITHUB_REPOSITORY" \
-              --title "$TAG_NAME" \
-              --notes-file /tmp/release-notes.md \
-              --verify-tag
+              --json isDraft \
+              --jq '.isDraft' \
+              2>/dev/null
+          )"; then
+            if [[ "$release_is_draft" == "true" ]]; then
+              gh release upload "$TAG_NAME" \
+                --repo "$GITHUB_REPOSITORY" \
+                --clobber \
+                "${assets[@]}"
+
+              gh release edit "$TAG_NAME" \
+                --repo "$GITHUB_REPOSITORY" \
+                --title "$TAG_NAME" \
+                --notes-file /tmp/release-notes.md \
+                --verify-tag \
+                --draft=false
+            else
+              missing_assets=()
+              mapfile -t existing_assets < <(
+                gh release view "$TAG_NAME" \
+                  --repo "$GITHUB_REPOSITORY" \
+                  --json assets \
+                  --jq '.assets[].name'
+              )
+
+              for asset in "${assets[@]}"; do
+                asset_name="$(basename "$asset")"
+                asset_exists=false
+                for existing_asset in "${existing_assets[@]}"; do
+                  if [[ "$existing_asset" == "$asset_name" ]]; then
+                    asset_exists=true
+                    break
+                  fi
+                done
+
+                if [[ "$asset_exists" == "false" ]]; then
+                  missing_assets+=("$asset_name")
+                fi
+              done
+
+              if ((${#missing_assets[@]} > 0)); then
+                printf 'published release %s is missing immutable assets:\n' "$TAG_NAME" >&2
+                printf '  %s\n' "${missing_assets[@]}" >&2
+                echo "cannot repair published release assets without mutating the release" >&2
+                exit 1
+              fi
+            fi
           else
             gh release create "$TAG_NAME" \
+              "${assets[@]}" \
               --repo "$GITHUB_REPOSITORY" \
               --title "$TAG_NAME" \
               --notes-file /tmp/release-notes.md \
               --verify-tag
           fi
-
-          gh release upload "$TAG_NAME" \
-            --repo "$GITHUB_REPOSITORY" \
-            --clobber \
-            "${assets[@]}"
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.ref_name }}
