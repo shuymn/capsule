@@ -12,6 +12,8 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+      attestations: write
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -29,6 +31,8 @@ jobs:
             os_name: linux
             arch: arm64
             cross: true
+    env:
+      ARCHIVE_NAME: capsule-${{ github.ref_name }}-${{ matrix.os_name }}-${{ matrix.arch }}.tar.gz
 
     steps:
       - name: Checkout code
@@ -54,17 +58,24 @@ jobs:
           TARGET: ${{ matrix.target }}
 
       - name: Create archive
-        run: tar -czf "capsule-${GITHUB_REF_NAME}-${OS_NAME}-${ARCH}.tar.gz" -C "target/${TARGET}/release" capsule
+        run: |
+          tar -czf "$ARCHIVE_NAME" -C "target/${TARGET}/release" capsule
+          shasum -a 256 "$ARCHIVE_NAME" > "$ARCHIVE_NAME.sha256"
         env:
           TARGET: ${{ matrix.target }}
-          OS_NAME: ${{ matrix.os_name }}
-          ARCH: ${{ matrix.arch }}
+
+      - name: Generate artifact attestation
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: ${{ env.ARCHIVE_NAME }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: capsule-${{ matrix.os_name }}-${{ matrix.arch }}
-          path: capsule-${{ github.ref_name }}-${{ matrix.os_name }}-${{ matrix.arch }}.tar.gz
+          path: |
+            ${{ env.ARCHIVE_NAME }}
+            ${{ env.ARCHIVE_NAME }}.sha256
 
   release:
     name: Release
@@ -94,15 +105,43 @@ jobs:
             touch /tmp/release-notes.md
           fi
 
-      - name: Create GitHub Release
+      - name: Verify assets and upsert GitHub Release
         run: |
-          gh release create "$TAG_NAME" \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "$TAG_NAME" \
-            --notes-file /tmp/release-notes.md \
-            "artifacts/capsule-darwin-arm64/capsule-${TAG_NAME}-darwin-arm64.tar.gz" \
-            "artifacts/capsule-linux-amd64/capsule-${TAG_NAME}-linux-amd64.tar.gz" \
+          set -euo pipefail
+
+          archives=(
+            "artifacts/capsule-darwin-arm64/capsule-${TAG_NAME}-darwin-arm64.tar.gz"
+            "artifacts/capsule-linux-amd64/capsule-${TAG_NAME}-linux-amd64.tar.gz"
             "artifacts/capsule-linux-arm64/capsule-${TAG_NAME}-linux-arm64.tar.gz"
+          )
+          assets=()
+
+          for archive in "${archives[@]}"; do
+            checksum="$archive.sha256"
+            test -f "$archive"
+            test -f "$checksum"
+            (cd "$(dirname "$archive")" && shasum -a 256 --check "$(basename "$checksum")")
+            assets+=("$archive" "$checksum")
+          done
+
+          if gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$TAG_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG_NAME" \
+              --notes-file /tmp/release-notes.md \
+              --verify-tag
+          else
+            gh release create "$TAG_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG_NAME" \
+              --notes-file /tmp/release-notes.md \
+              --verify-tag
+          fi
+
+          gh release upload "$TAG_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber \
+            "${assets[@]}"
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.ref_name }}
