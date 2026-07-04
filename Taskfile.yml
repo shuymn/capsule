@@ -31,6 +31,17 @@ tasks:
     cmds:
       - cargo run -p capsule-cli
 
+  nix:check:
+    desc: Check Nix flake outputs
+    summary: |
+      Checks flake evaluation, public package builds, and app entrypoints without updating flake.lock.
+    cmds:
+      - nix flake check --all-systems --no-build --no-update-lock-file
+      - nix flake check --no-update-lock-file --print-build-logs
+      - nix build --no-link --no-update-lock-file --print-build-logs .#default .#capsule
+      - nix run --no-update-lock-file .# -- --version
+      - nix run --no-update-lock-file .#capsule -- --version
+
   test:
     desc: Run all tests
     summary: |
