@@ -20,8 +20,7 @@ rustPlatform.buildRustPackage {
     "capsule-cli"
   ];
   cargoTestFlags = [
-    "--package"
-    "capsule-cli"
+    "--workspace"
   ];
 
   nativeCheckInputs = [
