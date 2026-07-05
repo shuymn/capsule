@@ -9,9 +9,15 @@ let
   cfg = config.programs.capsule;
   inherit (pkgs.stdenv.hostPlatform) isDarwin isLinux;
   socketDir = builtins.dirOf cfg.daemon.socketPath;
-  daemonEnvironment = cfg.daemon.environment // {
-    CAPSULE_NIX_MANAGED = "1";
+  socketPathEnvironment = {
+    CAPSULE_SOCKET_PATH = cfg.daemon.socketPath;
   };
+  daemonEnvironment =
+    cfg.daemon.environment
+    // socketPathEnvironment
+    // {
+      CAPSULE_NIX_MANAGED = "1";
+    };
   environmentList = lib.mapAttrsToList (name: value: "${name}=${value}") daemonEnvironment;
 in
 {
@@ -65,6 +71,8 @@ in
     })
 
     (lib.mkIf (cfg.enable && cfg.daemon.enable) {
+      home.sessionVariables = socketPathEnvironment;
+
       home.activation.createCapsuleRuntimeDir = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
         run mkdir -m 700 -p $VERBOSE_ARG ${lib.escapeShellArg socketDir}
       '';

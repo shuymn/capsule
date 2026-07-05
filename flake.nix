@@ -67,6 +67,10 @@
         let
           pkgs = pkgsFor system;
           inherit (pkgs.stdenv.hostPlatform) isDarwin isLinux;
+          capsuleHome = if isDarwin then "/Users/capsule" else "/home/capsule";
+          capsuleSocketPath = "${capsuleHome}/.cache/capsule/custom.sock";
+          socketPathEnv = "CAPSULE_SOCKET_PATH";
+          socketPathEnvPrefix = "${socketPathEnv}=";
 
           hmConfig = home-manager.lib.homeManagerConfiguration {
             inherit pkgs;
@@ -75,12 +79,15 @@
               {
                 programs.capsule = {
                   enable = true;
-                  daemon.enable = true;
+                  daemon = {
+                    enable = true;
+                    socketPath = capsuleSocketPath;
+                  };
                   package = self.packages.${system}.capsule;
                 };
                 home = {
                   username = "capsule";
-                  homeDirectory = if isDarwin then "/Users/capsule" else "/home/capsule";
+                  homeDirectory = capsuleHome;
                   stateVersion = "26.05";
                 };
               }
@@ -169,10 +176,22 @@
                     "1"
                   else
                     "0";
+                sessionSocketPath = hmConfig.config.home.sessionVariables.${socketPathEnv};
+                daemonSocketPath =
+                  if isDarwin then
+                    hmConfig.config.launchd.agents.capsule.config.EnvironmentVariables.${socketPathEnv}
+                  else
+                    lib.removePrefix socketPathEnvPrefix (
+                      lib.findFirst (
+                        value: lib.hasPrefix socketPathEnvPrefix value
+                      ) "" hmConfig.config.systemd.user.services.capsule.Service.Environment
+                    );
               }
               ''
                 test -n "$socketPath"
                 test "$nixManaged" = "1"
+                test "$sessionSocketPath" = "$socketPath"
+                test "$daemonSocketPath" = "$socketPath"
                 case "$execStart" in
                   *"capsule daemon"*) ;;
                   *) echo "unexpected ExecStart/ProgramArguments: $execStart" >&2; exit 1 ;;
