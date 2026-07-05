@@ -35,7 +35,7 @@ in
       enable = lib.mkEnableOption "capsule daemon managed by Home Manager";
 
       socketPath = lib.mkOption {
-        type = lib.types.str;
+        type = lib.types.nonEmptyStr;
         default = "${config.home.homeDirectory}/.capsule/capsule.sock";
         defaultText = lib.literalExpression ''"${config.home.homeDirectory}/.capsule/capsule.sock"'';
         description = "Unix-domain socket path used by capsule's shell relay.";

@@ -9,9 +9,15 @@ let
   cfg = config.programs.capsule;
   primaryUser = if config.system.primaryUser == null then "" else config.system.primaryUser;
   socketDir = builtins.dirOf cfg.daemon.socketPath;
-  daemonEnvironment = cfg.daemon.environment // {
-    CAPSULE_NIX_MANAGED = "1";
+  socketPathEnvironment = {
+    CAPSULE_SOCKET_PATH = cfg.daemon.socketPath;
   };
+  daemonEnvironment =
+    cfg.daemon.environment
+    // socketPathEnvironment
+    // {
+      CAPSULE_NIX_MANAGED = "1";
+    };
 in
 {
   options.programs.capsule = {
@@ -28,7 +34,7 @@ in
       enable = lib.mkEnableOption "capsule daemon managed by nix-darwin launchd";
 
       socketPath = lib.mkOption {
-        type = lib.types.str;
+        type = lib.types.nonEmptyStr;
         default = "${config.system.primaryUserHome}/.capsule/capsule.sock";
         defaultText = lib.literalExpression ''"${config.system.primaryUserHome}/.capsule/capsule.sock"'';
         description = "Unix-domain socket path used by capsule's shell relay.";
@@ -60,6 +66,8 @@ in
     })
 
     (lib.mkIf (cfg.enable && cfg.daemon.enable) {
+      environment.variables = socketPathEnvironment;
+
       system.requiresPrimaryUser = [ "programs.capsule.daemon.enable" ];
 
       system.activationScripts.userLaunchd.text = lib.mkBefore ''

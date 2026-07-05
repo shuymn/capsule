@@ -7,9 +7,18 @@
 
 let
   cfg = config.programs.capsule;
-  daemonEnvironment = cfg.daemon.environment // {
-    CAPSULE_NIX_MANAGED = "1";
+  socketPathEnvironment = {
+    CAPSULE_SOCKET_PATH = cfg.daemon.socketPath;
   };
+  sessionSocketPathEnvironment = {
+    CAPSULE_SOCKET_PATH = builtins.replaceStrings [ "%h" ] [ "$HOME" ] cfg.daemon.socketPath;
+  };
+  daemonEnvironment =
+    cfg.daemon.environment
+    // socketPathEnvironment
+    // {
+      CAPSULE_NIX_MANAGED = "1";
+    };
   environmentList = lib.mapAttrsToList (name: value: "${name}=${value}") daemonEnvironment;
 in
 {
@@ -27,7 +36,7 @@ in
       enable = lib.mkEnableOption "capsule daemon managed as a systemd user service";
 
       socketPath = lib.mkOption {
-        type = lib.types.str;
+        type = lib.types.nonEmptyStr;
         default = "%h/.capsule/capsule.sock";
         description = "Unix-domain socket path used by capsule's shell relay. systemd expands %h to the user's home directory.";
       };
@@ -56,6 +65,8 @@ in
     })
 
     (lib.mkIf (cfg.enable && cfg.daemon.enable) {
+      environment.sessionVariables = sessionSocketPathEnvironment;
+
       systemd.user.services.capsule = {
         description = "capsule prompt daemon";
         requires = [ "capsule.socket" ];

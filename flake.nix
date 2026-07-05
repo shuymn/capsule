@@ -103,7 +103,10 @@
                   {
                     programs.capsule = {
                       enable = true;
-                      daemon.enable = true;
+                      daemon = {
+                        enable = true;
+                        socketPath = capsuleSocketPath;
+                      };
                       package = self.packages.${system}.capsule;
                     };
                     system.stateVersion = "26.05";
@@ -115,6 +118,12 @@
               listenStream = builtins.elemAt eval.config.systemd.user.sockets.capsule.listenStreams 0;
               socketMode = eval.config.systemd.user.sockets.capsule.socketConfig.SocketMode;
               execStart = eval.config.systemd.user.services.capsule.serviceConfig.ExecStart;
+              sessionSocketPath = eval.config.environment.sessionVariables.${socketPathEnv};
+              daemonSocketPath = lib.removePrefix socketPathEnvPrefix (
+                lib.findFirst (
+                  value: lib.hasPrefix socketPathEnvPrefix value
+                ) "" eval.config.systemd.user.services.capsule.serviceConfig.Environment
+              );
               nixManaged =
                 if
                   builtins.elem "CAPSULE_NIX_MANAGED=1" eval.config.systemd.user.services.capsule.serviceConfig.Environment
@@ -133,11 +142,14 @@
                   {
                     programs.capsule = {
                       enable = true;
-                      daemon.enable = true;
+                      daemon = {
+                        enable = true;
+                        socketPath = capsuleSocketPath;
+                      };
                       package = self.packages.${system}.capsule;
                     };
                     system.primaryUser = "capsule";
-                    users.users.capsule.home = "/Users/capsule";
+                    users.users.capsule.home = capsuleHome;
                     system.stateVersion = 6;
                   }
                 ];
@@ -147,6 +159,9 @@
               socketPath = eval.config.launchd.user.agents.capsule.serviceConfig.Sockets.Listeners.SockPathName;
               sockPathMode = eval.config.launchd.user.agents.capsule.serviceConfig.Sockets.Listeners.SockPathMode;
               command = eval.config.launchd.user.agents.capsule.command;
+              sessionSocketPath = eval.config.environment.variables.${socketPathEnv};
+              daemonSocketPath =
+                eval.config.launchd.user.agents.capsule.serviceConfig.EnvironmentVariables.${socketPathEnv};
               nixManaged =
                 eval.config.launchd.user.agents.capsule.serviceConfig.EnvironmentVariables.CAPSULE_NIX_MANAGED;
             };
@@ -207,11 +222,16 @@
                   listenStream
                   socketMode
                   execStart
+                  sessionSocketPath
+                  daemonSocketPath
                   nixManaged
                   ;
+                expectedSocketPath = capsuleSocketPath;
               }
               ''
-                test "$listenStream" = "%h/.capsule/capsule.sock"
+                test "$listenStream" = "$expectedSocketPath"
+                test "$sessionSocketPath" = "$expectedSocketPath"
+                test "$daemonSocketPath" = "$expectedSocketPath"
                 test "$socketMode" = "0700"
                 test "$nixManaged" = "1"
                 case "$execStart" in
@@ -229,11 +249,16 @@
                   socketPath
                   sockPathMode
                   command
+                  sessionSocketPath
+                  daemonSocketPath
                   nixManaged
                   ;
+                expectedSocketPath = capsuleSocketPath;
               }
               ''
-                test "$socketPath" = "/Users/capsule/.capsule/capsule.sock"
+                test "$socketPath" = "$expectedSocketPath"
+                test "$sessionSocketPath" = "$expectedSocketPath"
+                test "$daemonSocketPath" = "$expectedSocketPath"
                 test "$sockPathMode" = "448"
                 test "$nixManaged" = "1"
                 case "$command" in
