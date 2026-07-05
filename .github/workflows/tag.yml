@@ -1,13 +1,59 @@
 name: Tag
 
 on:
-  push:
-    branches:
-      - main
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+  workflow_dispatch:
+
+env:
+  RELEASE_CHECKOUT_REF: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.event.workflow_run.head_sha }}
 
 jobs:
+  should-run:
+    name: Should run
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - name: Check release gate
+        id: check
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$CONCLUSION" != "success" || "$WORKFLOW_EVENT" != "push" || "$HEAD_BRANCH" != "main" ]]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          latest_main_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          if [[ "$HEAD_SHA" == "$latest_main_sha" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion || '' }}
+          WORKFLOW_EVENT: ${{ github.event.workflow_run.event || '' }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch || '' }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || '' }}
+
   release:
     name: Release
+    needs: should-run
+    if: needs.should-run.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
@@ -24,13 +70,28 @@ jobs:
           app-id: ${{ vars.MAINTAIN_APP_ID }}
           private-key: ${{ secrets.MAINTAIN_APP_PRIVATE_KEY }}
           permission-contents: write
+          permission-pull-requests: read
 
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
+          ref: ${{ env.RELEASE_CHECKOUT_REF }}
           persist-credentials: false
           token: ${{ steps.app-token.outputs.token }}
+
+      - name: Verify checkout and attach to main branch
+        if: github.event_name == 'workflow_run'
+        run: |
+          set -euo pipefail
+          checked_out_sha="$(git rev-parse HEAD)"
+          if [[ "$checked_out_sha" != "$EXPECTED_HEAD_SHA" ]]; then
+            echo "checked out $checked_out_sha, expected $EXPECTED_HEAD_SHA" >&2
+            exit 1
+          fi
+          git checkout -B main "$RELEASE_CHECKOUT_REF"
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
 
       - name: Run release-plz release
         uses: release-plz/action@e8792575c7f2366cf6ff3ccc33ead9ace5b691c7 # v0.5.130
@@ -41,6 +102,8 @@ jobs:
 
   release-pr:
     name: Release PR
+    needs: should-run
+    if: needs.should-run.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
@@ -64,8 +127,22 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
+          ref: ${{ env.RELEASE_CHECKOUT_REF }}
           persist-credentials: false
           token: ${{ steps.app-token.outputs.token }}
+
+      - name: Verify checkout and attach to main branch
+        if: github.event_name == 'workflow_run'
+        run: |
+          set -euo pipefail
+          checked_out_sha="$(git rev-parse HEAD)"
+          if [[ "$checked_out_sha" != "$EXPECTED_HEAD_SHA" ]]; then
+            echo "checked out $checked_out_sha, expected $EXPECTED_HEAD_SHA" >&2
+            exit 1
+          fi
+          git checkout -B main "$RELEASE_CHECKOUT_REF"
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
 
       - name: Run release-plz release-pr
         uses: release-plz/action@e8792575c7f2366cf6ff3ccc33ead9ace5b691c7 # v0.5.130
