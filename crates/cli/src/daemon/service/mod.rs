@@ -116,9 +116,8 @@ pub fn reinstall_service_if_present(
 pub fn nix_managed_service_definition(home: &Path) -> Option<std::path::PathBuf> {
     #[cfg(target_os = "macos")]
     {
-        let plist = launchd::plist_path_for(home);
-        if is_nix_managed_definition(&plist) {
-            return Some(plist);
+        if let Some(path) = launchd::nix_managed_plist_path(home) {
+            return Some(path);
         }
     }
 

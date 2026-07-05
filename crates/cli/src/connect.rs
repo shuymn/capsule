@@ -91,14 +91,26 @@ fn generate_session_id() -> anyhow::Result<SessionId> {
     Ok(SessionId::from_bytes(bytes))
 }
 
-/// Ensure the daemon is running. Auto-start if needed.
+/// Ensure the daemon is ready. Auto-start standalone daemons if needed.
 fn ensure_daemon(socket_path: &Path) -> anyhow::Result<()> {
-    // Try connecting to check if daemon is alive
+    let home = crate::daemon::home_dir()?;
+    ensure_daemon_with_home(socket_path, &home)
+}
+
+fn ensure_daemon_with_home(socket_path: &Path, home: &Path) -> anyhow::Result<()> {
+    if crate::daemon::nix_managed_service_definition(home).is_some() {
+        return crate::daemon::wait_until_daemon_ready(socket_path, None).with_context(|| {
+            format!(
+                "Nix-managed daemon did not become ready at {}",
+                socket_path.display()
+            )
+        });
+    }
+
+    // Try connecting to check if daemon is alive.
     if std::os::unix::net::UnixStream::connect(socket_path).is_ok() {
         return Ok(());
     }
-
-    bail_if_nix_managed_daemon(&crate::daemon::home_dir()?, "starting a standalone daemon")?;
 
     // Spawn daemon process.
     // Intentionally detach: the daemon outlives this process and tracks
@@ -702,6 +714,30 @@ mod tests {
 
     use super::*;
 
+    fn start_hello_ack_server(socket_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let listener = std::os::unix::net::UnixListener::bind(socket_path)?;
+        std::thread::spawn(move || {
+            let Ok((stream, _)) = listener.accept() else {
+                return;
+            };
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+            {
+                let mut reader = std::io::BufReader::new(&stream);
+                let mut buf = Vec::new();
+                let _ = reader.read_until(b'\n', &mut buf);
+            }
+            let ack = Message::HelloAck(capsule_protocol::HelloAck {
+                build_id: crate::build_id::compute(),
+                env_var_names: vec![],
+            });
+            let mut wire = ack.to_wire();
+            wire.push(b'\n');
+            let _ = (&stream).write_all(&wire);
+        });
+        Ok(())
+    }
+
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn write_nix_managed_definition(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(target_os = "linux")]
@@ -752,6 +788,20 @@ mod tests {
             message.contains("instead of starting a standalone daemon"),
             "error should include the blocked action: {message}"
         );
+        Ok(())
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn test_ensure_daemon_waits_for_nix_managed_service() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let home = tempfile::tempdir()?;
+        write_nix_managed_definition(home.path())?;
+        let socket_path = home.path().join("capsule.sock");
+        start_hello_ack_server(&socket_path)?;
+
+        ensure_daemon_with_home(&socket_path, home.path())?;
+
         Ok(())
     }
 
