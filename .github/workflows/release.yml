@@ -102,7 +102,7 @@ jobs:
 
   release:
     name: Release
-    needs: nix-cache
+    needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
