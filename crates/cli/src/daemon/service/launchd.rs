@@ -385,6 +385,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn nix_managed_plist_path_detects_marker() -> Result<(), Box<dyn std::error::Error>> {
+        let home = tempfile::tempdir()?;
+        let launch_agents = home.path().join("Library/LaunchAgents");
+        std::fs::create_dir_all(&launch_agents)?;
+        let plist = launch_agents.join(format!("{LAUNCHD_LABEL}.plist"));
+        std::fs::write(&plist, super::super::NIX_MANAGED_MARKER)?;
+
+        assert_eq!(super::nix_managed_plist_path(home.path()), Some(plist));
+
+        Ok(())
+    }
+
     fn plist_without_env() -> String {
         let bin = PathBuf::from("/usr/local/bin/capsule");
         let sock = PathBuf::from("/Users/test/.capsule/capsule.sock");
