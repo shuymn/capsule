@@ -33,6 +33,9 @@ missing_errors_doc = "warn"
 missing_panics_doc = "warn"
 
 [workspace.dependencies]
+capsule-core = { path = "crates/core", version = "0.3.0" }
+capsule-protocol = { path = "crates/protocol", version = "0.3.0" }
+capsule-sys = { path = "crates/sys", version = "0.3.0" }
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
 anyhow = "1"
