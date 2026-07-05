@@ -352,7 +352,7 @@ async fn relay(socket_path: &Path, session_id: SessionId) -> anyhow::Result<()> 
                 Err(e) if retries >= MAX_RETRIES => return Err(reconnect_exhausted_error(e)),
                 Err(_) => {
                     retries += 1;
-                    reconnect_daemon(socket_path).await;
+                    reconnect_daemon(socket_path).await?;
                 }
             }
         };
@@ -382,7 +382,7 @@ async fn relay(socket_path: &Path, session_id: SessionId) -> anyhow::Result<()> 
         if retries >= MAX_RETRIES {
             return Ok(());
         }
-        reconnect_daemon(socket_path).await;
+        reconnect_daemon(socket_path).await?;
     }
 }
 
@@ -650,18 +650,21 @@ fn reconnect_exhausted_error_with_home(
 }
 
 /// Wait briefly, then ensure the daemon is running for reconnection.
-async fn reconnect_daemon(socket_path: &Path) {
+async fn reconnect_daemon(socket_path: &Path) -> anyhow::Result<()> {
     let home = crate::daemon::home_dir().ok();
-    reconnect_daemon_with_home(socket_path, home.as_deref()).await;
+    reconnect_daemon_with_home(socket_path, home.as_deref()).await
 }
 
-async fn reconnect_daemon_with_home(socket_path: &Path, home: Option<&Path>) {
+async fn reconnect_daemon_with_home(socket_path: &Path, home: Option<&Path>) -> anyhow::Result<()> {
     tokio::time::sleep(RETRY_INTERVAL).await;
     if home.is_some_and(|home| crate::daemon::nix_managed_service_definition(home).is_some()) {
-        return;
+        return Ok(());
     }
     let path = socket_path.to_owned();
-    let _ = tokio::task::spawn_blocking(move || ensure_daemon(&path)).await;
+    tokio::task::spawn_blocking(move || ensure_daemon(&path))
+        .await
+        .context("daemon startup task failed")??;
+    Ok(())
 }
 
 /// Returns `true` if the error indicates the socket peer disconnected
@@ -760,7 +763,7 @@ mod tests {
         write_nix_managed_definition(home.path())?;
         let socket_path = home.path().join(".capsule/capsule.sock");
 
-        reconnect_daemon_with_home(&socket_path, Some(home.path())).await;
+        reconnect_daemon_with_home(&socket_path, Some(home.path())).await?;
 
         Ok(())
     }
