@@ -58,6 +58,8 @@ daemon を宣言的に管理する場合は、flake input に capsule を追加�
 inputs.capsule.url = "github:shuymn/capsule";
 ```
 
+以下の module 断片は、すでに `home.stateVersion` または `system.stateVersion` を設定済みの既存の Home Manager / NixOS / nix-darwin 設定にマージする前提です。
+
 ```nix
 # Home Manager
 {

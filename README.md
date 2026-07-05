@@ -60,6 +60,8 @@ For declarative daemon management, add capsule to your flake inputs, import the 
 inputs.capsule.url = "github:shuymn/capsule";
 ```
 
+The module snippets below are meant to be merged into an existing Home Manager, NixOS, or nix-darwin configuration that already sets `home.stateVersion` or `system.stateVersion`.
+
 ```nix
 # Home Manager
 {
