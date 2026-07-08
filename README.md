@@ -27,6 +27,8 @@ Line 1 truncates the directory first and drops trailing segments when it would o
 
 Requirements: macOS or Linux, `zsh`.
 
+### Homebrew
+
 ```bash
 # 1. Install the binary
 brew install shuymn/tap/capsule
@@ -37,6 +39,71 @@ capsule daemon install   # macOS: launchd  |  Linux: systemd --user
 # 3. Add to .zshrc
 eval "$(capsule init zsh)"
 ```
+
+### Nix
+
+Run without installing:
+
+```bash
+nix run github:shuymn/capsule -- --version
+```
+
+Install only the binary:
+
+```bash
+nix profile install github:shuymn/capsule
+```
+
+For declarative daemon management, add capsule to your flake inputs, import the matching module, and enable `programs.capsule.daemon`:
+
+```nix
+inputs.capsule.url = "github:shuymn/capsule";
+```
+
+The module snippets below are meant to be merged into an existing Home Manager, NixOS, or nix-darwin configuration that already sets `home.stateVersion` or `system.stateVersion`.
+
+```nix
+# Home Manager
+{
+  imports = [ inputs.capsule.homeManagerModules.default ];
+
+  programs.capsule = {
+    enable = true;
+    daemon.enable = true;
+  };
+
+  programs.zsh.initContent = ''
+    eval "$(capsule init zsh)"
+  '';
+}
+```
+
+```nix
+# NixOS
+{
+  imports = [ inputs.capsule.nixosModules.default ];
+
+  programs.capsule = {
+    enable = true;
+    daemon.enable = true;
+  };
+}
+```
+
+```nix
+# nix-darwin
+{
+  imports = [ inputs.capsule.darwinModules.default ];
+
+  system.primaryUser = "alice";
+  programs.capsule = {
+    enable = true;
+    daemon.enable = true;
+  };
+}
+```
+
+When using a Nix module, do not run `capsule daemon install`; the module owns the launchd/systemd definition. If you previously installed the daemon imperatively, run `capsule daemon uninstall` once before enabling the module.
 
 To bootstrap toolchain modules, run `capsule preset` and paste the output into your config file.
 

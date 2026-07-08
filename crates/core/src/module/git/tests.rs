@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::*;
 use crate::{render::layout::display_width, test_utils::contains_style_sequence};
@@ -483,33 +483,102 @@ fn test_module_speed_is_slow() {
 
 // -- Integration test with real git --
 
+const GIT_ENV_REGRESSION_CHILD: &str = "CAPSULE_GIT_ENV_REGRESSION_CHILD";
+const GIT_ENV_REGRESSION_CWD: &str = "CAPSULE_GIT_ENV_REGRESSION_CWD";
+const GIT_ENV_REGRESSION_MARKER: &str = "capsule_git_env_regression_child_success";
+
+fn test_git_command() -> Command {
+    let mut command = Command::new("git");
+    clear_git_local_env!(&mut command);
+    command
+}
+
 fn staged_git_repo() -> Result<tempfile::TempDir, Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
     let path = dir.path();
 
-    let init = Command::new("git")
+    let init = test_git_command()
         .args(["init", "-b", "main"])
         .current_dir(path)
         .output()?;
     assert!(init.status.success(), "git init failed");
 
-    Command::new("git")
+    test_git_command()
         .args(["config", "user.name", "test"])
         .current_dir(path)
         .output()?;
-    Command::new("git")
+    test_git_command()
         .args(["config", "user.email", "test@test.com"])
         .current_dir(path)
         .output()?;
 
     std::fs::write(path.join("hello.txt"), "hello")?;
-    let add = Command::new("git")
+    let add = test_git_command()
         .args(["add", "hello.txt"])
         .current_dir(path)
         .output()?;
     assert!(add.status.success(), "git add failed");
 
     Ok(dir)
+}
+
+async fn run_git_env_regression_child_if_requested() -> Result<bool, Box<dyn std::error::Error>> {
+    if std::env::var(GIT_ENV_REGRESSION_CHILD).ok().as_deref() != Some("1") {
+        return Ok(false);
+    }
+
+    let cwd = PathBuf::from(std::env::var(GIT_ENV_REGRESSION_CWD)?);
+    let sync_status = CommandGitProvider.status(&cwd, None)?;
+    assert!(
+        sync_status.is_none(),
+        "sync git status should use cwd, not inherited Git env"
+    );
+
+    let async_status = CommandGitProvider.status_async(cwd, None).await?;
+    assert!(
+        async_status.is_none(),
+        "async git status should use cwd, not inherited Git env"
+    );
+
+    println!("{GIT_ENV_REGRESSION_MARKER}");
+    Ok(true)
+}
+
+fn run_git_env_regression_child(test_name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let polluted_repo = staged_git_repo()?;
+    let non_repo = tempfile::tempdir()?;
+    let output = Command::new(std::env::current_exe()?)
+        .args(["--exact", test_name, "--nocapture"])
+        .env(GIT_ENV_REGRESSION_CHILD, "1")
+        .env(GIT_ENV_REGRESSION_CWD, non_repo.path())
+        .env("GIT_DIR", polluted_repo.path().join(".git"))
+        .env("GIT_WORK_TREE", polluted_repo.path())
+        .output()?;
+
+    let child_stdout = String::from_utf8_lossy(&output.stdout);
+    let child_stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "child regression test failed\nstdout:\n{child_stdout}\nstderr:\n{child_stderr}"
+    );
+    assert!(
+        child_stdout.contains(GIT_ENV_REGRESSION_MARKER),
+        "child regression test did not run\nstdout:\n{child_stdout}\nstderr:\n{child_stderr}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_command_git_provider_ignores_git_local_env() -> Result<(), Box<dyn std::error::Error>>
+{
+    if run_git_env_regression_child_if_requested().await? {
+        return Ok(());
+    }
+
+    run_git_env_regression_child(
+        "module::git::tests::test_command_git_provider_ignores_git_local_env",
+    )
 }
 
 #[test]

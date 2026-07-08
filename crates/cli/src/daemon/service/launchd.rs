@@ -14,6 +14,8 @@ const LAUNCHD_LABEL: &str = "com.github.shuymn.capsule";
 /// launchd socket name matching the plist `SockServiceName`.
 pub const LAUNCHD_SOCKET_NAME: &str = "Listeners";
 
+const NIX_DARWIN_USER_LAUNCH_AGENT_DIR: &str = "/run/current-system/user/Library/LaunchAgents";
+
 /// macOS launchd service manager.
 #[cfg(target_os = "macos")]
 pub struct Launchd {
@@ -87,6 +89,13 @@ impl ServiceManager for Launchd {
         let plist_content = generate_plist(&capsule_bin, socket_path, &forwarded_env);
         let plist = plist_path_for(home);
 
+        if let Some(path) = nix_managed_plist_path(home) {
+            anyhow::bail!(
+                "capsule daemon is managed by Nix at {}; change your Nix configuration instead of running `capsule daemon install`",
+                path.display()
+            );
+        }
+
         if let Ok(existing) = std::fs::read_to_string(&plist) {
             if existing == plist_content {
                 if super::daemon_needs_restart(socket_path) {
@@ -113,6 +122,13 @@ impl ServiceManager for Launchd {
 
     fn uninstall(&self, home: &Path) -> anyhow::Result<()> {
         let plist = plist_path_for(home);
+
+        if let Some(path) = nix_managed_plist_path(home) {
+            anyhow::bail!(
+                "capsule daemon is managed by Nix at {}; disable the Nix module instead of running `capsule daemon uninstall`",
+                path.display()
+            );
+        }
 
         if !self.unload()? {
             eprintln!("warning: service unload exited with non-zero status");
@@ -239,11 +255,28 @@ pub(super) fn plist_path_for(home: &Path) -> PathBuf {
         .join(format!("{LAUNCHD_LABEL}.plist"))
 }
 
+/// Return the Nix-managed launchd plist path, if one is present.
+pub(super) fn nix_managed_plist_path(home: &Path) -> Option<PathBuf> {
+    plist_definition_paths(home)
+        .into_iter()
+        .find(|path| super::is_nix_managed_definition(path))
+}
+
+fn plist_definition_paths(home: &Path) -> [PathBuf; 2] {
+    [
+        plist_path_for(home),
+        PathBuf::from(NIX_DARWIN_USER_LAUNCH_AGENT_DIR).join(format!("{LAUNCHD_LABEL}.plist")),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
-    use super::{LAUNCHD_LABEL, LAUNCHD_SOCKET_NAME, generate_plist, plist_path_for};
+    use super::{
+        LAUNCHD_LABEL, LAUNCHD_SOCKET_NAME, NIX_DARWIN_USER_LAUNCH_AGENT_DIR, generate_plist,
+        plist_path_for,
+    };
 
     #[test]
     fn plist_contains_core_fields() {
@@ -335,6 +368,34 @@ mod tests {
             path,
             PathBuf::from("/Users/test/Library/LaunchAgents/com.github.shuymn.capsule.plist")
         );
+    }
+
+    #[test]
+    fn plist_definition_paths_include_nix_darwin_current_system_user_agent() {
+        let home = PathBuf::from("/Users/test");
+        let plist_filename = format!("{LAUNCHD_LABEL}.plist");
+        let paths = super::plist_definition_paths(&home);
+
+        assert_eq!(
+            paths,
+            [
+                plist_path_for(&home),
+                PathBuf::from(NIX_DARWIN_USER_LAUNCH_AGENT_DIR).join(plist_filename),
+            ],
+        );
+    }
+
+    #[test]
+    fn nix_managed_plist_path_detects_marker() -> Result<(), Box<dyn std::error::Error>> {
+        let home = tempfile::tempdir()?;
+        let launch_agents = home.path().join("Library/LaunchAgents");
+        std::fs::create_dir_all(&launch_agents)?;
+        let plist = launch_agents.join(format!("{LAUNCHD_LABEL}.plist"));
+        std::fs::write(&plist, super::super::NIX_MANAGED_MARKER)?;
+
+        assert_eq!(super::nix_managed_plist_path(home.path()), Some(plist));
+
+        Ok(())
     }
 
     fn plist_without_env() -> String {

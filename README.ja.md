@@ -25,6 +25,8 @@ at <time> ❯
 
 要件: macOS または Linux、`zsh`。
 
+### Homebrew
+
 ```bash
 # 1. バイナリのインストール
 brew install shuymn/tap/capsule
@@ -35,6 +37,71 @@ capsule daemon install   # macOS: launchd  |  Linux: systemd --user
 # 3. .zshrc へ追記
 eval "$(capsule init zsh)"
 ```
+
+### Nix
+
+インストールせずに実行する場合:
+
+```bash
+nix run github:shuymn/capsule -- --version
+```
+
+バイナリのみをインストールする場合:
+
+```bash
+nix profile install github:shuymn/capsule
+```
+
+daemon を宣言的に管理する場合は、flake input に capsule を追加し、対応する module を import して `programs.capsule.daemon` を有効にします:
+
+```nix
+inputs.capsule.url = "github:shuymn/capsule";
+```
+
+以下の module 断片は、すでに `home.stateVersion` または `system.stateVersion` を設定済みの既存の Home Manager / NixOS / nix-darwin 設定にマージする前提です。
+
+```nix
+# Home Manager
+{
+  imports = [ inputs.capsule.homeManagerModules.default ];
+
+  programs.capsule = {
+    enable = true;
+    daemon.enable = true;
+  };
+
+  programs.zsh.initContent = ''
+    eval "$(capsule init zsh)"
+  '';
+}
+```
+
+```nix
+# NixOS
+{
+  imports = [ inputs.capsule.nixosModules.default ];
+
+  programs.capsule = {
+    enable = true;
+    daemon.enable = true;
+  };
+}
+```
+
+```nix
+# nix-darwin
+{
+  imports = [ inputs.capsule.darwinModules.default ];
+
+  system.primaryUser = "alice";
+  programs.capsule = {
+    enable = true;
+    daemon.enable = true;
+  };
+}
+```
+
+Nix module を使う場合は `capsule daemon install` を実行しないでください。launchd/systemd の定義は module が管理します。以前に命令型で daemon をインストールしていた場合は、module を有効にする前に一度 `capsule daemon uninstall` を実行してください。
 
 toolchainモジュールを用意するには、`capsule preset` を実行してその出力を設定ファイルに貼り付けます。
 

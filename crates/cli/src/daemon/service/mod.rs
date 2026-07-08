@@ -76,7 +76,8 @@ pub trait ServiceManager {
 /// as needed — then returns the [`InstallOutcome`].
 ///
 /// Returns `Ok(None)` if no service definition is installed (i.e. the daemon
-/// runs in standalone mode) or the platform is unsupported.
+/// runs in standalone mode), the platform is unsupported, or the service
+/// definition is managed declaratively by Nix.
 ///
 /// # Errors
 ///
@@ -85,20 +86,78 @@ pub fn reinstall_service_if_present(
     home: &Path,
     socket_path: &Path,
 ) -> anyhow::Result<Option<InstallOutcome>> {
+    if nix_managed_service_definition(home).is_some() {
+        return Ok(None);
+    }
+
     #[cfg(target_os = "macos")]
-    if launchd::plist_path_for(home).exists() {
-        let sm = Launchd::new(socket_path)?;
-        return Ok(Some(sm.install(home, socket_path)?));
+    {
+        let plist = launchd::plist_path_for(home);
+        if plist.exists() {
+            let sm = Launchd::new(socket_path)?;
+            return Ok(Some(sm.install(home, socket_path)?));
+        }
     }
 
     #[cfg(target_os = "linux")]
-    if systemd::service_file_path(home).exists() {
-        let sm = Systemd::new(socket_path);
-        return Ok(Some(sm.install(home, socket_path)?));
+    {
+        let service_file = systemd::service_file_path(home);
+        if service_file.exists() {
+            let sm = Systemd::new(socket_path);
+            return Ok(Some(sm.install(home, socket_path)?));
+        }
     }
 
     let _ = (home, socket_path);
     Ok(None)
+}
+
+/// Return the Nix-managed daemon definition path, if one is present.
+pub fn nix_managed_service_definition(home: &Path) -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(path) = launchd::nix_managed_plist_path(home) {
+            return Some(path);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    if let Some(path) = systemd::nix_managed_service_file_path(home) {
+        return Some(path);
+    }
+
+    let _ = home;
+    None
+}
+
+const NIX_MANAGED_MARKER: &str = "CAPSULE_NIX_MANAGED";
+
+fn is_nix_managed_definition(path: &Path) -> bool {
+    definition_contains_nix_marker(path)
+        || is_nix_store_path(path)
+        || symlink_target_is_nix_store_path(path)
+        || std::fs::canonicalize(path).is_ok_and(|resolved| is_nix_store_path(&resolved))
+}
+
+fn definition_contains_nix_marker(path: &Path) -> bool {
+    std::fs::read_to_string(path).is_ok_and(|content| content.contains(NIX_MANAGED_MARKER))
+}
+
+fn symlink_target_is_nix_store_path(path: &Path) -> bool {
+    std::fs::read_link(path).is_ok_and(|target| {
+        let absolute_target = if target.is_absolute() {
+            target
+        } else if let Some(parent) = path.parent() {
+            parent.join(target)
+        } else {
+            target
+        };
+        is_nix_store_path(&absolute_target)
+    })
+}
+
+fn is_nix_store_path(path: &Path) -> bool {
+    path.starts_with("/nix/store")
 }
 
 /// Check if a running daemon needs to be restarted due to a binary update.
@@ -183,4 +242,70 @@ pub(super) fn collect_forwarded_env() -> Vec<(&'static str, String)> {
         vars.push(("XDG_CONFIG_HOME", val));
     }
     vars
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::{NIX_MANAGED_MARKER, is_nix_managed_definition};
+
+    #[cfg(unix)]
+    #[test]
+    fn test_nix_managed_definition_detects_nix_store_symlink()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let definition = dir.path().join("capsule.service");
+
+        std::os::unix::fs::symlink("/nix/store/example-capsule.service", &definition)?;
+
+        assert!(
+            is_nix_managed_definition(&definition),
+            "definition symlinked into /nix/store should be treated as Nix-managed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_nix_managed_definition_detects_marker() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let definition = dir.path().join("com.github.shuymn.capsule.plist");
+
+        std::fs::write(
+            &definition,
+            format!("<key>{NIX_MANAGED_MARKER}</key>\n<string>1</string>\n"),
+        )?;
+
+        assert!(
+            is_nix_managed_definition(&definition),
+            "definition containing the Nix marker should be treated as Nix-managed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_nix_managed_definition_ignores_regular_home_file()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let definition = dir.path().join("capsule.service");
+
+        std::fs::write(
+            &definition,
+            "[Service]\nExecStart=/usr/local/bin/capsule daemon\n",
+        )?;
+
+        assert!(
+            !is_nix_managed_definition(&definition),
+            "regular files outside /nix/store should remain imperatively managed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_nix_managed_definition_ignores_missing_file() {
+        assert!(
+            !is_nix_managed_definition(Path::new("/tmp/capsule-missing.service")),
+            "missing definitions should not be treated as Nix-managed"
+        );
+    }
 }

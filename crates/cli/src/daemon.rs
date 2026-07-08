@@ -22,8 +22,12 @@ pub use service::Systemd;
 use service::launchd::LAUNCHD_SOCKET_NAME;
 #[cfg(unix)]
 pub use service::wait_until_daemon_ready;
-pub use service::{InstallOutcome, ServiceManager, reinstall_service_if_present};
+pub use service::{
+    InstallOutcome, ServiceManager, nix_managed_service_definition, reinstall_service_if_present,
+};
 pub use status::status;
+
+const SOCKET_PATH_ENV: &str = "CAPSULE_SOCKET_PATH";
 
 /// Initialize tracing subscriber if `CAPSULE_LOG` is set.
 ///
@@ -185,8 +189,21 @@ fn acquire_flock() -> anyhow::Result<Option<File>> {
 ///
 /// # Errors
 ///
-/// Returns an error if the base directory cannot be determined.
+/// Returns an error if the base directory cannot be determined or the
+/// `CAPSULE_SOCKET_PATH` override is empty.
 pub fn socket_path() -> anyhow::Result<PathBuf> {
+    socket_path_from_env(std::env::var_os(SOCKET_PATH_ENV))
+}
+
+fn socket_path_from_env(socket_path_env: Option<std::ffi::OsString>) -> anyhow::Result<PathBuf> {
+    if let Some(path) = socket_path_env {
+        let path = PathBuf::from(path);
+        if path.as_os_str().is_empty() {
+            anyhow::bail!("{SOCKET_PATH_ENV} must not be empty");
+        }
+        return Ok(path);
+    }
+
     Ok(capsule_dir()?.join("capsule.sock"))
 }
 
@@ -226,7 +243,7 @@ mod tests {
     use std::{
         fs::File,
         io::{BufRead as _, Write as _},
-        path::Path,
+        path::{Path, PathBuf},
         time::Duration,
     };
 
@@ -303,6 +320,27 @@ mod tests {
             let _ = (&stream).write_all(&wire);
         });
         Ok(())
+    }
+
+    #[test]
+    fn test_socket_path_uses_env_override() -> Result<(), Box<dyn std::error::Error>> {
+        let path = PathBuf::from("/tmp/capsule-custom.sock");
+
+        assert_eq!(
+            super::socket_path_from_env(Some(path.clone().into_os_string()))?,
+            path,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_socket_path_rejects_empty_env_override() {
+        let result = super::socket_path_from_env(Some(std::ffi::OsString::new()));
+
+        assert!(
+            result.is_err(),
+            "empty CAPSULE_SOCKET_PATH should be rejected"
+        );
     }
 
     #[test]

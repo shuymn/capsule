@@ -91,9 +91,23 @@ fn generate_session_id() -> anyhow::Result<SessionId> {
     Ok(SessionId::from_bytes(bytes))
 }
 
-/// Ensure the daemon is running. Auto-start if needed.
+/// Ensure the daemon is ready. Auto-start standalone daemons if needed.
 fn ensure_daemon(socket_path: &Path) -> anyhow::Result<()> {
-    // Try connecting to check if daemon is alive
+    let home = crate::daemon::home_dir()?;
+    ensure_daemon_with_home(socket_path, &home)
+}
+
+fn ensure_daemon_with_home(socket_path: &Path, home: &Path) -> anyhow::Result<()> {
+    if crate::daemon::nix_managed_service_definition(home).is_some() {
+        return crate::daemon::wait_until_daemon_ready(socket_path, None).with_context(|| {
+            format!(
+                "Nix-managed daemon did not become ready at {}",
+                socket_path.display()
+            )
+        });
+    }
+
+    // Try connecting to check if daemon is alive.
     if std::os::unix::net::UnixStream::connect(socket_path).is_ok() {
         return Ok(());
     }
@@ -280,6 +294,8 @@ pub fn negotiate_build_id(socket_path: &Path) -> anyhow::Result<BuildIdNegotiati
 /// (standalone mode).
 fn restart_daemon(socket_path: &Path, lock_path: &Path) -> anyhow::Result<()> {
     let home = crate::daemon::home_dir()?;
+    bail_if_nix_managed_daemon(&home, "reinstalling it imperatively")?;
+
     if crate::daemon::reinstall_service_if_present(&home, socket_path)?.is_some() {
         return Ok(());
     }
@@ -345,10 +361,10 @@ async fn relay(socket_path: &Path, session_id: SessionId) -> anyhow::Result<()> 
                     retries = 0;
                     break s;
                 }
-                Err(e) if retries >= MAX_RETRIES => return Err(e.into()),
+                Err(e) if retries >= MAX_RETRIES => return Err(reconnect_exhausted_error(e)),
                 Err(_) => {
                     retries += 1;
-                    reconnect_daemon(socket_path).await;
+                    reconnect_daemon(socket_path).await?;
                 }
             }
         };
@@ -378,7 +394,7 @@ async fn relay(socket_path: &Path, session_id: SessionId) -> anyhow::Result<()> 
         if retries >= MAX_RETRIES {
             return Ok(());
         }
-        reconnect_daemon(socket_path).await;
+        reconnect_daemon(socket_path).await?;
     }
 }
 
@@ -611,11 +627,56 @@ fn parse_env_meta(meta: &[u8]) -> Vec<(String, String)> {
     vars
 }
 
+fn nix_managed_daemon_message(home: &Path, action: &str) -> Option<String> {
+    crate::daemon::nix_managed_service_definition(home).map(|definition| {
+        format!(
+            "capsule daemon is managed by Nix at {}; activate or restart the Nix-managed service/socket instead of {action}",
+            definition.display()
+        )
+    })
+}
+
+fn bail_if_nix_managed_daemon(home: &Path, action: &str) -> anyhow::Result<()> {
+    if let Some(message) = nix_managed_daemon_message(home, action) {
+        anyhow::bail!("{message}");
+    }
+    Ok(())
+}
+
+fn reconnect_exhausted_error(error: std::io::Error) -> anyhow::Error {
+    let home = crate::daemon::home_dir().ok();
+    reconnect_exhausted_error_with_home(error, home.as_deref())
+}
+
+fn reconnect_exhausted_error_with_home(
+    error: std::io::Error,
+    home: Option<&Path>,
+) -> anyhow::Error {
+    if let Some(home) = home
+        && let Some(message) =
+            nix_managed_daemon_message(home, "waiting for automatic reconnection")
+    {
+        return anyhow::anyhow!("{message}; last connect error: {error}");
+    }
+    error.into()
+}
+
 /// Wait briefly, then ensure the daemon is running for reconnection.
-async fn reconnect_daemon(socket_path: &Path) {
+async fn reconnect_daemon(socket_path: &Path) -> anyhow::Result<()> {
+    let home = crate::daemon::home_dir().ok();
+    reconnect_daemon_with_home(socket_path, home.as_deref()).await
+}
+
+async fn reconnect_daemon_with_home(socket_path: &Path, home: Option<&Path>) -> anyhow::Result<()> {
     tokio::time::sleep(RETRY_INTERVAL).await;
+    if home.is_some_and(|home| crate::daemon::nix_managed_service_definition(home).is_some()) {
+        return Ok(());
+    }
     let path = socket_path.to_owned();
-    let _ = tokio::task::spawn_blocking(move || ensure_daemon(&path)).await;
+    tokio::task::spawn_blocking(move || ensure_daemon(&path))
+        .await
+        .context("daemon startup task failed")??;
+    Ok(())
 }
 
 /// Returns `true` if the error indicates the socket peer disconnected
@@ -647,12 +708,141 @@ fn is_socket_error(e: &std::io::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use capsule_protocol::PromptGeneration;
 
     use super::*;
 
+    fn start_hello_ack_server(socket_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let listener = std::os::unix::net::UnixListener::bind(socket_path)?;
+        std::thread::spawn(move || {
+            let Ok((stream, _)) = listener.accept() else {
+                return;
+            };
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+            {
+                let mut reader = std::io::BufReader::new(&stream);
+                let mut buf = Vec::new();
+                let _ = reader.read_until(b'\n', &mut buf);
+            }
+            let ack = Message::HelloAck(capsule_protocol::HelloAck {
+                build_id: crate::build_id::compute(),
+                env_var_names: vec![],
+            });
+            let mut wire = ack.to_wire();
+            wire.push(b'\n');
+            let _ = (&stream).write_all(&wire);
+        });
+        Ok(())
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn write_nix_managed_definition(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        #[cfg(target_os = "linux")]
+        {
+            let unit_dir = home.join(".config/systemd/user");
+            std::fs::create_dir_all(&unit_dir)?;
+            std::fs::write(
+                unit_dir.join("capsule.service"),
+                "[Service]\nEnvironment=CAPSULE_NIX_MANAGED=1\n",
+            )?;
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let launch_agents = home.join("Library/LaunchAgents");
+            std::fs::create_dir_all(&launch_agents)?;
+            std::fs::write(
+                launch_agents.join("com.github.shuymn.capsule.plist"),
+                "<key>CAPSULE_NIX_MANAGED</key>\n<string>1</string>\n",
+            )?;
+        }
+
+        Ok(())
+    }
+
     fn test_session_id() -> SessionId {
         SessionId::from_bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22])
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn test_bail_if_nix_managed_daemon_reports_definition() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let home = tempfile::tempdir()?;
+        write_nix_managed_definition(home.path())?;
+
+        let Err(error) = bail_if_nix_managed_daemon(home.path(), "starting a standalone daemon")
+        else {
+            return Err(std::io::Error::other("expected Nix-managed daemon error").into());
+        };
+        let message = error.to_string();
+
+        assert!(
+            message.contains("capsule daemon is managed by Nix at"),
+            "error should explain that the daemon is Nix-managed: {message}"
+        );
+        assert!(
+            message.contains("instead of starting a standalone daemon"),
+            "error should include the blocked action: {message}"
+        );
+        Ok(())
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn test_ensure_daemon_waits_for_nix_managed_service() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let home = tempfile::tempdir()?;
+        write_nix_managed_definition(home.path())?;
+        let socket_path = home.path().join("capsule.sock");
+        start_hello_ack_server(&socket_path)?;
+
+        ensure_daemon_with_home(&socket_path, home.path())?;
+
+        Ok(())
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn test_reconnect_daemon_keeps_retrying_nix_managed_service()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let home = tempfile::tempdir()?;
+        write_nix_managed_definition(home.path())?;
+        let socket_path = home.path().join(".capsule/capsule.sock");
+
+        reconnect_daemon_with_home(&socket_path, Some(home.path())).await?;
+
+        Ok(())
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn test_reconnect_exhausted_error_reports_nix_managed_definition()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let home = tempfile::tempdir()?;
+        write_nix_managed_definition(home.path())?;
+        let error = reconnect_exhausted_error_with_home(
+            std::io::Error::new(std::io::ErrorKind::NotFound, "socket missing"),
+            Some(home.path()),
+        );
+        let message = error.to_string();
+
+        assert!(
+            message.contains("capsule daemon is managed by Nix at"),
+            "error should explain that the daemon is Nix-managed: {message}"
+        );
+        assert!(
+            message.contains("instead of waiting for automatic reconnection"),
+            "error should explain how to recover after reconnect exhaustion: {message}"
+        );
+        assert!(
+            message.contains("last connect error: socket missing"),
+            "error should preserve the final socket error: {message}"
+        );
+        Ok(())
     }
 
     #[test]

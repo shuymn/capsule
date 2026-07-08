@@ -7,6 +7,32 @@ use std::{
     process::Command,
 };
 
+const GIT_LOCAL_ENV_VARS: &[&str] = &[
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+];
+
+macro_rules! clear_git_local_env {
+    ($cmd:expr) => {
+        for &name in GIT_LOCAL_ENV_VARS {
+            ($cmd).env_remove(name);
+        }
+    };
+}
+
 use super::{Module, ModuleOutput, ModuleSpeed, RenderContext};
 use crate::{
     render::style::{Color, ColorMap, Style},
@@ -143,6 +169,7 @@ impl sealed::Sealed for CommandGitProvider {}
 impl GitProvider for CommandGitProvider {
     fn status(&self, cwd: &Path, path_env: Option<&str>) -> Result<Option<GitStatus>, GitError> {
         let mut cmd = Command::new("git");
+        clear_git_local_env!(&mut cmd);
         cmd.args(["status", "--porcelain=v2", "--branch", "--show-stash"])
             .current_dir(cwd)
             .stderr(std::process::Stdio::null());
@@ -176,6 +203,7 @@ async fn command_git_status_async(
     path_env: Option<&str>,
 ) -> Result<Option<GitStatus>, GitError> {
     let mut cmd = tokio::process::Command::new("git");
+    clear_git_local_env!(&mut cmd);
     cmd.kill_on_drop(true)
         .args(["status", "--porcelain=v2", "--branch", "--show-stash"])
         .current_dir(cwd)
