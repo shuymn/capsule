@@ -1,4 +1,25 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>shuymn/github-actions#main"]
+  "extends": ["github>shuymn/github-actions#main"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Update the cargo-binstall bootstrap version",
+      "managerFilePatterns": ["/^\\.github/workflows/release-pr\\.yml$/"],
+      "matchStrings": [
+        "BINSTALL_VERSION:\\s*(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "cargo-bins/cargo-binstall",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>\\d+\\.\\d+\\.\\d+)$",
+      "versioningTemplate": "semver"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Group cargo-binstall action and bootstrap updates",
+      "matchPackageNames": ["cargo-bins/cargo-binstall"],
+      "groupName": "cargo-binstall"
+    }
+  ]
 }

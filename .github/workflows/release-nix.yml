@@ -1,0 +1,39 @@
+name: Release Nix Cache
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  cache:
+    name: Nix cache (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Nix
+        uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3 # v31.10.6
+
+      - name: Set up Cachix
+        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+        with:
+          name: shuymn
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: true
+
+      - name: Push Nix package outputs to Cachix
+        run: |
+          paths="$(nix build --no-link --no-update-lock-file --print-build-logs --print-out-paths .#default .#capsule)"
+          printf '%s\n' "$paths" | sort -u | xargs cachix push shuymn
