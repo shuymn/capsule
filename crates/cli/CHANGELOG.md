@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1](https://github.com/shuymn/capsule/compare/v0.3.0...v0.3.1) - 2026-07-10
+
+### Added
+
+- *(daemon)* support CAPSULE_SOCKET_PATH env var
+- *(connect)* gracefully handle Nix reconnect
+- add Nix flake with declarative daemon
+
+### Fixed
+
+- *(daemon)* handle Nix-managed startup
+- *(connect)* propagate reconnect_daemon errors
+
+### Other
+
+- Merge pull request #154 from shuymn/feat/add-nix-flake-support
+- *(daemon)* cover launchd Nix marker
+- *(systemd)* extract testable service paths
+- require stateVersion in Nix module snippets
+
 ## [0.3.0](https://github.com/shuymn/capsule/compare/v0.2.0...v0.3.0) - 2026-06-08
 
 ### Added
