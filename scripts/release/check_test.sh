@@ -128,8 +128,10 @@ run_bump_success() {
 	checked_version="$(cd "${fixture}" && bash "${version_script}" check)"
 	[[ "${checked_version}" == "${expected_version}" ]] ||
 		fail "expected synchronized version ${expected_version}, got ${checked_version}"
-	grep -Fq "version = \"${expected_version}\"" "${fixture}/Cargo.lock" ||
-		fail "Cargo.lock does not contain ${expected_version} after ${bump} bump"
+	write_changelog "${fixture}" "${expected_version}"
+	if ! (cd "${fixture}" && bash "${check_script}" HEAD >/dev/null); then
+		fail "release validation failed after ${bump} bump to ${expected_version}"
+	fi
 }
 
 for bump_case in 'patch 1.2.4' 'minor 1.3.0' 'major 2.0.0'; do
