@@ -49,10 +49,10 @@ jobs:
           echo "manifest=$(realpath "${baseline_dir}/Cargo.toml")" >> "$GITHUB_OUTPUT"
 
       - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@30b5ca8b54e1dcffd9548bc87ede1531310fdc67 # v1.20.0
+        uses: cargo-bins/cargo-binstall@732870f031d2fb36309d0deaf36abcc704a7be65 # v1.20.1
         env:
           # Updated with the action by the Renovate custom manager.
-          BINSTALL_VERSION: 1.20.0
+          BINSTALL_VERSION: 1.20.1
 
       - name: Install release-plz
         run: |
