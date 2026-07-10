@@ -2,7 +2,7 @@
 release = false
 publish = false
 git_release_enable = false
-git_only = true
+git_tag_enable = false
 release_always = false
 
 [[package]]

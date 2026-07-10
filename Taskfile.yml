@@ -32,6 +32,23 @@ tasks:
     cmds:
       - cargo build --workspace --release --locked
 
+  release:check:
+    desc: Validate the release candidate at HEAD
+    summary: |
+      Validates the shared workspace version, Cargo.lock, changelog entry, and tag identity.
+      Set RELEASE_SHA to require HEAD to match an exact release candidate commit.
+      Prints the derived vX.Y.Z tag on success without modifying the repository.
+    silent: true
+    cmds:
+      - bash scripts/release/check.sh "${RELEASE_SHA:-HEAD}"
+
+  release:test:
+    desc: Test the release contract validator
+    summary: |
+      Exercises valid, idempotent, and fail-closed release candidate states in temporary repositories.
+    cmds:
+      - bash scripts/release/check_test.sh
+
   run:
     desc: Run the default binary
     summary: |
@@ -122,6 +139,7 @@ tasks:
       - task: fmt:check
       - task: lint
       - task: package:check
+      - task: release:test
       - task: build
 
   check:full:
@@ -136,6 +154,7 @@ tasks:
       - task: fmt:check
       - task: lint
       - task: package:check
+      - task: release:test
       - task: test
       - task: doc
       - task: build
@@ -180,4 +199,4 @@ tasks:
       - task: docker:linux:build
         silent: true
     cmds:
-      - docker run --rm -it --user $(id -u):$(id -g) --env CARGO_HOME=/tmp/cargo --env RUSTUP_HOME=/tmp/rustup --volume ${PWD}:/workspace --workdir /workspace ${CAPSULE_LINUX_CI_IMAGE:-capsule-linux-ci} sh -c 'task fmt:check && task lint && task package:check && task test && task doc && task build'
+      - docker run --rm -it --user $(id -u):$(id -g) --env CARGO_HOME=/tmp/cargo --env RUSTUP_HOME=/tmp/rustup --volume ${PWD}:/workspace --workdir /workspace ${CAPSULE_LINUX_CI_IMAGE:-capsule-linux-ci} sh -c 'task fmt:check && task lint && task package:check && task release:test && task test && task doc && task build'

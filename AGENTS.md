@@ -5,6 +5,7 @@
 
 - Use Task ([Taskfile.yml](Taskfile.yml)) as the default interface
 - `task build` / `task test` / `task lint` / `task fmt` / `task check` — primary workflow; `task check` runs formatting check, Clippy, tests, `cargo doc`, and build; `task check:fast` skips tests and docs (see [docs/tooling.md](docs/tooling.md))
+- `task release:check` validates a checked-out release candidate without side effects; `task release:test` exercises the release contract (see [docs/releasing.md](docs/releasing.md))
 - Rust-native equivalents work without Task: `cargo build`, `cargo test`, `cargo fmt --all`, `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` (same as `task lint`; see [docs/tooling.md](docs/tooling.md) for Clippy policy details)
 - Prefer `cargo add` / editing `Cargo.toml` for dependencies; run `cargo build` or `task build` after manifest changes
 - `unsafe_code` is **forbidden** and `unwrap`/`expect`/`todo`/`dbg!` are **denied** via `Cargo.toml` `[lints]` — applies to all code including tests

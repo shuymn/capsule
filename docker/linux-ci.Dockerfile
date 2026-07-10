@@ -7,7 +7,7 @@ COPY rust-toolchain.toml /tmp/rust-toolchain.toml
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates curl zsh \
+    && apt-get install --yes --no-install-recommends ca-certificates curl jq zsh \
     && rm -rf /var/lib/apt/lists/*
 
 RUN sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin
