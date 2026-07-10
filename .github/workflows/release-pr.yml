@@ -67,8 +67,7 @@ jobs:
 
           remote_ref="refs/heads/${release_branch}"
           push_args=()
-          if git ls-remote --exit-code --heads origin "$remote_ref" >/dev/null 2>&1; then
-            git fetch origin "${remote_ref}:refs/remotes/origin/${release_branch}"
+          if git fetch --quiet origin "${remote_ref}:refs/remotes/origin/${release_branch}" 2>/dev/null; then
             expected_sha="$(git rev-parse "refs/remotes/origin/${release_branch}")"
             push_args+=("--force-with-lease=${remote_ref}:${expected_sha}")
           fi
