@@ -5,6 +5,7 @@ Use this workflow to prepare, approve, promote, and distribute a capsule release
 ## Release contract
 
 - Use `[workspace.package].version` in `Cargo.toml` as the only product version source.
+- Treat `feat` commits as minor increments even before 1.0; keep `features_always_increment_minor = true` in the candidate-producer configuration.
 - Use the merged Release PR's head commit as `candidate_sha`. Tag the reviewed candidate tree, not the latest `main` commit or the merge commit.
 - Merge Release PRs with a merge commit. Promotion rejects a candidate that is not reachable from `main`; squash or rebase merging makes the original reviewed head unreachable.
 - Derive the release tag as `v{version}`.

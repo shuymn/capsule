@@ -4,6 +4,7 @@ publish = false
 git_release_enable = false
 git_tag_enable = false
 release_always = false
+features_always_increment_minor = true
 
 [[package]]
 name = "capsule-cli"
