@@ -34,10 +34,6 @@ jobs:
       - name: Set up Task
         uses: shuymn/github-actions/.github/actions/setup-task@e3d3485d66cf3fe598d8954fff89e81c5cac57e0
 
-      - name: Check package manifests
-        if: matrix.os == 'ubuntu-latest'
-        run: task package:check
-
       - name: Test release contract
         if: matrix.os == 'ubuntu-latest'
         run: task release:test

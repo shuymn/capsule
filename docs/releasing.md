@@ -5,7 +5,9 @@ Use this workflow to prepare, approve, promote, and distribute a capsule release
 ## Release contract
 
 - Use `[workspace.package].version` in `Cargo.toml` as the only product version source.
-- Treat `feat` commits as minor increments even before 1.0; keep `features_always_increment_minor = true` in the candidate-producer configuration.
+- Require every workspace package to declare `version.workspace = true`; do not duplicate the product version in workspace dependency requirements.
+- Require the `Release PR` caller to select `patch`, `minor`, or `major`; future automation must supply the same input rather than introduce another version policy.
+- Keep every local `Cargo.lock` package entry synchronized to the product version.
 - Use the merged Release PR's head commit as `candidate_sha`. Tag the reviewed candidate tree, not the latest `main` commit or the merge commit.
 - Merge Release PRs with a merge commit. Promotion rejects a candidate that is not reachable from `main`; squash or rebase merging makes the original reviewed head unreachable.
 - Derive the release tag as `v{version}`.
@@ -20,25 +22,26 @@ The durable release state is the Release PR, its candidate commit, the version t
 
 | Capability | Owner | Extension path |
 |---|---|---|
-| SemVer decision and changelog wording | Candidate producer and reviewer | Replace the manually dispatched release-plz workflow without changing promotion |
+| SemVer increment | Operator and reviewer | Let future automation supply the same `patch`, `minor`, or `major` candidate input |
+| Changelog wording | `cliff.toml` and reviewer | Replace git-cliff without changing version synchronization or promotion |
 | Release cadence | Operator | Change the trigger that invokes the candidate producer |
 | Approval policy | Repository review rules | Keep approval outside release scripts |
 | Archive builder and GitHub publisher | Tag consumer | Replace `.github/workflows/release.yml` after verifying its artifact contract |
 | Homebrew formula update | Maltmill in `homebrew-tap` | Consume the immutable GitHub Release asynchronously |
 | Nix cache publication | Tag subscriber | Retry `.github/workflows/release-nix.yml` independently |
 
-Do not invoke `release-plz release`. The release-plz adapter may only create or update a Release PR.
-
 ## Prepare and approve a candidate
 
-1. Dispatch the `Release PR` workflow.
-2. Review the generated version, workspace dependency versions, `Cargo.lock`, and `crates/cli/CHANGELOG.md` changes.
+1. Dispatch the `Release PR` workflow with the intended `patch`, `minor`, or `major` increment.
+2. Review the generated workspace version, `Cargo.lock`, and `crates/cli/CHANGELOG.md` changes.
 3. Let the normal pull-request CI complete.
 4. Check out the Release PR head and run `task release:check` if the generated release files need local verification.
 5. Merge the Release PR with a merge commit. Do not squash or rebase it.
 6. Wait for the merged `main` CI run to succeed.
 
-The release-plz adapter currently uses a previous-tag manifest as its comparison baseline. Keep that workaround confined to `.github/workflows/release-pr.yml`; remove it when [release-plz issue #2595](https://github.com/release-plz/release-plz/issues/2595) is resolved. `task package:check` remains a CI gate because this adapter requires a registry-compatible workspace package graph even though release policy disables crates.io publishing. Do not add `publish = false` to the `capsule-cli` manifest while using release-plz 0.3.159; it excludes that package from candidate updates. Keep publication disabled in `release-plz.toml` instead.
+The candidate producer runs `scripts/release/candidate.sh`: `version.sh` changes the one canonical workspace version and refreshes `Cargo.lock`, git-cliff prepends commits since the latest `vX.Y.Z` tag to the changelog, and `release:check` validates the resulting tree. The workflow commits those files to the candidate-specific `release/vX.Y.Z` branch and creates or updates its PR. Re-dispatches for the same version replace that branch with `--force-with-lease`, so the PR always represents a candidate derived from the current `main` without storing separate release state.
+
+All workspace crates are private and inherit the canonical version. Keep internal workspace dependencies path-only and every member manifest on `version.workspace = true`. `scripts/release/version.sh check` rejects both a differing package version and an explicit copy of the same version, preventing silent drift before v1 and after it.
 
 ## Promote the candidate
 
@@ -52,7 +55,7 @@ Promotion resolves the candidate SHA from the merged Release PR, then validates 
 
 ## Retry and recovery
 
-- Re-dispatch `Release PR` to update the existing candidate PR.
+- Re-dispatch `Release PR` with the same increment to update the existing candidate PR.
 - Re-dispatch `Release Promote` with the same Release PR number when promotion stopped before tag creation.
 - Treat promotion as complete when the tag already resolves to the candidate SHA.
 - Do not force-update a conflicting tag. Investigate it and prepare a corrective version.
@@ -62,13 +65,14 @@ Promotion resolves the candidate SHA from the merged Release PR, then validates 
 
 ## Automation seam
 
-Future automation may invoke `Release PR` after a `main` push or on a schedule. After that PR is merged, a controller may call `Release Promote` through `workflow_call` with the Release PR number. Promotion must continue to derive the candidate SHA from that merged PR. Do not change `task release:check`, the tag format, or the tag-triggered consumers when adding those triggers.
+Future automation may invoke `Release PR` after a `main` push or on a schedule, but it must select the increment through the existing input and keep `scripts/release/candidate.sh` as the candidate boundary. After that PR is merged, a controller may call `Release Promote` through `workflow_call` with the Release PR number. Promotion must continue to derive the candidate SHA from that merged PR. Do not change `task release:check`, the tag format, or the tag-triggered consumers when adding those triggers.
 
 Do not select `latest main` during promotion. The candidate SHA is the approved release identity even when `main` advances before promotion runs.
 
 ## Acceptance criteria
 
-- WHEN the Release PR workflow is dispatched, the system SHALL update a Release PR without creating a tag or GitHub Release.
+- WHEN the Release PR workflow is dispatched with a SemVer increment, the system SHALL update the canonical workspace version, `Cargo.lock`, and changelog before updating the Release PR without creating a tag or GitHub Release.
+- IF any workspace package does not inherit the canonical version or resolves to another version, the system SHALL fail before promotion.
 - WHEN promotion is requested, the system SHALL require a merged Release PR targeting `main` and derive its candidate SHA from that PR.
 - IF the candidate is not reachable from `main`, the system SHALL fail before creating write credentials or tags.
 - IF workspace versions, `Cargo.lock`, or the changelog disagree, the system SHALL fail before creating write credentials or tags.

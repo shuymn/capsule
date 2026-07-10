@@ -4,22 +4,12 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Update the cargo-binstall bootstrap version",
+      "description": "Update the git-cliff candidate generator",
       "managerFilePatterns": ["/^\\.github/workflows/release-pr\\.yml$/"],
-      "matchStrings": [
-        "BINSTALL_VERSION:\\s*(?<currentValue>\\d+\\.\\d+\\.\\d+)"
-      ],
-      "depNameTemplate": "cargo-bins/cargo-binstall",
-      "datasourceTemplate": "github-releases",
-      "extractVersionTemplate": "^v(?<version>\\d+\\.\\d+\\.\\d+)$",
+      "matchStrings": ["git-cliff@(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "git-cliff",
+      "datasourceTemplate": "crate",
       "versioningTemplate": "semver"
-    }
-  ],
-  "packageRules": [
-    {
-      "description": "Group cargo-binstall action and bootstrap updates",
-      "matchPackageNames": ["cargo-bins/cargo-binstall"],
-      "groupName": "cargo-binstall"
     }
   ]
 }

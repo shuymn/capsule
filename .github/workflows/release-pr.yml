@@ -2,6 +2,15 @@ name: Release PR
 
 on:
   workflow_dispatch:
+    inputs:
+      bump:
+        description: SemVer increment for the release candidate
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
 
 concurrency:
   group: release-pr
@@ -32,48 +41,62 @@ jobs:
           ref: main
           persist-credentials: false
 
-      # release-plz/action does not expose --registry-manifest-path. Keep this
-      # workaround inside the candidate producer until release-plz can compare
-      # against the previous git release without a registry-compatible manifest.
-      - name: Prepare release baseline manifest
-        id: release-baseline
+      - name: Install git-cliff
+        uses: taiki-e/install-action@50414676f9f5d50a65992c6dd2ed02641263226c # v2.82.10
+        with:
+          tool: git-cliff@2.13.1
+
+      - name: Create or update release PR
         run: |
           set -euo pipefail
-          latest_tag="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | sed -n '1p')"
-          if [[ -z "$latest_tag" ]]; then
-            echo "no vX.Y.Z release tag found" >&2
-            exit 1
+
+          base_sha="$(git rev-parse HEAD)"
+          version="$(bash scripts/release/candidate.sh "$BUMP")"
+          release_branch="release/v${version}"
+          title="chore(release): prepare v${version}"
+          body="$(printf '%s\n\n%s\n%s' \
+            "Automated release candidate for v${version}." \
+            "- SemVer increment: \`${BUMP}\`" \
+            "- Base commit: \`${base_sha}\`")"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          gh auth setup-git
+          git add Cargo.toml Cargo.lock crates/cli/CHANGELOG.md
+          git commit --message "$title"
+
+          remote_ref="refs/heads/${release_branch}"
+          push_args=()
+          if git ls-remote --exit-code --heads origin "$remote_ref" >/dev/null 2>&1; then
+            git fetch origin "${remote_ref}:refs/remotes/origin/${release_branch}"
+            expected_sha="$(git rev-parse "refs/remotes/origin/${release_branch}")"
+            push_args+=("--force-with-lease=${remote_ref}:${expected_sha}")
           fi
-          baseline_dir="${RUNNER_TEMP}/release-baseline"
-          git worktree add --detach "$baseline_dir" "$latest_tag"
-          echo "manifest=$(realpath "${baseline_dir}/Cargo.toml")" >> "$GITHUB_OUTPUT"
+          git push "${push_args[@]}" origin "HEAD:${remote_ref}"
 
-      - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@732870f031d2fb36309d0deaf36abcc704a7be65 # v1.20.1
+          pr_number="$(gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --base main \
+            --head "$release_branch" \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')"
+          if [[ -n "$pr_number" ]]; then
+            gh pr edit "$pr_number" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$title" \
+              --body "$body"
+            pr_url="$(gh pr view "$pr_number" --repo "$GITHUB_REPOSITORY" --json url --jq .url)"
+          else
+            pr_url="$(gh pr create \
+              --repo "$GITHUB_REPOSITORY" \
+              --base main \
+              --head "$release_branch" \
+              --title "$title" \
+              --body "$body")"
+          fi
+
+          echo "Release PR: ${pr_url}" >> "$GITHUB_STEP_SUMMARY"
         env:
-          # Updated with the action by the Renovate custom manager.
-          BINSTALL_VERSION: 1.20.1
-
-      - name: Install release-plz
-        run: |
-          cargo-binstall \
-            release-plz@0.3.159 \
-            --force \
-            --strategies=crate-meta-data,compile \
-            --no-confirm
-
-      - name: Configure git user from GitHub token
-        uses: release-plz/git-config@59144859caf016f8b817a2ac9b051578729173c4 # v0.1.2
-        env:
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
-
-      - name: Update release PR
-        run: |
-          release-plz release-pr \
-            --git-token "$GITHUB_TOKEN" \
-            --repo-url "https://github.com/${GITHUB_REPOSITORY}" \
-            --registry-manifest-path "$REGISTRY_MANIFEST_PATH" \
-            --forge github
-        env:
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
-          REGISTRY_MANIFEST_PATH: ${{ steps.release-baseline.outputs.manifest }}
+          BUMP: ${{ inputs.bump }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
