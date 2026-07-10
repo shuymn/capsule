@@ -49,6 +49,12 @@ jobs:
         with:
           tool: git-cliff@2.13.1
 
+      - name: Get GitHub App user ID
+        id: app-user
+        run: echo "user-id=$(gh api "/users/${{ steps.app-token.outputs.app-slug }}[bot]" --jq .id)" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+
       - name: Create or update release PR
         run: |
           set -euo pipefail
@@ -62,8 +68,8 @@ jobs:
             "- SemVer increment: \`${BUMP}\`" \
             "- Base commit: \`${base_sha}\`")"
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "${APP_USER_ID}+${APP_SLUG}[bot]@users.noreply.github.com"
           gh auth setup-git
           git add Cargo.toml Cargo.lock crates/cli/CHANGELOG.md
           git commit --message "$title"
@@ -100,5 +106,7 @@ jobs:
 
           echo "Release PR: ${pr_url}" >> "$GITHUB_STEP_SUMMARY"
         env:
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          APP_USER_ID: ${{ steps.app-user.outputs.user-id }}
           BUMP: ${{ inputs.bump }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
