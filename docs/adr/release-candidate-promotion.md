@@ -16,7 +16,7 @@ Binary distribution has different requirements: three platform archives, checksu
 
 Split the release flow into named stages with a tag boundary.
 
-1. `Release PR` is a manually dispatched candidate producer that requires a `patch`, `minor`, or `major` input. A repository-owned script changes the canonical workspace version and `Cargo.lock`, git-cliff generates the changelog, and `gh` creates or updates the Release PR. Candidate production cannot create tags or GitHub Releases.
+1. `Release PR` is a manually dispatched candidate producer that requires a `patch`, `minor`, or `major` input. A repository-owned script changes the canonical workspace version and `Cargo.lock`, git-cliff generates the changelog, and GitHub's GraphQL API creates a GitHub-signed candidate commit before `gh` creates or updates the Release PR. Candidate production cannot create tags or GitHub Releases.
 2. The Release PR head commit is the candidate identity. Merge it with a merge commit so the reviewed head remains reachable from `main`.
 3. Every workspace package inherits `[workspace.package].version`, every internal workspace dependency is path-only, and every crate is private. `task release:check` validates the checked-out candidate without network writes. It derives `v{workspace version}` and verifies version inheritance, resolved workspace versions, `Cargo.lock`, the changelog, and existing-tag identity.
 4. `Release Promote` accepts a Release PR number, requires that PR to be merged into `main`, and derives its candidate SHA from the PR head. It verifies reachability from `main`, runs the release contract check, and creates an annotated tag only after all read-only gates pass.
@@ -24,7 +24,7 @@ Split the release flow into named stages with a tag boundary.
 6. `Release Nix Cache` is an independent, best-effort version-tag subscriber.
 7. Maltmill remains an asynchronous subscriber to published GitHub Releases.
 
-Use a GitHub App installation token for candidate branch pushes and release tag pushes. A tag pushed with the repository `GITHUB_TOKEN` would not trigger the downstream tag workflows.
+Use a GitHub App installation token for candidate branch updates and release tag pushes. Create the candidate commit with `createCommitOnBranch`, verify its signature, and compare the previous candidate SHA with `updateRefs.beforeOid` before replacing the candidate branch. A local `git commit` from the App would be unsigned, and a tag pushed with the repository `GITHUB_TOKEN` would not trigger the downstream tag workflows.
 
 ## Rejected alternatives
 
@@ -54,7 +54,7 @@ The generated archive names use Rust target triples. Maltmill v1.5.0 recognizes 
 - CI no longer carries crates.io packageability or historical-manifest checks for a repository that does not publish crates.
 - Existing tag/SHA pairs are idempotent; conflicting tags fail closed.
 - Release PRs must continue to use merge commits. A repository-wide switch to squash or rebase merging requires revisiting candidate identity.
-- A candidate-specific `release/vX.Y.Z` branch is force-updated with a lease when that candidate is regenerated; it is not durable release state.
+- A candidate-specific `release/vX.Y.Z` branch is compare-and-swap updated when that candidate is regenerated; it is not durable release state.
 - Nix cache failures are isolated from binary publication.
 
 ## Revisit triggers
