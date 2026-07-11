@@ -7,6 +7,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/shuymn/capsule/compare/v0.3.0...v0.4.0) - 2026-07-11
+
+### Added
+
+- *(daemon)* support CAPSULE_SOCKET_PATH env var
+- *(connect)* gracefully handle Nix reconnect
+- *(nix)* add Cachix binary cache support
+- *(ci)* add Nix workflow
+- add Nix flake with declarative daemon
+- centralize workspace path dependencies
+- add package manifest validation
+- *(tag)* gate release on SHA staleness check
+- *(release)* handle publish-from-draft safely
+- secure release pipeline with verification
+
+### Fixed
+
+- *(daemon)* handle Nix-managed startup
+- *(nix)* validate module socket paths
+- *(connect)* propagate reconnect_daemon errors
+- *(git)* clear git-local env vars in subprocess
+- *(tag)* harden checkout with SHA verification
+- *(protocol)* satisfy new Clippy lints
+
+### Other
+
+- *(release)* extract candidate proposal script
+- *(release)* create verified candidate commits
+- *(release)* inline app identity lookup
+- *(release)* avoid template injection
+- *(release)* use GitHub App commit identity
+- *(release)* set up Rust explicitly
+- *(release)* avoid duplicate branch lookup
+- *(release)* verify bumped lock entries
+- *(release)* own candidate generation
+- *(release)* minor bump on feat before 1.0
+- *(deps)* update taiki-e/install-action action to v2.82.10 (#160)
+- *(deps)* update taiki-e/install-action action to v2.82.10
+- *(deps)* update cargo-binstall to v1.20.1 (#159)
+- *(deps)* update cargo-binstall to v1.20.1
+- *(release)* declare workflow permissions
+- *(release)* split candidate promotion flow
+- *(deps)* update taiki-e/install-action action to v2.82.9 (#157)
+- *(deps)* update taiki-e/install-action action to v2.82.9
+- *(deps)* update cachix/install-nix-action action to v31.10.6 (#156)
+- *(deps)* update cachix/install-nix-action action to v31.10.6
+- *(daemon)* cover launchd Nix marker
+- *(release)* keep cache push nonblocking
+- *(release)* make nix-cache nonblocking
+- *(release)* remove nix-cache from needs
+- *(systemd)* extract testable service paths
+- require stateVersion in Nix module snippets
+- *(nix)* cancel in-progress CI runs on new pushes
+- *(nix)* run tests for all workspace members
+- *(deps)* update taiki-e/install-action action to v2.82.8 (#155)
+- *(deps)* update taiki-e/install-action action to v2.82.8
+- *(tooling)* update CI cache documentation
+- normalize workspace dependency syntax
+- *(tag)* trigger on CI completion instead of push
+- *(tag)* switch trigger from workflow_run to push
+- *(release)* add git_only config
+- add --locked to cargo package check
+- *(release)* remove unused git_only config
+- *(deps)* update rust crate time to v0.3.53
+- *(deps)* update taiki-e/install-action action to v2.82.7 (#151)
+- *(deps)* update taiki-e/install-action action to v2.82.7
+- *(deps)* update taiki-e/install-action action to v2.82.6 (#149)
+- *(deps)* update taiki-e/install-action action to v2.82.6
+- *(deps)* update rust crate time to v0.3.51
+- *(deps)* update actions/checkout action to v7
+- *(deps)* update release-plz/action action to v0.5.130
+- *(deps)* update rust crate anyhow to v1.0.103 (#147)
+- *(deps)* update rust crate anyhow to v1.0.103
+- *(deps)* update docker/dockerfile docker tag to v1.25 (#146)
+- *(deps)* update docker/dockerfile docker tag to v1.25
+- *(deps)* update taiki-e/install-action action to v2.82.0 (#145)
+- *(deps)* update taiki-e/install-action action to v2.82.5
+- *(deps)* update actions-rust-lang/setup-rust-toolchain action to v1.17.0 (#148)
+- *(deps)* update actions-rust-lang/setup-rust-toolchain action to v1.17.0
+- *(deps)* update taiki-e/install-action action to v2.81.8 (#140)
+- *(deps)* update taiki-e/install-action action to v2.81.8
+- *(deps)* update taiki-e/install-action action to v2.81.7 (#139)
+- *(deps)* update taiki-e/install-action action to v2.81.7
+- *(deps)* update taiki-e/install-action action to v2.81.2 (#138)
+- *(deps)* update taiki-e/install-action action to v2.81.2
+- *(deps)* update actions/checkout action to v6.0.3 (#137)
+- *(deps)* update actions/checkout action to v6.0.3
+- *(deps)* update taiki-e/install-action action to v2.81.1 (#136)
+- *(deps)* update taiki-e/install-action action to v2.81.1
+
 ## [0.3.0](https://github.com/shuymn/capsule/compare/v0.2.0...v0.3.0) - 2026-06-08
 
 ### Added
