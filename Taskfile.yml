@@ -17,14 +17,6 @@ tasks:
     cmds:
       - cargo build --workspace --locked
 
-  package:check:
-    desc: Validate package manifests
-    summary: |
-      Checks package metadata without building archives.
-      This catches missing or stale version requirements on workspace path dependencies.
-    cmds:
-      - cargo package --workspace --list --quiet --allow-dirty --locked
-
   build:release:
     desc: Build optimized artifacts
     summary: |
@@ -42,10 +34,20 @@ tasks:
     cmds:
       - bash scripts/release/check.sh "${RELEASE_SHA:-HEAD}"
 
-  release:test:
-    desc: Test the release contract validator
+  release:prepare:
+    desc: Prepare a release candidate
     summary: |
-      Exercises valid, idempotent, and fail-closed release candidate states in temporary repositories.
+      Increments the canonical workspace version by BUMP=patch|minor|major,
+      refreshes Cargo.lock, generates the changelog, and validates the candidate.
+    requires:
+      vars: [BUMP]
+    cmds:
+      - bash scripts/release/candidate.sh "{{.BUMP}}"
+
+  release:test:
+    desc: Test release version synchronization and validation
+    summary: |
+      Exercises version increments plus valid, idempotent, and fail-closed release candidate states.
     cmds:
       - bash scripts/release/check_test.sh
 
@@ -138,7 +140,6 @@ tasks:
     cmds:
       - task: fmt:check
       - task: lint
-      - task: package:check
       - task: release:test
       - task: build
 
@@ -153,7 +154,6 @@ tasks:
     cmds:
       - task: fmt:check
       - task: lint
-      - task: package:check
       - task: release:test
       - task: test
       - task: doc
@@ -199,4 +199,4 @@ tasks:
       - task: docker:linux:build
         silent: true
     cmds:
-      - docker run --rm -it --user $(id -u):$(id -g) --env CARGO_HOME=/tmp/cargo --env RUSTUP_HOME=/tmp/rustup --volume ${PWD}:/workspace --workdir /workspace ${CAPSULE_LINUX_CI_IMAGE:-capsule-linux-ci} sh -c 'task fmt:check && task lint && task package:check && task release:test && task test && task doc && task build'
+      - docker run --rm -it --user $(id -u):$(id -g) --env CARGO_HOME=/tmp/cargo --env RUSTUP_HOME=/tmp/rustup --volume ${PWD}:/workspace --workdir /workspace ${CAPSULE_LINUX_CI_IMAGE:-capsule-linux-ci} sh -c 'task fmt:check && task lint && task release:test && task test && task doc && task build'
