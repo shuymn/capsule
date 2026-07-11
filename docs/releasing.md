@@ -8,6 +8,7 @@ Use this workflow to prepare, approve, promote, and distribute a capsule release
 - Require every workspace package to declare `version.workspace = true`; do not duplicate the product version in workspace dependency requirements.
 - Require the `Release PR` caller to select `patch`, `minor`, or `major`; future automation must supply the same input rather than introduce another version policy.
 - Keep every local `Cargo.lock` package entry synchronized to the product version.
+- Require the Release PR head commit to have a GitHub-verified signature before updating the candidate branch.
 - Use the merged Release PR's head commit as `candidate_sha`. Tag the reviewed candidate tree, not the latest `main` commit or the merge commit.
 - Merge Release PRs with a merge commit. Promotion rejects a candidate that is not reachable from `main`; squash or rebase merging makes the original reviewed head unreachable.
 - Derive the release tag as `v{version}`.
@@ -39,7 +40,7 @@ The durable release state is the Release PR, its candidate commit, the version t
 5. Merge the Release PR with a merge commit. Do not squash or rebase it.
 6. Wait for the merged `main` CI run to succeed.
 
-The candidate producer runs `scripts/release/candidate.sh`: `version.sh` changes the one canonical workspace version and refreshes `Cargo.lock`, git-cliff prepends commits since the latest `vX.Y.Z` tag to the changelog, and `release:check` validates the resulting tree. The workflow commits those files to the candidate-specific `release/vX.Y.Z` branch and creates or updates its PR. Re-dispatches for the same version replace that branch with `--force-with-lease`, so the PR always represents a candidate derived from the current `main` without storing separate release state.
+The candidate producer runs `scripts/release/candidate.sh`: `version.sh` changes the one canonical workspace version and refreshes `Cargo.lock`, git-cliff prepends commits since the latest `vX.Y.Z` tag to the changelog, and `release:check` validates the resulting tree. The workflow uses GitHub's `createCommitOnBranch` mutation to create a GitHub-signed commit containing those files, verifies its signature, and then creates or updates the candidate-specific `release/vX.Y.Z` PR. Re-dispatches for the same version compare the existing branch SHA with `updateRefs.beforeOid` before replacing it, so the PR always represents a candidate derived from the current `main` without losing concurrent updates or storing separate release state.
 
 All workspace crates are private and inherit the canonical version. Keep internal workspace dependencies path-only and every member manifest on `version.workspace = true`. `scripts/release/version.sh check` rejects both a differing package version and an explicit copy of the same version, preventing silent drift before v1 and after it.
 
@@ -72,6 +73,7 @@ Do not select `latest main` during promotion. The candidate SHA is the approved 
 ## Acceptance criteria
 
 - WHEN the Release PR workflow is dispatched with a SemVer increment, the system SHALL update the canonical workspace version, `Cargo.lock`, and changelog before updating the Release PR without creating a tag or GitHub Release.
+- IF GitHub does not verify the generated candidate commit signature, the system SHALL keep the existing candidate branch unchanged and fail.
 - IF any workspace package does not inherit the canonical version or resolves to another version, the system SHALL fail before promotion.
 - WHEN promotion is requested, the system SHALL require a merged Release PR targeting `main` and derive its candidate SHA from that PR.
 - IF the candidate is not reachable from `main`, the system SHALL fail before creating write credentials or tags.

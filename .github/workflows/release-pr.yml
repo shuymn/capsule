@@ -50,57 +50,7 @@ jobs:
           tool: git-cliff@2.13.1
 
       - name: Create or update release PR
-        run: |
-          set -euo pipefail
-
-          app_user_id="$(gh api "/users/${APP_SLUG}[bot]" --jq .id)"
-          base_sha="$(git rev-parse HEAD)"
-          version="$(bash scripts/release/candidate.sh "$BUMP")"
-          release_branch="release/v${version}"
-          title="chore(release): prepare v${version}"
-          body="$(printf '%s\n\n%s\n%s' \
-            "Automated release candidate for v${version}." \
-            "- SemVer increment: \`${BUMP}\`" \
-            "- Base commit: \`${base_sha}\`")"
-
-          git config user.name "${APP_SLUG}[bot]"
-          git config user.email "${app_user_id}+${APP_SLUG}[bot]@users.noreply.github.com"
-          gh auth setup-git
-          git add Cargo.toml Cargo.lock crates/cli/CHANGELOG.md
-          git commit --message "$title"
-
-          remote_ref="refs/heads/${release_branch}"
-          push_args=()
-          if git fetch --quiet origin "${remote_ref}:refs/remotes/origin/${release_branch}" 2>/dev/null; then
-            expected_sha="$(git rev-parse "refs/remotes/origin/${release_branch}")"
-            push_args+=("--force-with-lease=${remote_ref}:${expected_sha}")
-          fi
-          git push "${push_args[@]}" origin "HEAD:${remote_ref}"
-
-          pr_number="$(gh pr list \
-            --repo "$GITHUB_REPOSITORY" \
-            --base main \
-            --head "$release_branch" \
-            --state open \
-            --json number \
-            --jq '.[0].number // empty')"
-          if [[ -n "$pr_number" ]]; then
-            gh pr edit "$pr_number" \
-              --repo "$GITHUB_REPOSITORY" \
-              --title "$title" \
-              --body "$body"
-            pr_url="$(gh pr view "$pr_number" --repo "$GITHUB_REPOSITORY" --json url --jq .url)"
-          else
-            pr_url="$(gh pr create \
-              --repo "$GITHUB_REPOSITORY" \
-              --base main \
-              --head "$release_branch" \
-              --title "$title" \
-              --body "$body")"
-          fi
-
-          echo "Release PR: ${pr_url}" >> "$GITHUB_STEP_SUMMARY"
+        run: bash scripts/release/propose.sh
         env:
-          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           BUMP: ${{ inputs.bump }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
