@@ -147,6 +147,10 @@ spec:
         - cachix/install-nix-action@*
         - gitleaks/gitleaks-action@*
         - oven-sh/setup-bun@*
+        - shuymn/github-actions/.github/actions/setup-task@*
+        - shuymn/github-actions/.github/workflows/gha.yml@*
+        - shuymn/github-actions/.github/workflows/renovate.yml@*
+        - shuymn/github-actions/.github/workflows/security.yml@*
         - Swatinem/rust-cache@*
         - taiki-e/install-action@*
     fork_pr_approval: all_external_contributors
