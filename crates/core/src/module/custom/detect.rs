@@ -306,7 +306,7 @@ mod tests {
     #[test]
     fn parse_empty_string() {
         let segments = parse_format("");
-        assert!(segments.is_empty());
+        assert_eq!(segments, []);
     }
 
     // -- render_format --------------------------------------------------------

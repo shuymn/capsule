@@ -1,0 +1,156 @@
+apiVersion: gh-infra/v1
+kind: Repository
+metadata:
+  name: capsule
+  owner: shuymn
+reconcile:
+  labels: authoritative
+  rulesets: authoritative
+spec:
+  description: Daemon-backed Rust prompt engine for zsh with async updates and hot-reloadable modules.
+  visibility: public
+  archived: false
+  topics:
+    - macos
+    - rust
+    - zsh
+    - async
+    - daemon
+    - linux
+    - prompt-engine
+    - shell-prompt
+    - toml
+  labels:
+    - name: bug
+      description: Something isn't working
+      color: d73a4a
+    - name: dependencies
+      color: ededed
+    - name: documentation
+      description: Improvements or additions to documentation
+      color: 0075ca
+    - name: duplicate
+      description: This issue or pull request already exists
+      color: cfd3d7
+    - name: enhancement
+      description: New feature or request
+      color: a2eeef
+    - name: good first issue
+      description: Good for newcomers
+      color: 7057ff
+    - name: help wanted
+      description: Extra attention is needed
+      color: 008672
+    - name: invalid
+      description: This doesn't seem right
+      color: e4e669
+    - name: question
+      description: Further information is requested
+      color: d876e3
+    - name: wontfix
+      description: This will not be worked on
+      color: ffffff
+  features:
+    issues: true
+    projects: false
+    wiki: false
+    discussions: false
+    pull_requests: true
+  merge_strategy:
+    allow_merge_commit: true
+    allow_squash_merge: false
+    allow_rebase_merge: false
+    allow_auto_merge: true
+    auto_delete_head_branches: true
+    squash_merge_commit_title: COMMIT_OR_PR_TITLE
+    squash_merge_commit_message: COMMIT_MESSAGES
+    merge_commit_title: MERGE_MESSAGE
+    merge_commit_message: PR_TITLE
+  release_immutability: true
+  security:
+    vulnerability_alerts: true
+    automated_security_fixes: true
+    private_vulnerability_reporting: true
+  rulesets:
+    - name: Default
+      target: branch
+      enforcement: active
+      conditions:
+        ref_name:
+          include:
+            - ~DEFAULT_BRANCH
+      rules:
+        non_fast_forward: true
+        deletion: true
+        creation: false
+        required_linear_history: false
+        required_signatures: true
+    - name: pull-request-gate
+      target: branch
+      enforcement: active
+      bypass_actors:
+        - role: admin
+          bypass_mode: always
+      conditions:
+        ref_name:
+          include:
+            - ~DEFAULT_BRANCH
+      rules:
+        pull_request:
+          required_approving_review_count: 1
+          dismiss_stale_reviews_on_push: true
+          require_code_owner_review: false
+          require_last_push_approval: true
+          required_review_thread_resolution: true
+        required_status_checks:
+          strict_required_status_checks_policy: true
+          contexts:
+            - context: Build (macos-latest)
+              app: github-actions
+            - context: Build (ubuntu-latest)
+              app: github-actions
+            - context: Lint (macos-latest)
+              app: github-actions
+            - context: Lint (ubuntu-latest)
+              app: github-actions
+            - context: Test (macos-latest)
+              app: github-actions
+            - context: Test (ubuntu-latest)
+              app: github-actions
+            - context: Nix (macos-latest)
+              app: github-actions
+            - context: Nix (ubuntu-latest)
+              app: github-actions
+            - context: security / gitleaks
+              app: github-actions
+  variables:
+    - name: MAINTAIN_APP_ID
+      value: "3158901"
+  actions:
+    enabled: true
+    allowed_actions: selected
+    sha_pinning_required: true
+    workflow_permissions: read
+    can_approve_pull_requests: false
+    selected_actions:
+      github_owned_allowed: false
+      verified_allowed: false
+      patterns_allowed:
+        - actions/attest@*
+        - actions/cache@*
+        - actions/checkout@*
+        - actions/create-github-app-token@*
+        - actions/download-artifact@*
+        - actions/upload-artifact@*
+        - actions-rust-lang/setup-rust-toolchain@*
+        - cachix/cachix-action@*
+        - cachix/install-nix-action@*
+        - gitleaks/gitleaks-action@*
+        - oven-sh/setup-bun@*
+        - shuymn/github-actions/.github/actions/setup-task@*
+        - shuymn/github-actions/.github/workflows/gha.yml@*
+        - shuymn/github-actions/.github/workflows/renovate.yml@*
+        - shuymn/github-actions/.github/workflows/security.yml@*
+        - Swatinem/rust-cache@*
+        - taiki-e/install-action@*
+    fork_pr_approval: all_external_contributors

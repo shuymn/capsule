@@ -105,7 +105,7 @@ mod tests {
         let encoded = encode(b"");
         let (data, rest) = decode(&encoded)?;
         assert_eq!(data, b"");
-        assert!(rest.is_empty());
+        assert_eq!(rest, b"");
         Ok(())
     }
 
@@ -114,7 +114,7 @@ mod tests {
         let encoded = encode(b"hello world");
         let (data, rest) = decode(&encoded)?;
         assert_eq!(data, b"hello world");
-        assert!(rest.is_empty());
+        assert_eq!(rest, b"");
         Ok(())
     }
 
@@ -124,7 +124,7 @@ mod tests {
         let encoded = encode(original);
         let (data, rest) = decode(&encoded)?;
         assert_eq!(data, original);
-        assert!(rest.is_empty());
+        assert_eq!(rest, b"");
         Ok(())
     }
 
@@ -134,7 +134,7 @@ mod tests {
         let encoded = encode(&original);
         let (data, rest) = decode(&encoded)?;
         assert_eq!(data, &original[..]);
-        assert!(rest.is_empty());
+        assert_eq!(rest, b"");
         Ok(())
     }
 
@@ -150,7 +150,7 @@ mod tests {
         assert_eq!(second, b"bb");
         let (third, rest) = decode(rest)?;
         assert_eq!(third, b"");
-        assert!(rest.is_empty());
+        assert_eq!(rest, b"");
         Ok(())
     }
 
@@ -190,7 +190,7 @@ mod tests {
         let encoded = encode(original);
         let (data, rest) = decode(&encoded)?;
         assert_eq!(data, original);
-        assert!(rest.is_empty());
+        assert_eq!(rest, b"");
         Ok(())
     }
 
@@ -200,7 +200,7 @@ mod tests {
         let encoded = encode(original);
         let (data, rest) = decode(&encoded)?;
         assert_eq!(data, original);
-        assert!(rest.is_empty());
+        assert_eq!(rest, b"");
         Ok(())
     }
 }
