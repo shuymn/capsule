@@ -35,7 +35,7 @@ jobs:
           permission-pull-requests: write
 
       - name: Checkout main
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           ref: main
@@ -45,7 +45,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
 
       - name: Install git-cliff
-        uses: taiki-e/install-action@5ebac0d9522d786674368e47e92963ba13f2c376 # v2.82.11
+        uses: taiki-e/install-action@cb33e69fad06166ca28a42b2575e4dadabf62ee8 # v2.85.8
         with:
           tool: git-cliff@2.13.1
 
