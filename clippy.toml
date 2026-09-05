@@ -5,3 +5,7 @@ too-many-lines-threshold = 200
 type-complexity-threshold = 250
 single-char-binding-names-threshold = 2
 excessive-nesting-threshold = 6
+
+# Proc-macro dependencies are migrating from syn 2 to syn 3 independently.
+# Remove once cargo tree -i syn shows a single version across the workspace.
+allowed-duplicate-crates = ["syn"]
