@@ -18,7 +18,7 @@ fn arbitration(group: &str, priority: u32) -> Arbitration {
 #[test]
 fn resolve_modules_empty() {
     let resolved = resolve_modules(&[]);
-    assert!(resolved.is_empty());
+    assert!(matches!(resolved.as_slice(), []));
 }
 
 #[test]

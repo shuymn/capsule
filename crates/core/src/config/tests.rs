@@ -175,7 +175,7 @@ regex = "(unclosed"
     )?;
     // Invalid regex causes parse error → defaults
     let config = load_config(&path);
-    assert!(config.module.is_empty());
+    assert_eq!(config.module, []);
     Ok(())
 }
 
@@ -280,7 +280,7 @@ red = 38
 #[test]
 fn module_empty_by_default() {
     let config = Config::default();
-    assert!(config.module.is_empty());
+    assert_eq!(config.module, []);
 }
 
 #[test]
