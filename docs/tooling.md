@@ -22,6 +22,7 @@ Read this file when working with build, CI, hooks, or adding tools.
 - **Clippy policy** (this is the canonical reference; other docs defer here):
   - [Cargo.toml](../Cargo.toml) `[lints.rust]` / `[lints.clippy]`: denies common footguns (`unwrap_used`, `expect_used`, `todo`, `dbg_macro`, etc.). These apply to all code including tests.
   - [clippy.toml](../clippy.toml): tightens complexity and size thresholds.
+  - `allowed-duplicate-crates` permits only `syn`: upstream proc macros currently require incompatible major versions. Keep other duplicate-crate diagnostics enabled. After dependency updates, run `cargo tree --workspace --all-features --target all --locked -d` to inspect duplicates across all workspace members, features, and platforms. Remove this exception when that output no longer lists `syn`.
   - Crate root (`main.rs` or `lib.rs`): `#![warn(clippy::pedantic, clippy::nursery, clippy::cargo)]` — these become errors under `task lint` (`-D warnings`). When adding a new crate root, copy these attributes.
 
 ## Adding Tools
