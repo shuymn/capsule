@@ -7,5 +7,5 @@ single-char-binding-names-threshold = 2
 excessive-nesting-threshold = 6
 
 # Proc-macro dependencies are migrating from syn 2 to syn 3 independently.
-# Remove once cargo tree -d no longer lists syn across the workspace.
+# See docs/tooling.md for the dependency check and removal condition.
 allowed-duplicate-crates = ["syn"]
