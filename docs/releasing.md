@@ -1,91 +1,53 @@
 # Release workflow
 
-Use this workflow to prepare, approve, promote, and distribute a capsule release. Keep candidate production replaceable; treat the validated candidate commit and version tag as the stable contract.
+Use this workflow to prepare, approve, promote, and distribute a release.
 
-## Release contract
+## Contract
 
-- Use `[workspace.package].version` in `Cargo.toml` as the only product version source.
-- Require every workspace package to declare `version.workspace = true`; do not duplicate the product version in workspace dependency requirements.
-- Require the `Release PR` caller to select `patch`, `minor`, or `major`; future automation must supply the same input rather than introduce another version policy.
-- Keep every local `Cargo.lock` package entry synchronized to the product version.
-- Require the Release PR head commit to have a GitHub-verified signature before updating the candidate branch.
-- Use the merged Release PR's head commit as `candidate_sha`. Tag the reviewed candidate tree, not the latest `main` commit or the merge commit.
-- Merge Release PRs with a merge commit. Promotion rejects a candidate that is not reachable from `main`; squash or rebase merging makes the original reviewed head unreachable.
-- Derive the release tag as `v{version}`.
-- Never move an existing release tag. Treat an existing tag at the same candidate as a successful retry and a tag at another commit as an incident.
-- Trigger binary distribution and the Nix cache subscriber from the version tag.
-- Publish the GitHub Release only after every required archive, checksum, and attestation is ready.
-- Keep the published GitHub Release immutable. Repair a failed draft or issue a corrective version instead of mutating a published release.
+- Declare the product version once in `[workspace.package].version`. Keep every workspace crate private, use `version.workspace = true`, keep internal dependencies path-only, and synchronize local package versions in `Cargo.lock`.
+- Use the merged Release PR's head commit as `candidate_sha`. Merge with a merge commit so that reviewed head remains reachable from `main`.
+- Create `v{version}` at the validated candidate SHA. An existing tag at that SHA is a successful retry; a tag at another SHA is a conflict and must remain unchanged.
+- Publish the GitHub Release only after all required archives, checksums, and attestations succeed. Keep published releases immutable; repair drafts or issue a corrective version.
+- Use the Release PR, candidate commit, version tag, and GitHub Release as release state.
 
-The durable release state is the Release PR, its candidate commit, the version tag, and the GitHub Release. Do not create a separate release-state file, database, or long-lived control branch.
+## Prepare and promote
 
-## Intentionally not in core
+1. Dispatch [Release PR](../.github/workflows/release-pr.yml) with `patch`, `minor`, or `major`.
+2. Review the generated workspace version, `Cargo.lock`, and `crates/cli/CHANGELOG.md`; wait for pull-request CI to pass.
+3. Merge the PR with a merge commit, then wait for merged `main` CI to pass.
+4. Dispatch [Release Promote](../.github/workflows/release-promote.yml) with that merged PR number. Confirm the derived tag and candidate SHA.
+5. Confirm [Release](../.github/workflows/release.yml) publishes the required assets. Nix cache publication and Maltmill's Homebrew update complete independently.
 
-| Capability | Owner | Extension path |
-|---|---|---|
-| SemVer increment | Operator and reviewer | Let future automation supply the same `patch`, `minor`, or `major` candidate input |
-| Changelog wording | `cliff.toml` and reviewer | Replace git-cliff without changing version synchronization or promotion |
-| Release cadence | Operator | Change the trigger that invokes the candidate producer |
-| Approval policy | Repository review rules | Keep approval outside release scripts |
-| Archive builder and GitHub publisher | Tag consumer | Replace `.github/workflows/release.yml` after verifying its artifact contract |
-| Homebrew formula update | Maltmill in `homebrew-tap` | Consume the immutable GitHub Release asynchronously |
-| Nix cache publication | Tag subscriber | Retry `.github/workflows/release-nix.yml` independently |
+Candidate generation uses [candidate.sh](../scripts/release/candidate.sh). [propose.sh](../scripts/release/propose.sh) verifies the GitHub-signed candidate commit before updating `release/vX.Y.Z` and compares the previous branch SHA to prevent overwriting concurrent updates. Candidate generation creates neither tags nor GitHub Releases.
 
-## Prepare and approve a candidate
+Promotion requires a merged PR targeting `main`, checks out its head, verifies reachability from `main`, and runs `task release:check` before creating write credentials. Use GitHub App credentials for candidate-branch updates and tag pushes so downstream workflows run.
 
-1. Dispatch the `Release PR` workflow with the intended `patch`, `minor`, or `major` increment.
-2. Review the generated workspace version, `Cargo.lock`, and `crates/cli/CHANGELOG.md` changes.
-3. Let the normal pull-request CI complete.
-4. Check out the Release PR head and run `task release:check` if the generated release files need local verification.
-5. Merge the Release PR with a merge commit. Do not squash or rebase it.
-6. Wait for the merged `main` CI run to succeed.
+## Local validation
 
-The candidate producer runs `scripts/release/candidate.sh`: `version.sh` changes the one canonical workspace version and refreshes `Cargo.lock`, git-cliff prepends commits since the latest `vX.Y.Z` tag to the changelog, and `release:check` validates the resulting tree. The workflow uses GitHub's `createCommitOnBranch` mutation to create a GitHub-signed commit containing those files, verifies its signature, and then creates or updates the candidate-specific `release/vX.Y.Z` PR. Re-dispatches for the same version compare the existing branch SHA with `updateRefs.beforeOid` before replacing it, so the PR always represents a candidate derived from the current `main` without losing concurrent updates or storing separate release state.
+- Run `task release:check` at the candidate checkout. It validates version inheritance, resolved package versions, `Cargo.lock`, changelog sections, and existing-tag identity, then prints the tag without repository writes. Set `RELEASE_SHA` to require an exact `HEAD`.
+- Run `task release:test` when changing release validation; it exercises valid, idempotent, and rejected states in temporary repositories.
+- To prepare locally, run `task release:prepare BUMP=patch` with the selected increment and the git-cliff version pinned in `Release PR`. This updates release files; review the resulting diff.
 
-All workspace crates are private and inherit the canonical version. Keep internal workspace dependencies path-only and every member manifest on `version.workspace = true`. `scripts/release/version.sh check` rejects both a differing package version and an explicit copy of the same version, preventing silent drift before v1 and after it.
+## Distribution
 
-## Promote the candidate
+Preserve these Maltmill-compatible archive names and their `.sha256` files:
 
-1. Dispatch the `Release Promote` workflow with the merged Release PR number.
-2. Confirm that the workflow derives the expected `vX.Y.Z` tag.
-3. Confirm that the `Release` workflow publishes all three binary archives and checksums.
-4. Treat `Release Nix Cache` as an independent best-effort subscriber.
-5. Let Maltmill update the Homebrew formula asynchronously.
+- `capsule-vX.Y.Z-darwin-arm64.tar.gz`
+- `capsule-vX.Y.Z-linux-amd64.tar.gz`
+- `capsule-vX.Y.Z-linux-arm64.tar.gz`
 
-Promotion resolves the candidate SHA from the merged Release PR, then validates the exact checkout, reachability from `main`, the shared workspace version, `Cargo.lock`, the changelog entry, and any existing tag before it creates write credentials. The GitHub App pushes the tag so the tag-triggered workflows run.
+Each archive contains `capsule`. Keep artifact attestation in the build gate and checksum verification in the publication gate. Validate these contracts and Homebrew consumption with a prerelease before replacing the distribution workflow.
 
-## Retry and recovery
+[Release Nix Cache](../.github/workflows/release-nix.yml) consumes version tags independently. Its failure does not block or roll back the GitHub Release. Maltmill consumes published GitHub Releases asynchronously.
 
-- Re-dispatch `Release PR` with the same increment to update the existing candidate PR.
-- Re-dispatch `Release Promote` with the same Release PR number when promotion stopped before tag creation.
-- Treat promotion as complete when the tag already resolves to the candidate SHA.
-- Do not force-update a conflicting tag. Investigate it and prepare a corrective version.
-- Re-run a failed binary release while its GitHub Release is absent or draft.
-- Do not add missing assets to an already-published immutable release; prepare a corrective release.
-- Re-run the Nix cache workflow independently. Its failure does not roll back or block the GitHub Release.
+## Recovery
 
-## Automation seam
-
-Future automation may invoke `Release PR` after a `main` push or on a schedule, but it must select the increment through the existing input and keep `scripts/release/candidate.sh` as the candidate boundary. After that PR is merged, a controller may call `Release Promote` through `workflow_call` with the Release PR number. Promotion must continue to derive the candidate SHA from that merged PR. Do not change `task release:check`, the tag format, or the tag-triggered consumers when adding those triggers.
-
-Do not select `latest main` during promotion. The candidate SHA is the approved release identity even when `main` advances before promotion runs.
-
-## Acceptance criteria
-
-- WHEN the Release PR workflow is dispatched with a SemVer increment, the system SHALL update the canonical workspace version, `Cargo.lock`, and changelog before updating the Release PR without creating a tag or GitHub Release.
-- IF GitHub does not verify the generated candidate commit signature, the system SHALL keep the existing candidate branch unchanged and fail.
-- IF any workspace package does not inherit the canonical version or resolves to another version, the system SHALL fail before promotion.
-- WHEN promotion is requested, the system SHALL require a merged Release PR targeting `main` and derive its candidate SHA from that PR.
-- IF the candidate is not reachable from `main`, the system SHALL fail before creating write credentials or tags.
-- IF workspace versions, `Cargo.lock`, or the changelog disagree, the system SHALL fail before creating write credentials or tags.
-- IF the release tag does not exist, the system SHALL create it at the validated candidate SHA.
-- IF the release tag resolves to the candidate SHA, the system SHALL complete successfully without mutation.
-- IF the release tag resolves to another commit, the system SHALL fail without moving the tag.
-- WHILE any required binary artifact is missing, the system SHALL not publish the GitHub Release.
-- WHEN a downstream subscriber fails, the system SHALL keep the published release and allow that subscriber to retry independently.
-
-## Distribution adapter constraints
-
-Keep the current release workflow until its artifact consumers can accept Rust target-triple names. `dist` currently emits names such as `capsule-cli-aarch64-apple-darwin.tar.gz`, while [Maltmill v1.5.0](https://github.com/Songmu/maltmill/blob/v1.5.0/cmd_new.go#L130-L178) recognizes the existing `darwin-arm64`, `linux-amd64`, and `linux-arm64` suffixes. `dist` does not currently provide archive renaming that preserves those names ([#1371](https://github.com/axodotdev/cargo-dist/issues/1371), [#2428](https://github.com/axodotdev/cargo-dist/issues/2428)).
-
-Revisit `dist` after Maltmill supports target triples or Homebrew publication moves to another adapter. Verify archive names, three target builds, checksums, attestations, immutable-release retry behavior, and Homebrew updates with a prerelease before replacing `.github/workflows/release.yml`.
+| State | Action |
+|---|---|
+| Candidate generation failed or needs regeneration before merge | Re-dispatch `Release PR` with the intended increment; review the updated candidate. |
+| Promotion stopped before tag creation | Re-dispatch `Release Promote` with the same PR number. |
+| Tag already points to the candidate | Treat promotion as complete. |
+| Tag points to another commit | Investigate without moving it; prepare a corrective version. |
+| Binary release failed; release is absent or draft | Re-run the failed `Release` workflow. |
+| Published release lacks required assets | Prepare a corrective release; preserve the published release. |
+| Nix cache publication failed | Re-run `Release Nix Cache` independently. |
