@@ -191,9 +191,9 @@ impl Request {
         }
         let mut env = Vec::with_capacity((fields.len() - 7) / 2);
         let mut keys = HashSet::new();
-        for pair in fields[7..].chunks_exact(2) {
-            let key = unescape(pair[0])?;
-            let value = unescape(pair[1])?;
+        for [raw_key, raw_value] in fields[7..].as_chunks::<2>().0 {
+            let key = unescape(raw_key)?;
+            let value = unescape(raw_value)?;
             if key.is_empty()
                 || key.contains(&0)
                 || key.contains(&b'=')
