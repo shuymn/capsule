@@ -107,15 +107,27 @@ _capsule_send() {
     _capsule_flush
 }
 
+_capsule_owns_prompt() {
+    [[ $PROMPT == "$_CAPSULE_FALLBACK" || $PROMPT == '${_CAPSULE_RENDERED}' || $PROMPT == "$_CAPSULE_RENDERED" ]]
+}
+
+_capsule_use_fallback() {
+    if _capsule_owns_prompt && [[ $PROMPT != "$_CAPSULE_FALLBACK" ]]; then
+        PROMPT=$_CAPSULE_FALLBACK
+        _CAPSULE_CHANGED=1
+    fi
+    return 0
+}
+
 _capsule_apply_prompt() {
     local _capsule_rendered=$1$'\n'$2' ' _capsule_prompt
     # Parameter expansion is not recursive. Worker-escaped text stays data.
     if [[ $_CAPSULE_PROMPT_SUBST == on ]]; then _capsule_prompt='${_CAPSULE_RENDERED}'; else _capsule_prompt=$_capsule_rendered; fi
-    if [[ $_CAPSULE_RENDERED != "$_capsule_rendered" || $PROMPT != "$_capsule_prompt" ]]; then
-        _CAPSULE_RENDERED=$_capsule_rendered
+    if _capsule_owns_prompt && [[ $_CAPSULE_RENDERED != "$_capsule_rendered" || $PROMPT != "$_capsule_prompt" ]]; then
         PROMPT=$_capsule_prompt
         _CAPSULE_CHANGED=1
     fi
+    _CAPSULE_RENDERED=$_capsule_rendered
 }
 
 _capsule_frame() {
@@ -160,7 +172,7 @@ _capsule_async_callback() {
             break
         fi
     done
-    if (( !_CAPSULE_FD_OUT )); then PROMPT=$_CAPSULE_FALLBACK; _CAPSULE_CHANGED=1; fi
+    if (( !_CAPSULE_FD_OUT )); then _capsule_use_fallback; fi
     (( _CAPSULE_CHANGED )) && zle reset-prompt 2>/dev/null
     return 0
 }
@@ -174,8 +186,10 @@ _capsule_precmd() {
     local _capsule_exit=$?
     _CAPSULE_PROMPT_SUBST=${options[promptsubst]}
     emulate -L zsh
+    # Make a command-level option transition safe before any user hook can fail.
+    _capsule_refresh_retained_prompt
     if (( _CAPSULE_NEED_GENERATION )) || [[ $_CAPSULE_CWD != "$PWD" ]]; then
-        (( _CAPSULE_GENERATION++ ))
+        _CAPSULE_NEED_GENERATION=1
         _CAPSULE_LAST_EXIT=$_capsule_exit
         _CAPSULE_DURATION_MS=''
         if [[ -n $_CAPSULE_CMD_START ]]; then
@@ -185,35 +199,54 @@ _capsule_precmd() {
             _CAPSULE_DURATION_MS=$_capsule_duration
             _CAPSULE_CMD_START=''
         fi
-        _CAPSULE_CWD=$PWD
-        local _capsule_previous_snapshot=$_CAPSULE_SNAPSHOT
-        if (( !_CAPSULE_FD_IN )); then
-            PROMPT=$_CAPSULE_FALLBACK
-            _capsule_start_coproc
-        fi
-        if ! _capsule_snapshot; then
-            _capsule_cleanup_fds
-            PROMPT=$_CAPSULE_FALLBACK
-        elif [[ $_CAPSULE_SNAPSHOT != "$_capsule_previous_snapshot" ]]; then
-            PROMPT=$_CAPSULE_FALLBACK
-        fi
-        _CAPSULE_NEED_GENERATION=0
     fi
     print
-    _capsule_send
-    if (( _CAPSULE_FD_OUT )); then
-        # Retained text must follow the option even when no response is ready.
-        _capsule_refresh_retained_prompt
-        _capsule_async_callback
-    else
-        PROMPT=$_CAPSULE_FALLBACK
-    fi
     return 0
+}
+
+_capsule_run_precmd_hooks() {
+    # Do not emulate here: user hooks must see and retain the user's options.
+    local _capsule_exit=$? _capsule_hook
+    {
+        for _capsule_hook in "${_CAPSULE_PRECMD_HOOKS[@]}"; do
+            (( ${+functions[$_capsule_hook]} )) || continue
+            # Native dispatch gives every hook the original command status.
+            () { return $_capsule_exit }
+            # Like zsh's native hook dispatch, ignore ordinary return statuses.
+            # A genuine shell error still unwinds this block and skips later hooks.
+            "$_capsule_hook"
+        done
+        return 0
+    } always {
+        # Preserve hook errors and their short-circuiting, but never skip safety
+        # finalization, snapshot submission, or replacement-worker startup.
+        _capsule_finalize_prompt
+    }
+}
+
+_capsule_add_zsh_hook() {
+    emulate -L zsh
+    if (( ! ${precmd_functions[(I)_capsule_run_precmd_hooks]} )); then
+        _capsule_original_add_zsh_hook "$@"
+        return $?
+    fi
+    # Keep the standard registration/removal/listing API attached to the user
+    # hooks, not just the two Capsule entries installed in the native array.
+    local -a _capsule_native_hooks=("${precmd_functions[@]}")
+    precmd_functions=("${_CAPSULE_PRECMD_HOOKS[@]}")
+    {
+        _capsule_original_add_zsh_hook "$@"
+    } always {
+        # add-zsh-hook unsets an empty hook array; keep it an empty array here.
+        typeset -ga precmd_functions
+        _CAPSULE_PRECMD_HOOKS=("${precmd_functions[@]}")
+        precmd_functions=("${_capsule_native_hooks[@]}")
+    }
 }
 
 _capsule_refresh_retained_prompt() {
     # Use the option captured before emulate; leave fallback and user prompts alone.
-    if [[ $PROMPT != "$_CAPSULE_FALLBACK" && ( $PROMPT == '${_CAPSULE_RENDERED}' || $PROMPT == "$_CAPSULE_RENDERED" ) ]]; then
+    if _capsule_owns_prompt && [[ $PROMPT != "$_CAPSULE_FALLBACK" ]]; then
         if [[ $_CAPSULE_PROMPT_SUBST == on ]]; then PROMPT='${_CAPSULE_RENDERED}'; else PROMPT=$_CAPSULE_RENDERED; fi
     fi
     return 0
@@ -222,8 +255,31 @@ _capsule_refresh_retained_prompt() {
 _capsule_finalize_prompt() {
     _CAPSULE_PROMPT_SUBST=${options[promptsubst]}
     emulate -L zsh
-    # User precmd hooks may have changed the option after our early hook.
-    _capsule_refresh_retained_prompt
+    # Capture acquisition inputs after user hooks have updated cwd/environment.
+    if (( _CAPSULE_NEED_GENERATION )) || [[ $_CAPSULE_CWD != "$PWD" ]]; then
+        (( _CAPSULE_GENERATION++ ))
+        _CAPSULE_CWD=$PWD
+        local _capsule_previous_snapshot=$_CAPSULE_SNAPSHOT
+        if (( !_CAPSULE_FD_IN )); then
+            _capsule_use_fallback
+            _capsule_start_coproc
+        fi
+        if ! _capsule_snapshot; then
+            _capsule_cleanup_fds
+            _capsule_use_fallback
+        elif [[ $_CAPSULE_SNAPSHOT != "$_capsule_previous_snapshot" ]]; then
+            _capsule_use_fallback
+        fi
+        _CAPSULE_NEED_GENERATION=0
+    fi
+    _capsule_send
+    if (( _CAPSULE_FD_OUT )); then
+        # Retained text must follow the option even when no response is ready.
+        _capsule_refresh_retained_prompt
+        _capsule_async_callback
+    else
+        _capsule_use_fallback
+    fi
     return 0
 }
 
@@ -231,7 +287,7 @@ _capsule_redraw() {
     emulate -L zsh
     if [[ $_CAPSULE_LAST_COLS != ${COLUMNS:-80} || $_CAPSULE_LAST_KEYMAP != ${KEYMAP:-main} ]]; then
         if ! _capsule_send; then
-            PROMPT=$_CAPSULE_FALLBACK
+            _capsule_use_fallback
             zle reset-prompt 2>/dev/null
         fi
     fi
@@ -252,8 +308,24 @@ _capsule_init() {
     typeset -g _CAPSULE_LAST_COLS='' _CAPSULE_LAST_KEYMAP='' _CAPSULE_RENDERED=''
     typeset -g _CAPSULE_FALLBACK=$'%~\n%# '
     PROMPT=$_CAPSULE_FALLBACK
-    precmd_functions=("${(@)precmd_functions:#_capsule_finalize_prompt}")
-    precmd_functions=(_capsule_precmd "${(@)precmd_functions:#_capsule_precmd}" _capsule_finalize_prompt)
+    typeset -ga precmd_functions
+    local _capsule_hook
+    local -a _capsule_hooks
+    for _capsule_hook in "${precmd_functions[@]}"; do
+        case $_capsule_hook in
+            _capsule_precmd|_capsule_finalize_prompt) ;;
+            _capsule_run_precmd_hooks) _capsule_hooks+=("${_CAPSULE_PRECMD_HOOKS[@]}") ;;
+            *) _capsule_hooks+=("$_capsule_hook") ;;
+        esac
+    done
+    typeset -ga _CAPSULE_PRECMD_HOOKS=("${_capsule_hooks[@]}")
+    precmd_functions=(_capsule_precmd _capsule_run_precmd_hooks)
+    autoload -Uz add-zsh-hook
+    autoload +X add-zsh-hook || return
+    if [[ $functions[add-zsh-hook] != "$functions[_capsule_add_zsh_hook]" ]]; then
+        functions[_capsule_original_add_zsh_hook]=$functions[add-zsh-hook]
+        functions[add-zsh-hook]=$functions[_capsule_add_zsh_hook]
+    fi
     preexec_functions=(_capsule_preexec "${(@)preexec_functions:#_capsule_preexec}")
     zshexit_functions=(_capsule_cleanup_fds "${(@)zshexit_functions:#_capsule_cleanup_fds}")
     autoload -Uz add-zle-hook-widget

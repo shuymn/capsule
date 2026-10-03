@@ -55,14 +55,14 @@ Require successful exit and all contract records:
 | Binary selection | A renamed selected executable supplies init, worker, and fd-config even beside a different executable named capsule |
 | Cleanup safety | Confirmed-dead worker identities are retired; historical PIDs never become signal targets after reuse |
 | One shell | One worker; empty Enter preserves displayed information; resize/keymap changes reuse acquisition |
-| Revalidation | With file-controlled slow acquisition and unchanged cwd/environment/config, ordinary commands preserve Git/tool information in every intermediate frame and actual shell prompt assignment, including precmd |
+| Revalidation | With file-controlled slow acquisition and unchanged cwd/environment/config, ordinary commands preserve Git/tool information in every intermediate frame and actual shell prompt assignment, including finalized precmd; the first command after a directory-aware precmd hook updates exports also preserves the settled display |
 | Replacement | Changed results replace retained display at completion; Missing, Failed, and false conditions remove obsolete information |
 | Invalidation | Changed cwd/exported environment immediately discard retained display; accepted changed configuration discards it after reload |
 | Local display | Status, duration, resize, and keymap changes render while acquisition is held pending |
-| Snapshot | Exported environment bytes and cwd reach acquisition; unset and unexported variables stay absent |
+| Snapshot | Exported environment bytes and cwd reach acquisition after preserved user precmd hooks complete; directory-hook exports reach the directory-change generation; unset and unexported variables stay absent |
 | Input | Delayed prompt updates preserve the typed buffer and cursor |
 | Transport | A backpressured large request completes without further keyboard input; stale/future responses cannot replace the prompt |
-| Recovery | Worker failure selects fallback; the next command starts a replacement worker |
+| Recovery | Worker failure selects fallback; the next command starts a replacement worker even if a preserved precmd hook raises a genuine shell error |
 | Exit and exec | Pipes close; worker and active acquisition descendants terminate; exec cleanup is checked after a replacement-ready marker and while the controlled replacement remains alive |
 | Ten shells | Ten distinct workers, one initial acquisition each, and no workers left active after exit |
 
@@ -74,6 +74,13 @@ Also run `task test` on each platform for fragmented/cancelled frames, partial s
 reads, frame bounds, command/file limits, and process cleanup regressions. Require
 the shell regression with real initialization and installed precmd order to keep
 retained dollar/backtick payloads literal when a preserved user hook toggles
-`PROMPT_SUBST` in either direction, before any new response is released. Suite
-results and acquisition timings do not replace interactive PTY evidence. Follow
+`PROMPT_SUBST` in either direction, before any new response is released. Require
+real interactive hook-error regressions for command-level and hook-level option
+transitions, user-hook short-circuiting, status/duration capture, snapshot
+invalidation, and replacement-worker startup. Require initialized shell regressions
+to preserve user-owned prompts during changed snapshots, ready responses, and
+worker startup. Verify hook ordering, each hook's original command status, and
+continuation after ordinary nonzero returns, plus `add-zsh-hook` registration, removal, and listing after repeated
+initialization. Suite results and acquisition timings do not replace interactive
+PTY evidence. Follow
 [benchmarking.md](benchmarking.md) for timing definitions and host requirements.
