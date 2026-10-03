@@ -7,6 +7,112 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0](https://github.com/shuymn/capsule/compare/v0.4.0...v1.0.0) - 2026-10-03
+
+### Fixed
+
+- *(test)* resolve tools from Nix build PATH
+- *(protocol)* satisfy Rust 1.98 pair lint
+- *(test)* isolate release fixture git state
+- *(lint)* permit upstream syn major versions
+- *(tests)* satisfy assert-is-empty lint
+- *(infra)* allow shared GitHub automations
+
+### Other
+
+- condense agent and release guidance
+- [**breaking**] replace daemon with session workers
+- *(deps)* update taiki-e/install-action action to v2.87.8 (#212)
+- *(deps)* update taiki-e/install-action action to v2.87.8
+- *(deps)* update taiki-e/install-action action to v2.87.7 (#211)
+- *(deps)* update taiki-e/install-action action to v2.87.7
+- *(deps)* update taiki-e/install-action action to v2.87.6 (#210)
+- *(deps)* update taiki-e/install-action action to v2.87.6
+- *(deps)* update taiki-e/install-action action to v2.87.5 (#209)
+- *(deps)* update taiki-e/install-action action to v2.87.5
+- *(deps)* update docker/dockerfile docker tag to v1.27 (#208)
+- *(deps)* update docker/dockerfile docker tag to v1.27
+- *(deps)* update rust crate toml to v1.1.5 (#207)
+- *(deps)* update rust crate toml to v1.1.5
+- *(deps)* update rust crate time to v0.3.55
+- *(deps)* update dependency git-cliff to v2.14.1 (#205)
+- *(deps)* update dependency git-cliff to v2.14.1
+- *(deps)* update rust crate thiserror to v2.0.19 (#179)
+- *(deps)* update rust crate thiserror to v2.0.20
+- *(deps)* update actions/attest action to v4.2.1 (#195)
+- *(deps)* update actions/attest action to v4.2.2
+- *(deps)* update rust crate clap to v4.6.6 (#201)
+- *(deps)* update rust crate clap to v4.6.6
+- *(deps)* update taiki-e/install-action action to v2.87.0 (#204)
+- *(deps)* update taiki-e/install-action action to v2.87.4
+- *(deps)* update rust crate serde to v1.0.229 (#178)
+- *(deps)* update rust crate serde to v1.0.229
+- *(lint)* check the complete dependency graph
+- *(lint)* clarify duplicate syn verification
+- *(deps)* update cachix/install-nix-action action to v31.11.1 (#202)
+- *(deps)* update cachix/install-nix-action action to v31.11.1
+- *(deps)* update taiki-e/install-action action to v2.85.7 (#199)
+- *(deps)* update taiki-e/install-action action to v2.85.8
+- *(deps)* update taiki-e/install-action action to v2.85.6 (#198)
+- *(deps)* update taiki-e/install-action action to v2.85.6
+- *(deps)* update rust crate clap to v4.6.5 (#197)
+- *(deps)* update rust crate clap to v4.6.5
+- *(deps)* update taiki-e/install-action action to v2.85.5 (#196)
+- *(deps)* update taiki-e/install-action action to v2.85.5
+- *(deps)* update taiki-e/install-action action to v2.85.4 (#193)
+- *(deps)* update taiki-e/install-action action to v2.85.4
+- *(deps)* update docker/dockerfile docker tag to v1.26 (#194)
+- *(deps)* update docker/dockerfile docker tag to v1.26
+- *(deps)* update rust crate toml to v1.1.4 (#192)
+- *(deps)* update rust crate toml to v1.1.4
+- *(deps)* update taiki-e/install-action action to v2.85.3 (#191)
+- *(deps)* update taiki-e/install-action action to v2.85.3
+- *(deps)* update taiki-e/install-action action to v2.85.2 (#190)
+- *(deps)* update taiki-e/install-action action to v2.85.2
+- *(deps)* update taiki-e/install-action action to v2.85.1 (#189)
+- *(deps)* update taiki-e/install-action action to v2.85.1
+- *(deps)* update taiki-e/install-action action to v2.85.0 (#188)
+- *(deps)* update taiki-e/install-action action to v2.85.0
+- *(deps)* update taiki-e/install-action action to v2.84.1 (#187)
+- *(deps)* update taiki-e/install-action action to v2.84.1
+- *(deps)* update rust crate clap to v4.6.4 (#186)
+- *(deps)* update rust crate clap to v4.6.4
+- *(deps)* update taiki-e/install-action action to v2.84.0 (#185)
+- *(deps)* update taiki-e/install-action action to v2.84.0
+- *(deps)* update rust crate clap to v4.6.3 (#183)
+- *(deps)* update rust crate clap to v4.6.3
+- *(deps)* update rust crate tokio to v1.53.1 (#184)
+- *(deps)* update rust crate tokio to v1.53.1
+- *(deps)* update actions/checkout action to v7.0.1 (#182)
+- *(deps)* update actions/checkout action to v7.0.1
+- *(deps)* update rust crate serde_json to v1.0.151 (#180)
+- *(deps)* update rust crate serde_json to v1.0.151
+- *(deps)* update rust crate anyhow to v1.0.104 (#177)
+- *(deps)* update rust crate anyhow to v1.0.104
+- *(deps)* update rust crate tokio to v1.53.0 (#176)
+- *(deps)* update rust crate tokio to v1.53.0
+- *(deps)* update taiki-e/install-action action to v2.83.4 (#175)
+- *(deps)* update taiki-e/install-action action to v2.83.4
+- *(deps)* update actions/attest action to v4.2.0 (#174)
+- *(deps)* update actions/attest action to v4.2.0
+- *(deps)* update rust crate tokio to v1.52.4 (#172)
+- *(deps)* update rust crate tokio to v1.52.4
+- *(deps)* update taiki-e/install-action action to v2.83.3 (#173)
+- *(deps)* update taiki-e/install-action action to v2.83.3
+- *(deps)* update rust crate clap to v4.6.2 (#171)
+- *(deps)* update rust crate clap to v4.6.2
+- *(deps)* update cachix/install-nix-action action to v31.11.0 (#170)
+- *(deps)* update cachix/install-nix-action action to v31.11.0
+- *(deps)* update taiki-e/install-action action to v2.83.0 (#167)
+- *(deps)* update taiki-e/install-action action to v2.83.2
+- *(deps)* update cachix/install-nix-action action to v31.10.7 (#166)
+- *(deps)* update cachix/install-nix-action action to v31.10.7
+- *(deps)* update rust crate toml to v1.1.3 (#169)
+- *(deps)* update rust crate toml to v1.1.3
+- *(infra)* add GitHub repository configuration
+- *(deps)* update taiki-e/install-action action to v2.82.11 (#165)
+- *(deps)* update taiki-e/install-action action to v2.82.11
+
 ## [0.4.0](https://github.com/shuymn/capsule/compare/v0.3.0...v0.4.0) - 2026-07-11
 
 ### Added
