@@ -1,0 +1,30 @@
+# Keep only the examples you need. Commands run only from your explicit config.
+schema_version = 2
+
+# Show the version actually selected by the shell's PATH. A version file names
+# the requested version, so display it separately when needed.
+[[module]]
+name = "node"
+when.files = ["package.json"]
+format = "v{version}"
+connector = "via"
+style = { fg = "green" }
+
+[module.values]
+version = [{ command = ["node", "--version"], regex = 'v?(\d[\d.]*)' }]
+# To also show the requested version, append "[ (requested {requested})]" to
+# format and uncomment this value:
+# requested = [{ file = ".node-version" }]
+
+# A required profile and optional region use the current exported environment.
+[[module]]
+name = "context"
+when.env = ["AWS_PROFILE"]
+slot = "line2"
+format = "{profile}[ ({region})]"
+connector = "as"
+style = { fg = "yellow" }
+
+[module.values]
+profile = [{ env = "AWS_PROFILE" }]
+region = [{ env = "AWS_REGION" }, { env = "AWS_DEFAULT_REGION" }]

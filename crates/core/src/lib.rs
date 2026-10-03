@@ -2,13 +2,12 @@
 
 #![warn(clippy::pedantic, clippy::nursery, clippy::cargo)]
 
-mod sealed;
-
-pub mod config;
-pub mod daemon;
+pub mod acquire;
+pub mod git;
 pub mod init;
-pub mod module;
+pub mod plan;
 pub mod render;
+pub mod view;
 
 #[cfg(test)]
 pub(crate) mod test_utils;

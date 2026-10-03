@@ -1,249 +1,63 @@
 # capsule
 
-`capsule` は Rust 実装の `zsh` 用プロンプトエンジンです。macOS と Linux で動作します。
+[English](README.md)・日本語
+
+`capsule` は macOS と Linux で動作する、Rust 製の zsh 用プロンプトエンジンです。各シェルが1つの worker を持ち、プロンプトを更新している間も zsh は入力を受け付けます。
 
 <p align="center">
   <img src="assets/vhs/readme-prompt.gif" alt="capsule プロンプトデモ">
 </p>
 
-常駐デーモンがレンダリング・キャッシュ・低速モジュールの非同期更新を担います。`zsh` はコプロセス経由でプロンプトリクエストを中継するため、プロンプトは即座に表示され、バックグラウンド処理が完了すると非同期で更新されます。
-
 ## プロンプト
 
+```text
+<directory> on <git branch> [indicators] via <custom value> took <duration>
+<optional custom values> at <optional time> ❯
 ```
-<directory> on <git branch> [indicators] via <toolchain> took <duration>
-at <time> ❯
-```
 
-**1行目:** ディレクトリ、git ステータス、カスタムモジュール、コマンド実行時間。ツールチェインセグメント（`via <toolchain>` の部分）は組み込み実装を持たず、ユーザー定義の `[[module]]` エントリによってのみ提供されます。
-
-**2行目:** 時刻（デフォルト無効）、プロンプト文字 `❯` / `❮`（vim コマンドモード）。文字は成功時に緑、失敗時に赤になります。
-
-1行目はターミナル幅を超える場合、まずディレクトリを短縮し、次に末尾のセグメントを省略します。
+2行のプロンプトにディレクトリ、Git、カスタム値、コマンド実行時間、任意の時刻を表示します。プロンプト文字は直前のコマンドの成否を表し、vi コマンドモードでは `❮` に変わります。カスタムモジュールは環境変数、ファイル、コマンド出力から値を取得します。
 
 ## インストール
 
-要件: macOS または Linux、`zsh`。
+要件は macOS または Linux と zsh です。Git の表示には、シェルが export した `PATH` 上に `git` が必要です。
 
-### Homebrew
+旧 daemon 版から更新する場合は、バイナリを置き換える前に[移行手順](docs/migration.md)を実施してください。
 
-```bash
-# 1. バイナリのインストール
+```sh
 brew install shuymn/tap/capsule
+```
 
-# 2. システムサービスマネージャへの登録（推奨）
-capsule daemon install   # macOS: launchd  |  Linux: systemd --user
+`.zshrc` に次を追加します。
 
-# 3. .zshrc へ追記
+```zsh
 eval "$(capsule init zsh)"
 ```
 
 ### Nix
 
-インストールせずに実行する場合:
-
-```bash
+```sh
 nix run github:shuymn/capsule -- --version
-```
-
-バイナリのみをインストールする場合:
-
-```bash
 nix profile install github:shuymn/capsule
 ```
 
-daemon を宣言的に管理する場合は、flake input に capsule を追加し、対応する module を import して `programs.capsule.daemon` を有効にします:
+profile で導入する場合は `.zshrc` の設定を追加してください。宣言的な module は、バイナリの導入と zsh の初期化を行います。
 
 ```nix
-inputs.capsule.url = "github:shuymn/capsule";
-```
-
-以下の module 断片は、すでに `home.stateVersion` または `system.stateVersion` を設定済みの既存の Home Manager / NixOS / nix-darwin 設定にマージする前提です。
-
-```nix
-# Home Manager
+# flake inputs に inputs.capsule.url = "github:shuymn/capsule" を追加
 {
   imports = [ inputs.capsule.homeManagerModules.default ];
-
-  programs.capsule = {
-    enable = true;
-    daemon.enable = true;
-  };
-
-  programs.zsh.initContent = ''
-    eval "$(capsule init zsh)"
-  '';
+  programs.capsule.enable = true;
 }
 ```
 
-```nix
-# NixOS
-{
-  imports = [ inputs.capsule.nixosModules.default ];
-
-  programs.capsule = {
-    enable = true;
-    daemon.enable = true;
-  };
-}
-```
-
-```nix
-# nix-darwin
-{
-  imports = [ inputs.capsule.darwinModules.default ];
-
-  system.primaryUser = "alice";
-  programs.capsule = {
-    enable = true;
-    daemon.enable = true;
-  };
-}
-```
-
-Nix module を使う場合は `capsule daemon install` を実行しないでください。launchd/systemd の定義は module が管理します。以前に命令型で daemon をインストールしていた場合は、module を有効にする前に一度 `capsule daemon uninstall` を実行してください。
-
-toolchainモジュールを用意するには、`capsule preset` を実行してその出力を設定ファイルに貼り付けます。
+NixOS では `inputs.capsule.nixosModules.default`、nix-darwin では `inputs.capsule.darwinModules.default` を使用します。初期化を管理する module は1つにしてください。手動で初期化する場合は `programs.capsule.enableZshIntegration = false` にします。
 
 ## 設定
 
-設定ファイルは最初に存在するパスから読み込まれます:
+設定ファイルがなければ既定値を使います。`capsule preset` で [schema-v2 の設定例](examples/config.toml)を出力し、必要なモジュールを残して `~/.config/capsule/config.toml` に保存してください。
 
-1. `$XDG_CONFIG_HOME/capsule/config.toml`
-2. `~/.config/capsule/config.toml`
-3. `~/.capsule/config.toml`
+XDG パス、取得元、表示条件、書式、スタイル、再読み込みについては[設定ガイド](docs/extending.md)を参照してください。
 
-変更は次回のレンダリング時に自動的に反映されます。
+## 開発
 
-### 組み込みモジュール
-
-```toml
-[character]
-glyph = "❯"
-success_style = { fg = "green", bold = true }
-error_style = { fg = "red", bold = true }
-
-[character.vicmd]           # vim コマンドモードの上書き
-glyph = "❮"
-# style = { fg = "yellow" }
-
-[directory]
-style = { fg = "cyan", bold = true }
-# read_only_style = { fg = "red" }
-
-[git]
-icon = "\u{f418}"
-connector = "on"
-style = { fg = "magenta", bold = true }
-indicator_style = { fg = "red", bold = true }
-# detached_hash_style = { fg = "green", bold = true }
-# state_style = { fg = "yellow", bold = true }
-
-[time]
-disabled = true             # 有効にするには false を設定
-format = "HH:MM:SS"         # または "HH:MM"
-connector = "at"
-style = { fg = "yellow", bold = true }
-
-[cmd_duration]
-threshold_ms = 2000
-connector = "took"
-style = { fg = "yellow", bold = true }
-```
-
-### コネクタとタイムアウト
-
-```toml
-[connectors]
-# style = {}
-
-[timeout]
-fast_ms = 500       # 環境変数/ファイルソース
-slow_ms = 5000      # コマンド、git
-```
-
-### スタイル構文
-
-| キー     | 型    | 説明                 |
-|----------|-------|----------------------|
-| `fg`     | color | 前景色               |
-| `bold`   | bool  | 太字                 |
-| `dimmed` | bool  | 薄暗く（faint）表示  |
-
-色: `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `bright_black`。
-
-`[color_map]` で ANSI コードを上書き（classic 30〜37 およびbright 90〜97）:
-
-```toml
-[color_map]
-green = 32
-cyan = 36
-```
-
-### カスタムモジュール
-
-```toml
-[[module]]
-name = "rust"
-slot = "line1"              # 省略時 line1; line2 で入力行へ
-when.files = ["Cargo.toml"]
-format = "v{version}"
-icon = "🦀"
-connector = "via"
-style = { fg = "red" }
-
-# ソースが複数ある場合は、非同期で解決して最初に成功した結果が使われます。
-[[module.source]]
-name = "version"
-env = "RUST_VERSION"
-
-[[module.source]]
-name = "version"
-command = ["rustc", "--version"]
-regex = 'rustc ([\d.]+)'
-```
-
-環境変数/ファイルソースはインラインで評価されます。コマンドソースはバックグラウンドで実行され、プロンプトを非同期で更新します。
-
-#### フォーマット文字列構文
-
-| 構文     | 意味 |
-|----------|------|
-| `{name}` | 変数プレースホルダ。未解決の場合はモジュール全体が非表示 |
-| `[…]`    | オプションセクション。内部の変数が未解決の場合は省略 |
-| `{{`     | リテラル `{` |
-| `[[`     | リテラル `[` |
-
-```toml
-format = "{profile}[ ({region})]"   # region が未解決の場合は省略
-```
-
-#### グルーピング
-
-同じディレクトリで複数のモジュールが適用可能な場合、グループ内で最も低い `priority` を持つモジュールのみがレンダリングされます:
-
-```toml
-arbitration = { group = "runtime", priority = 10 }
-```
-
-`arbitration` を持たないモジュールは常にレンダリングされます。
-
-## CLI
-
-```
-capsule daemon              デーモンの起動
-capsule daemon install      サービスの登録（macOS: launchd、Linux: systemd）
-capsule daemon uninstall    サービスの削除
-capsule connect             Coprocess リレー（init スクリプトが使用）
-capsule init zsh            シェル統合スクリプトの出力
-capsule preset              組み込みモジュール定義を TOML として出力
-```
-
-## リポジトリ構成
-
-- `crates/cli`: CLI エントリポイントと統合テスト
-- `crates/core`: デーモン、プロンプトモジュール、レンダリング、設定
-- `crates/prompt-bench`: ベンチマークハーネス
-- `crates/protocol`: wireプロトコルとメッセージコーデック
-- `crates/sys`: プラットフォーム固有の FFI（macOS: launchd、Linux: systemd socketの有効化）
-- `docs/extending.md`: 拡張ガイド（カスタムモジュール、エージェント向け手順）
+stable Rust と Task を使います。実行時の契約は[アーキテクチャ](docs/architecture.md)、検証は[開発ツール](docs/tooling.md)、公開は[リリース手順](docs/releasing.md)を参照してください。

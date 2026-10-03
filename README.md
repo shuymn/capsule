@@ -2,251 +2,62 @@
 
 English・[日本語](README.ja.md)
 
-`capsule` is a prompt engine for `zsh`, implemented in Rust. Runs on macOS and Linux.
+`capsule` is a Rust prompt engine for zsh on macOS and Linux. Each shell owns one worker that updates the prompt while zsh keeps accepting input.
 
 <p align="center">
   <img src="assets/vhs/readme-prompt.gif" alt="capsule prompt demo">
 </p>
 
-A persistent daemon handles rendering, caching, and slow module refreshes. `zsh` relays prompt requests through a coprocess, so the prompt renders immediately and updates asynchronously when background work completes.
-
 ## Prompt
 
+```text
+<directory> on <git branch> [indicators] via <custom value> took <duration>
+<optional custom values> at <optional time> ❯
 ```
-<directory> on <git branch> [indicators] via <toolchain> took <duration>
-at <time> ❯
-```
 
-**Line 1:** directory, git status, custom modules, command duration. Toolchain segments (the `via <toolchain>` part) have no built-in implementation — they are provided entirely by user-defined `[[module]]` entries.
-
-**Line 2:** time (disabled by default), prompt character `❯` / `❮` (vim command mode). Character is green on success, red on failure.
-
-Line 1 truncates the directory first and drops trailing segments when it would overflow the terminal width.
+The two-line prompt shows the directory, Git, custom values, command duration, and optional time. The prompt character reflects the last command's status and changes to `❮` in vi command mode. Custom modules read environment variables, files, or command output.
 
 ## Installation
 
-Requirements: macOS or Linux, `zsh`.
+Requirements: macOS or Linux and zsh. Git information requires `git` on the shell's exported `PATH`.
 
-### Homebrew
+For an existing daemon-based installation, complete the [migration steps](docs/migration.md) before replacing the binary.
 
-```bash
-# 1. Install the binary
+```sh
 brew install shuymn/tap/capsule
+```
 
-# 2. Register with the system service manager (recommended)
-capsule daemon install   # macOS: launchd  |  Linux: systemd --user
+Add this line to `.zshrc`:
 
-# 3. Add to .zshrc
+```zsh
 eval "$(capsule init zsh)"
 ```
 
 ### Nix
 
-Run without installing:
-
-```bash
+```sh
 nix run github:shuymn/capsule -- --version
-```
-
-Install only the binary:
-
-```bash
 nix profile install github:shuymn/capsule
 ```
 
-For declarative daemon management, add capsule to your flake inputs, import the matching module, and enable `programs.capsule.daemon`:
+The profile install provides the binary; add the `.zshrc` line yourself. Declarative modules install the binary and add that initialization automatically:
 
 ```nix
-inputs.capsule.url = "github:shuymn/capsule";
-```
-
-The module snippets below are meant to be merged into an existing Home Manager, NixOS, or nix-darwin configuration that already sets `home.stateVersion` or `system.stateVersion`.
-
-```nix
-# Home Manager
+# Add inputs.capsule.url = "github:shuymn/capsule" to your flake.
 {
   imports = [ inputs.capsule.homeManagerModules.default ];
-
-  programs.capsule = {
-    enable = true;
-    daemon.enable = true;
-  };
-
-  programs.zsh.initContent = ''
-    eval "$(capsule init zsh)"
-  '';
+  programs.capsule.enable = true;
 }
 ```
 
-```nix
-# NixOS
-{
-  imports = [ inputs.capsule.nixosModules.default ];
-
-  programs.capsule = {
-    enable = true;
-    daemon.enable = true;
-  };
-}
-```
-
-```nix
-# nix-darwin
-{
-  imports = [ inputs.capsule.darwinModules.default ];
-
-  system.primaryUser = "alice";
-  programs.capsule = {
-    enable = true;
-    daemon.enable = true;
-  };
-}
-```
-
-When using a Nix module, do not run `capsule daemon install`; the module owns the launchd/systemd definition. If you previously installed the daemon imperatively, run `capsule daemon uninstall` once before enabling the module.
-
-To bootstrap toolchain modules, run `capsule preset` and paste the output into your config file.
+Use `inputs.capsule.nixosModules.default` or `inputs.capsule.darwinModules.default` in the matching system configuration. Choose one integration owner. Set `programs.capsule.enableZshIntegration = false` to manage initialization yourself.
 
 ## Configuration
 
-Config file is loaded from the first path that exists:
+Capsule uses defaults without a configuration. Run `capsule preset` to print the [editable schema-v2 examples](examples/config.toml). Keep the modules you need and save the document to `~/.config/capsule/config.toml`.
 
-1. `$XDG_CONFIG_HOME/capsule/config.toml`
-2. `~/.config/capsule/config.toml`
-3. `~/.capsule/config.toml`
+See the [configuration guide](docs/extending.md) for XDG paths, value sources, conditions, formatting, styles, and reload behavior.
 
-Changes are hot-reloaded on the next prompt render.
+## Development
 
-### Built-in modules
-
-```toml
-[character]
-glyph = "❯"
-success_style = { fg = "green", bold = true }
-error_style = { fg = "red", bold = true }
-
-[character.vicmd]           # vim command mode override
-glyph = "❮"
-# style = { fg = "yellow" }
-
-[directory]
-style = { fg = "cyan", bold = true }
-# read_only_style = { fg = "red" }
-
-[git]
-icon = "\u{f418}"
-connector = "on"
-style = { fg = "magenta", bold = true }
-indicator_style = { fg = "red", bold = true }
-# detached_hash_style = { fg = "green", bold = true }
-# state_style = { fg = "yellow", bold = true }
-
-[time]
-disabled = true             # set to false to enable
-format = "HH:MM:SS"         # or "HH:MM"
-connector = "at"
-style = { fg = "yellow", bold = true }
-
-[cmd_duration]
-threshold_ms = 2000
-connector = "took"
-style = { fg = "yellow", bold = true }
-```
-
-### Connectors and timeouts
-
-```toml
-[connectors]
-# style = {}
-
-[timeout]
-fast_ms = 500       # env/file sources
-slow_ms = 5000      # commands, git
-```
-
-### Style syntax
-
-| Key      | Type  | Description         |
-|----------|-------|---------------------|
-| `fg`     | color | Foreground color    |
-| `bold`   | bool  | Bold text           |
-| `dimmed` | bool  | Dimmed (faint) text |
-
-Colors: `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `bright_black`.
-
-Override ANSI codes with `[color_map]` (classic 30–37 and bright 90–97):
-
-```toml
-[color_map]
-green = 32
-cyan = 36
-```
-
-### Custom modules
-
-```toml
-[[module]]
-name = "rust"
-slot = "line1"              # default line1; use line2 for the input line
-when.files = ["Cargo.toml"]
-format = "v{version}"
-icon = "🦀"
-connector = "via"
-style = { fg = "red" }
-
-# If multiple sources share the same `name`, capsule resolves them
-# asynchronously and uses the first successful result that comes back.
-[[module.source]]
-name = "version"
-env = "RUST_VERSION"
-
-[[module.source]]
-name = "version"
-command = ["rustc", "--version"]
-regex = 'rustc ([\d.]+)'
-```
-
-Env/file sources are evaluated inline. Command sources run in the background and update the prompt asynchronously.
-
-#### Format string syntax
-
-| Syntax   | Meaning |
-|----------|---------|
-| `{name}` | Variable placeholder; module suppressed if unresolved |
-| `[…]`    | Optional section; omitted if any variable inside is unresolved |
-| `{{`     | Literal `{` |
-| `[[`     | Literal `[` |
-
-```toml
-format = "{profile}[ ({region})]"   # region omitted when unresolved
-```
-
-#### Arbitration
-
-When multiple modules can fire in the same directory, only the lowest-`priority` module in a group renders:
-
-```toml
-arbitration = { group = "runtime", priority = 10 }
-```
-
-Modules without `arbitration` always render.
-
-## CLI
-
-```
-capsule daemon              Start the daemon
-capsule daemon install      Register service (launchd on macOS, systemd on Linux)
-capsule daemon uninstall    Remove service
-capsule connect             Coprocess relay (used by init script)
-capsule init zsh            Print shell integration script
-capsule preset              Print built-in module definitions as TOML
-```
-
-## Repository Layout
-
-- `crates/cli`: CLI entrypoint and integration tests
-- `crates/core`: daemon, prompt modules, rendering, configuration
-- `crates/prompt-bench`: benchmark harness
-- `crates/protocol`: wire protocol and message codec
-- `crates/sys`: platform-specific FFI (launchd on macOS, systemd socket activation on Linux)
-- `docs/extending.md`: extension guide (custom modules, agent workflow)
+Use stable Rust and Task. Read [architecture](docs/architecture.md) for runtime contracts, [tooling](docs/tooling.md) for checks, and [release procedures](docs/releasing.md) for publishing.

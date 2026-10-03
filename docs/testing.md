@@ -1,37 +1,59 @@
-# Testing Conventions
+# Testing
 
-Read this file before writing or modifying tests in this repository.
+Read this file before writing or modifying tests.
 
-## Running Tests
+## Suite and conventions
 
-- Use `task test` for the full suite (unit, integration, and doctests via `cargo test`).
-- Use `task check` for CI-equivalent local verification (includes `cargo doc` without dependency docs).
-- For focused runs: `cargo test -p <crate> <filter>` or `cargo test <name> -- --nocapture` as needed.
+- Use `task test` for unit/integration targets and doctests. Cargo's `--all-targets`
+  does not include doctests; the task runs them separately.
+- Use `cargo test -p <crate> <filter> --locked` for focused checks. See
+  [tooling.md](tooling.md) for full verification and Git-hook side effects.
+- Put unit tests in a final `#[cfg(test)] mod tests`, inline or in `tests.rs`.
+  Put public API and CLI integration tests under `tests/` and shared helpers in
+  `tests/common/mod.rs`, which Cargo does not treat as a separate test binary.
+- Use isolated fixtures, `Result` with `?` for fallible setup, and RAII cleanup.
+  Assert behavior, including relevant failure/cancellation paths, without depending
+  on execution order. Explain the reason and removal condition for any ignored test.
+- Keep doctests runnable; use hidden `# ` setup, `no_run` for external resources,
+  and `compile_fail` for invalid usage.
 
-## Suite Expectations
+## Interactive shell contract
 
-- Tests should be deterministic and avoid reliance on execution order unless explicitly serialized.
-- Prefer small, fast unit tests; use integration tests under `tests/` for boundary behavior.
-- Doctests validate examples in `///` comments; keep them minimal and runnable.
+Run [scripts/session_pty.py](../scripts/session_pty.py) on both macOS and Linux when
+changing shell integration, worker transport, or acquisition lifecycle. It requires
+zsh, Python 3, and `ps`, uses real PTYs and disposable homes, and leaves user shell
+configuration untouched. Build and run on the target OS from the repository root.
 
-## Test Organization
+macOS and Linux:
 
-- Unit tests go in a `#[cfg(test)] mod tests` submodule at the bottom of the file.
-- Use `use super::*` in test modules to access private items.
-- Integration tests under `tests/` test public API only.
-- Shared test helpers go in `tests/common/mod.rs` (not `tests/common.rs`, which Cargo treats as a test binary).
+```sh
+task build
+uv run --no-project scripts/session_pty.py
+```
 
-## Writing Tests
+In Linux images without uv, run `python3 scripts/session_pty.py` after the build.
 
-- Use `#[test]` functions that return `Result<(), E>` with `?` for cleaner error propagation instead of scattering `unwrap()`.
-- Use `assert_eq!(actual, expected)` and `assert_ne!` — they show both values on failure. Include a message argument when the assertion is not self-explanatory.
-- Test error paths and edge cases, not just happy paths.
-- Name test functions descriptively: `test_parse_returns_error_on_empty_input`, not `test1`.
-- For tests that need setup/teardown, use helper functions or RAII guards (Drop-based cleanup).
-- Avoid `#[ignore]` without a comment explaining why and when the test should be un-ignored.
+The default binary is `target/debug/capsule`; use `--binary <path>` for another
+build. The script prints its artifact directory containing `results.json` and each
+shell's `terminal.log`. Use `--output <new-directory>` to choose a fresh destination.
 
-## Doc Tests
+Require successful exit and all contract records:
 
-- Use `?` instead of `unwrap()` in doc examples.
-- Use `# ` prefix to hide boilerplate (imports, main wrapper) while keeping examples compilable.
-- Use `no_run` for examples that require external resources; `compile_fail` to demonstrate invalid usage.
+| Scope | Required behavior |
+|---|---|
+| One shell | One worker; empty Enter preserves displayed information; resize/keymap changes reuse acquisition |
+| Snapshot | Exported environment bytes and cwd reach acquisition; unset and unexported variables stay absent |
+| Input | Delayed prompt updates preserve the typed buffer and cursor |
+| Transport | A backpressured large request completes without further keyboard input; stale/future responses cannot replace the prompt |
+| Recovery | Worker failure selects fallback; the next command starts a replacement worker |
+| Exit and exec | Pipes close; worker and active acquisition descendants terminate |
+| Ten shells | Ten distinct workers, one initial acquisition each, and no workers left active after exit |
+
+Record each platform separately. A filesystem that rejects non-UTF-8 names produces
+`non_utf8_fixture_supported = false`; require the Linux record with `true` for that
+cwd boundary. Partial `results.json` output from a failed run is not a pass.
+
+Also run `task test` on each platform for fragmented/cancelled frames, partial shell
+reads, frame bounds, command/file limits, and process cleanup regressions. Suite
+results and acquisition timings do not replace interactive PTY evidence. Follow
+[benchmarking.md](benchmarking.md) for timing definitions and host requirements.

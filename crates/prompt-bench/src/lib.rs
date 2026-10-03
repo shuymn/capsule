@@ -1,8 +1,6 @@
 //! Shared helpers for the prompt benchmark binary (stats, PATH construction, report types).
 
 #![warn(clippy::pedantic, clippy::nursery, clippy::cargo)]
-// `capsule-protocol` pulls `tokio`, which pins a different `hashbrown` than other workspace edges.
-#![allow(clippy::multiple_crate_versions)]
 
 use std::path::{Path, PathBuf};
 
@@ -11,16 +9,11 @@ use serde::Serialize;
 /// Default samples per workload (excluding warm-up).
 pub const DEFAULT_ITERATIONS: usize = 30;
 
-/// Max wait for the first response line (`RenderResult`) per request.
-pub const RENDER_RESULT_WAIT_SECS: u64 = 10;
-
-/// Max wait for an optional second line (`Update`) after `RenderResult`.
+/// Max wait for the worker's explicit completion response or a subprocess.
 ///
-/// The daemon omits `Update` when slow modules do not change the composed prompt (typical for
-/// non-repository paths). A multi-second wait here would stall the whole workload on every
-/// iteration; this cap must stay above real slow-path latency for the benchmark repos (see
-/// `docs/benchmarking.md`).
-pub const UPDATE_WAIT_MS: u64 = 250;
+/// Missing completion never counts as a successful sample, even when an initial
+/// response has already arrived.
+pub const ACQUISITION_WAIT_SECS: u64 = 10;
 
 /// Linear interpolation percentile on a **pre-sorted** slice, matching the `CPython`
 /// `statistics` linear method.
@@ -71,7 +64,7 @@ pub fn summarize(values: &[f64]) -> SummaryStats {
     } else {
         values.iter().sum::<f64>() / count as f64
     };
-    let stddev_ms = sample_stddev(values);
+    let stddev_ms = sample_stddev(values, mean_ms);
     let mut sorted = values.to_vec();
     sorted.sort_by(f64::total_cmp);
     SummaryStats {
@@ -86,12 +79,11 @@ pub fn summarize(values: &[f64]) -> SummaryStats {
 }
 
 #[allow(clippy::cast_precision_loss)]
-fn sample_stddev(values: &[f64]) -> f64 {
+fn sample_stddev(values: &[f64], mean: f64) -> f64 {
     let n = values.len();
     if n <= 1 {
         return 0.0;
     }
-    let mean = values.iter().sum::<f64>() / n as f64;
     let sum_sq: f64 = values.iter().map(|x| (x - mean).powi(2)).sum();
     (sum_sq / (n as f64 - 1.0)).sqrt()
 }
@@ -103,6 +95,8 @@ pub struct ScenarioResult {
     pub workload: String,
     pub fast: SummaryStats,
     pub slow: Option<SummaryStats>,
+    /// Verified completed rustc invocations in the measured samples (excludes warm-up).
+    pub toolchain_acquisitions: usize,
 }
 
 /// Environment metadata recorded alongside results.
@@ -118,19 +112,22 @@ pub struct RunMetadata {
     pub cpu: String,
 }
 
-/// Resolve `name` on `PATH` or return `path` if it exists as a file.
+/// Resolve a bare name on `PATH`, or use an explicit executable path.
+///
+/// Preserve symlinks: tools such as rustup select behavior from the invoked filename.
 ///
 /// # Errors
 ///
 /// Returns an error if the binary cannot be resolved.
 pub fn resolve_binary(path_or_name: &Path, label: &str) -> anyhow::Result<PathBuf> {
-    if let Some(p) = which(path_or_name) {
-        return Ok(p);
-    }
-    if path_or_name.is_file() {
-        return path_or_name
-            .canonicalize()
-            .map_err(|e| anyhow::anyhow!("{label} not found: {}: {e}", path_or_name.display()));
+    if path_or_name.components().count() > 1 || path_or_name.is_absolute() {
+        if path_or_name.is_file() && is_executable(path_or_name) {
+            return std::path::absolute(path_or_name).map_err(|e| {
+                anyhow::anyhow!("{label} not found: {}: {e}", path_or_name.display())
+            });
+        }
+    } else if let Some(path) = which(path_or_name) {
+        return Ok(path);
     }
     anyhow::bail!("{label} not found: {}", path_or_name.display())
 }
@@ -141,7 +138,7 @@ fn which(name: &Path) -> Option<PathBuf> {
     for dir in std::env::split_paths(&path_var) {
         let candidate = dir.join(file_name);
         if candidate.is_file() && is_executable(&candidate) {
-            return candidate.canonicalize().ok();
+            return std::path::absolute(candidate).ok();
         }
     }
     None
@@ -160,7 +157,7 @@ fn is_executable(path: &Path) -> bool {
     }
 }
 
-/// Build `PATH` for the benchmark daemon: capsule, starship, git, optional rustc, plus `/usr/bin` and `/bin`.
+/// Build the fixture `PATH`: capsule, starship, git, optional rustc, plus `/usr/bin` and `/bin`.
 #[must_use]
 pub fn build_path_env(
     capsule_bin: &Path,
@@ -169,24 +166,16 @@ pub fn build_path_env(
     rustc_bin: Option<&Path>,
 ) -> String {
     let sep = if cfg!(windows) { ';' } else { ':' };
-    let mut bin_dirs: Vec<PathBuf> = Vec::new();
+    let mut bin_dirs = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for b in [capsule_bin, starship_bin, git_bin] {
-        if let Some(parent) = b.parent()
-            && seen.insert(parent.to_path_buf())
-        {
-            bin_dirs.push(parent.to_path_buf());
-        }
-    }
-    if let Some(r) = rustc_bin
-        && let Some(parent) = r.parent()
-        && seen.insert(parent.to_path_buf())
-    {
-        bin_dirs.push(parent.to_path_buf());
-    }
-    for d in [Path::new("/usr/bin"), Path::new("/bin")] {
-        if seen.insert(d.to_path_buf()) {
-            bin_dirs.push(d.to_path_buf());
+    let directories = [capsule_bin, starship_bin, git_bin]
+        .into_iter()
+        .chain(rustc_bin)
+        .filter_map(Path::parent)
+        .chain([Path::new("/usr/bin"), Path::new("/bin")]);
+    for directory in directories {
+        if seen.insert(directory) {
+            bin_dirs.push(directory);
         }
     }
     bin_dirs
@@ -214,21 +203,63 @@ mod tests {
         assert!((s.min_ms - 10.0).abs() < f64::EPSILON);
         assert!((s.p50_ms - 20.0).abs() < f64::EPSILON);
         assert!((s.max_ms - 30.0).abs() < f64::EPSILON);
+        assert!((s.mean_ms - 20.0).abs() < f64::EPSILON);
+        assert!((s.stddev_ms - 10.0).abs() < f64::EPSILON);
+        for values in [&[][..], &[20.0][..]] {
+            assert!(summarize(values).stddev_ms.abs() < f64::EPSILON);
+        }
     }
 
     #[test]
     #[cfg(unix)]
-    fn path_env_deduplicates_directories() {
-        let path = build_path_env(
-            Path::new("/opt/homebrew/bin/capsule"),
-            Path::new("/opt/homebrew/bin/starship"),
-            Path::new("/opt/homebrew/bin/git"),
-            None,
-        );
-        let parts: Vec<&str> = path.split(':').collect();
-        assert!(parts.contains(&"/bin"));
-        assert!(parts.contains(&"/usr/bin"));
-        let unique: std::collections::HashSet<_> = parts.iter().copied().collect();
-        assert_eq!(unique.len(), parts.len());
+    fn path_env_preserves_priority_and_deduplicates_directories() {
+        for (binaries, rustc, expected) in [
+            (
+                [
+                    "/opt/homebrew/bin/capsule",
+                    "/opt/homebrew/bin/starship",
+                    "/opt/homebrew/bin/git",
+                ],
+                None,
+                "/opt/homebrew/bin:/usr/bin:/bin",
+            ),
+            (
+                [
+                    "/tools/capsule/capsule",
+                    "/usr/bin/starship",
+                    "/tools/git/git",
+                ],
+                Some("/tools/rust/rustc"),
+                "/tools/capsule:/usr/bin:/tools/git:/tools/rust:/bin",
+            ),
+            (
+                ["capsule", "starship", "git"],
+                Some("/rustc"),
+                ":/:/usr/bin:/bin",
+            ),
+        ] {
+            let [capsule, starship, git] = binaries.map(Path::new);
+            assert_eq!(
+                build_path_env(capsule, starship, git, rustc.map(Path::new)),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn explicit_binary_path_preserves_multicall_symlink() -> anyhow::Result<()> {
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+        let dir = tempfile::tempdir()?;
+        let target = dir.path().join("proxy");
+        std::fs::write(&target, "#!/bin/sh\nexit 0\n")?;
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755))?;
+        let executable = dir.path().join("sh");
+        symlink(&target, &executable)?;
+
+        assert_eq!(resolve_binary(&executable, "test")?, executable);
+        assert!(resolve_binary(&dir.path().join("missing/sh"), "test").is_err());
+        Ok(())
     }
 }

@@ -10,9 +10,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && apt-get install --yes --no-install-recommends git zsh ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-RUN rustup toolchain install nightly --profile default
+RUN rustup toolchain install stable --profile minimal
 
-ENV RUSTUP_TOOLCHAIN=nightly
+ENV RUSTUP_TOOLCHAIN=stable
 
 WORKDIR /src
 
@@ -24,6 +24,8 @@ RUN useradd --create-home --shell /usr/bin/zsh demo
 
 RUN mkdir -p /home/demo/.config/capsule /home/demo/capsule \
     && cat >/home/demo/.config/capsule/config.toml <<'EOF'
+schema_version = 2
+
 [time]
 disabled = false
 
@@ -39,10 +41,8 @@ connector = "via"
 [module.when]
 files = ["Cargo.toml"]
 
-[[module.source]]
-name = "version"
-command = ["/bin/sh", "-lc", "sleep 0.8; /usr/local/cargo/bin/rustc --version"]
-regex = 'rustc\s+(\S+)-nightly'
+[module.values]
+version = [{ command = ["/bin/sh", "-lc", "sleep 0.1; /usr/local/cargo/bin/rustc --version"], regex = 'rustc\s+(\S+)' }]
 
 [module.style]
 fg = "red"

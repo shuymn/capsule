@@ -1,220 +1,56 @@
-# Architecture Baseline — capsule v1
+# Architecture
 
-## Goal
+Read this file when changing session ownership, acquisition, rendering, or shell integration. Keep zsh input responsive on macOS and Linux and minimize the code one maintainer must own. Support the two-line prompt, directory, Git, status/vi mode, duration, optional time, configured values, styles, and reload.
 
-macOS + zsh 専用の Rust 製プロンプトエンジン。常駐 daemon が prompt の計算・レイアウト・レンダリングを担い、zsh 側は coproc relay 経由の薄い glue に徹する push-lite アーキテクチャ。
+## Ownership
 
-## Core Boundaries
+Run one worker per interactive zsh session on Tokio's current-thread runtime. The public CLI is `init zsh` and `preset`; `worker` and `fd-config` are internal commands.
 
-```mermaid
-graph LR
-    cli["capsule-cli<br/><small>CLI entry point (clap dispatch)</small>"]
-    core["capsule-core<br/><small>module system, rendering,<br/>daemon, config, init</small>"]
-    protocol["capsule-protocol<br/><small>wire format (netstring +<br/>message + async codec)</small>"]
-    sys["capsule-sys<br/><small>macOS FFI<br/>(launch_activate_socket)</small>"]
+| Owner | Responsibility |
+| --- | --- |
+| [init.zsh](../crates/core/src/init/init.zsh) | Shell generation, full exported snapshot, nonblocking pipe buffers, fallback, zle hooks |
+| [worker.rs](../crates/cli/src/worker.rs) | One active acquisition generation, newest pending replacement, reload, observations, response writer |
+| [plan.rs](../crates/core/src/plan.rs) | Immutable schema-v2 ConfigPlan: validated sources, conditions, indexed formats, display settings |
+| [acquire.rs](../crates/core/src/acquire.rs), [plan/acquire.rs](../crates/core/src/plan/acquire.rs), [git.rs](../crates/core/src/git.rs) | Bounded env/file/argv acquisition, sequential fallback, Git CLI and directory facts |
+| [view.rs](../crates/core/src/view.rs) | Pure evaluation, arbitration, structured text/style, grapheme layout, final zsh serialization |
+| [session.rs](../crates/protocol/src/session.rs) | Authoritative byte-frame grammar and persistent cancellation-safe framing |
 
-    cli --> core --> protocol
-    cli --> sys
-```
+Use generic configuration for tool-specific values; see [extending.md](extending.md). Presets embed [examples/config.toml](../examples/config.toml). Keep acquisition I/O outside View.
 
-依存方向は一方向。unsafe は sys crate のみに閉じ込め。
+## Behavioral contract
 
-## Constraints
+- WHEN acquisition is pending, Capsule SHALL accept input using local information or fallback and preserve the typed buffer/cursor during redraw.
+- WHEN a command executes or cwd changes, Capsule SHALL start a generation, reload configuration, capture cwd and the full exported environment as OS bytes, and hide unvalidated external results.
+- WHEN only width, keymap, or empty Enter changes the prompt, Capsule SHALL reuse the generation's observations without reacquisition.
+- WHEN spawning a command, Capsule SHALL use direct argv and replace its environment with the snapshot, preserving absent versus empty variables and non-UTF-8 bytes. Non-exported parameters, aliases, and functions are excluded.
+- WHEN a snapshot exceeds its bound, Capsule SHALL omit acquisition rather than truncate the snapshot. Diagnostics SHALL exclude environment contents.
+- WHEN configuration validation fails, Capsule SHALL reject the entire new plan, report the reason, and retain the last valid plan; a fresh worker uses defaults.
+- WHEN a condition is pending, false, or failed, Capsule SHALL hide its module. WHEN a required value is unavailable, Capsule SHALL hide the module; unavailable optional sections SHALL be omitted.
+- WHEN a candidate is missing, fails extraction, fails execution, or times out, Capsule SHALL try the next candidate. WHEN a candidate is ready, including an empty value, Capsule SHALL stop fallback. Generation cancellation SHALL end acquisition.
+- WHEN observations arrive in any order, Capsule SHALL retain declaration order and select at most one ready module per arbitration group across both slots, using lowest priority then declaration order.
+- WHEN rendering data, Capsule SHALL display controls as data, keep text/style separate through grapheme-safe width adjustment, and serialize styles and zsh prompt escapes last.
+- WHEN a response's generation differs from the current shell generation, Capsule SHALL leave the prompt unchanged.
+- WHEN an accepted response leaves the displayed prompt unchanged, Capsule SHALL skip redraw; a matching result SHALL still replace fallback.
+- WHEN I/O is partial or backpressured, Capsule SHALL retain framing state and complete the partial frame before replacement, or reset transport. Unterminated EOF frames SHALL be rejected; read credits SHALL resume pending shell writes.
 
-- Target: macOS + zsh (Linux は socket path fallback のみ)
-- Single binary (`capsule`) で daemon / connect / init を提供
-- Runtime: tokio current_thread
-- Lint: unsafe_code 禁止 (sys 除く)、unwrap/expect/todo/dbg!/panic 禁止 (Cargo.toml lints)
-- CI: macOS runner
+Keep acquisition states distinct: `Pending` is unfinished, `Ready` contains a value, `Missing` has no matching source data, and `Failed` retains the acquisition error. Decode OS bytes only at the display boundary. Trim file/command output, preserve environment text, and extract regex capture group 1.
 
-## System Flow
+## Resources and shutdown
 
-### Startup
+| Boundary | Limit |
+| --- | --- |
+| Escaped request / response frame, excluding LF | 256 KiB / 64 KiB |
+| Config file / one source value | 64 KiB / 64 KiB |
+| Concurrent subprocesses / blocking file jobs | 4 / 2 per worker |
+| One I/O operation, including capacity wait | 500 ms |
+| Acquisition generation / process cleanup grace | 2 s / 100 ms |
+| Modules / total values / total candidates | 64 / 256 / 1024 |
+| Values per module / candidates per value | 16 / 8 |
+| Format source / optional nesting depth | 4 KiB / 8 |
+| Compiled regex size / nesting | 64 KiB / 32 |
 
-```mermaid
-sequenceDiagram
-    participant zsh as zsh (.zshrc)
-    participant connect as capsule connect
-    participant daemon as daemon
+Keep permit ownership with blocking tasks and delayed reapers until they finish. New generations must not accumulate replacement work behind abandoned operations.
 
-    zsh->>zsh: eval "$(capsule init zsh)"
-    zsh->>connect: coproc start
+Each command owns a process group. Clean up the group and reap the direct child after completion, cancellation, timeout, output overflow, or worker shutdown. Bound pipe cleanup when descendants retain stdout. Commands that deliberately leave the group/session are outside this lifecycle guarantee.
 
-    connect->>daemon: socket connect attempt
-    alt daemon not running
-        connect->>connect: spawn "capsule daemon"
-        connect->>connect: wait for socket (up to 1s)
-    end
-
-    connect->>daemon: Hello (version, build_id)
-    daemon->>connect: HelloAck (version, build_id, env_var_names)
-
-    alt build_id mismatch
-        connect->>daemon: kill (SIGTERM)
-        connect->>connect: re-spawn daemon
-        connect->>daemon: re-connect
-    end
-
-    connect->>zsh: "E:VAR1,VAR2,...\n" (env metadata)
-    Note over connect: enter relay loop
-```
-
-### Per-Prompt Request Pipeline
-
-```mermaid
-sequenceDiagram
-    participant zsh
-    participant connect as capsule connect
-    participant daemon
-
-    Note over zsh: precmd fires<br/>capture $?, duration
-
-    zsh->>connect: tab-separated request<br/>(gen, exit, dur, cwd, cols, keymap, env_meta)
-    connect->>daemon: netstring Request
-
-    Note over daemon: run fast modules<br/>(directory, time, cmd_duration,<br/>character, fast custom)
-    Note over daemon: check slow cache
-
-    daemon->>connect: netstring RenderResult
-    connect->>zsh: "R\tgen\tleft1\tleft2\n"
-    Note over zsh: set PROMPT
-
-    alt cache miss
-        Note over daemon: spawn_blocking
-        par
-            Note over daemon: git status --porcelain=v2
-        and
-            Note over daemon: slow custom modules (commands)
-        end
-        Note over daemon: update cache, re-compose prompt
-        opt prompt changed
-            daemon->>connect: netstring Update
-            connect->>zsh: "U\tgen\tleft1\tleft2\n"
-            Note over zsh: zle reset-prompt
-        end
-    end
-```
-
-### Concurrent Slow Compute Coalescing
-
-同一 cwd + config generation の slow compute が同時に複数発生した場合、最初のリクエストだけが実際に spawn し、後続は watch channel で結果を待つ。
-
-```mermaid
-sequenceDiagram
-    participant A as request A
-    participant state as SharedState
-    participant compute as slow compute
-    participant B as request B
-
-    A->>state: cache miss, no inflight
-    state->>state: insert watch::Sender
-    A->>compute: spawn slow compute
-    A->>A: send RenderResult (fast only)
-    A->>state: subscribe (Receiver)
-
-    Note over compute: running...
-
-    B->>state: cache miss, inflight exists
-    B->>B: send RenderResult (fast only)
-    B->>state: subscribe (Receiver)
-
-    compute->>state: insert result into cache
-    compute->>state: notify Sender
-
-    state->>A: Receiver notified
-    state->>B: Receiver notified
-    Note over A,B: each sends Update if prompt changed
-```
-
-### Config Hot-Reload
-
-```mermaid
-flowchart TD
-    A[prompt request arrives] --> B[stat config file]
-    B --> C{mtime changed?}
-    C -->|no| D[use current config]
-    C -->|yes| E[re-read + re-parse TOML]
-    E --> F[increment config generation]
-    F --> G[clear slow cache]
-    G --> H[use new config]
-```
-
-### Daemon Lifecycle (Bound Mode)
-
-```mermaid
-flowchart TD
-    A[capsule daemon start] --> B[flock ~/.capsule/capsule.lock]
-    B --> C[bind ~/.capsule/capsule.sock]
-    C --> D[record socket inode]
-    D --> E[accept loop]
-
-    E --> F{event?}
-    F -->|client connects| G[spawn connection handler]
-    G --> E
-    F -->|inode check interval 5s| H{socket inode matches?}
-    H -->|yes| E
-    H -->|no / file removed| I[shutdown<br/>do NOT remove foreign socket]
-    F -->|SIGTERM| J[shutdown + remove socket]
-```
-
-## Prompt Layout
-
-```
-Line 1 (info):   [directory] on [icon branch [indicators]] via [icon value] took [duration]
-Line 2 (input):  at [time] [character]
-```
-
-レスポンシブ truncation: terminal width を超える場合、(1) directory を truncate、(2) line 1 の右側セグメントを順に drop。
-
-## Key Tech Decisions
-
-| Decision | Choice | Rationale |
-|---|---|---|
-| Runtime | tokio current_thread | 1 session 1 connection。multi-thread の overhead 不要 |
-| IPC | Unix domain socket | macOS native、低遅延、zsh から coproc 経由で接続 |
-| Wire format | daemon-connect: Netstring + LF / shell-connect: Tab + LF | daemon 間は binary-safe netstring。shell 間は zsh native の tab split で十分 |
-| Git | `Command::new("git")` + GitProvider trait | v1 は CLI 呼び出し。trait で将来の gix 移行に備える |
-| Daemon startup | launchd socket activation (macOS), standalone fallback | `launch_activate_socket` FFI (sys crate) → fd → listener。standalone: flock + bind |
-| zsh integration | coproc protocol translator (`capsule connect`) | zsocket 不要。connect が netstring - tab 変換を担い、shell は protocol 非依存 |
-| Socket path | `~/.capsule/capsule.sock` | launchd plist で $HOME 展開可能。sun_path 104 bytes 制限回避 |
-| Session ID | 64-bit random hex (16 chars) | PID は再利用される。connect 側で生成 |
-| Generation | u64 monotonic counter (per-session) | stale request 検出 + slow update 破棄 |
-| Module trait | sync (daemon が slow module を spawn_blocking) | async trait object の制約を回避 |
-| Config | TOML, mtime-based hot-reload | daemon 再起動不要。parse error 時は defaults fallback |
-| Cache | LRU (1024 entries, key = cwd + config_generation + dep_hash) | slow module 結果の再利用。dep_hash が env/file 依存を反映するため TTL 不要 |
-| Slow coalescing | watch channel per cache key | 同一 cwd への concurrent request で重複 spawn を防止 |
-
-## Intentionally Not in Core
-
-| Capability | Why not core | Extension path |
-|---|---|---|
-| Toolchain display | Per-language variance | `[[module]]` / `capsule preset` |
-| 3+ line layouts | v1 Starship-compatible 2 lines | `slot = "line2"` only; line-1 order fixed |
-| glob `when.files` | perf / escaping | exact filename match |
-| truecolor / style DSL | out of Theme 25 scope | `[color_map]` + `StyleConfig` |
-| Third-party Rust modules | sealed trait policy | config DSL (`[[module]]`) |
-| Linux / non-zsh shells | target platform scope | best-effort fallback |
-| org-wide config registry | single user config path | shared preset TOML + manual paste |
-
-Additional v1 non-goals live in [TODO.md](../TODO.md) (Open Questions).
-
-## Request Pipeline Stages
-
-Named stages in `crates/core/src/daemon/request/pipeline.rs` and `handle_request`:
-
-| Stage | Role | Extension today |
-|---|---|---|
-| `ConfigSnapshot` | User config hot-reload (mtime) | — |
-| `GatedPromptRequest` | Stale generation discard | — |
-| `CollectedFacts` | cwd env/file facts, cache key | — |
-| Fast detect | env/file `[[module]]` | module `slot` at compose |
-| Slow detect | command sources + git | same |
-| `compose_prompt` | 2-line layout | `line1` / `line2` slots |
-
-See [extending.md](extending.md) for agent workflow.
-
-## Revisit Trigger
-
-- multi-user / multi-session を同一 daemon で扱う必要 -> runtime を multi-thread に変更
-- gix が十分安定 -> GitProvider 実装を差し替え
-- Linux を first-class support -> socket path、zsh 前提の再検討
+Use rustix for safe OS operations and CLOEXEC shell descriptors. Shell exit/exec closes the transport; worker EOF/signals cancel active work. Preserve these boundaries with the real-platform checks in [testing.md](testing.md). Use [migration.md](migration.md) for installed-service transitions.

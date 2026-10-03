@@ -7,7 +7,7 @@ reconcile:
   labels: authoritative
   rulesets: authoritative
 spec:
-  description: Daemon-backed Rust prompt engine for zsh with async updates and hot-reloadable modules.
+  description: Rust prompt engine for zsh with per-session workers, async updates, and generic TOML modules.
   visibility: public
   archived: false
   topics:
@@ -15,7 +15,6 @@ spec:
     - rust
     - zsh
     - async
-    - daemon
     - linux
     - prompt-engine
     - shell-prompt

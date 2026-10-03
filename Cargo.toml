@@ -35,16 +35,18 @@ missing_panics_doc = "warn"
 [workspace.dependencies]
 capsule-core = { path = "crates/core" }
 capsule-protocol = { path = "crates/protocol" }
-capsule-sys = { path = "crates/sys" }
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 toml = "1.0"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unicode-width = "0.2"
 tokio = { version = "1", features = ["rt", "net", "io-util", "io-std", "signal", "sync", "time", "process", "macros"] }
+tokio-util = { version = "0.7", features = ["codec", "rt"] }
+rustix = { version = "1", features = ["fs", "process"] }
+unicode-segmentation = "1"
+futures-core = { version = "0.3", default-features = false }
 time = { version = "0.3", features = ["local-offset"] }
 regex-lite = "0.1"
 tempfile = "3"
