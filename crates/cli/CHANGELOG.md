@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1](https://github.com/shuymn/capsule/compare/v1.0.0...v1.0.1) - 2026-10-03
+
+### Fixed
+
+- *(prompt)* retain settled display on commands
+- *(prompt-bench)* serialize executable tests
+
+### Other
+
+- *(pty)* verify prompt revalidation safely
+- *(view)* compare empty values directly
+- *(deps)* update actions-rust-lang/setup-rust-toolchain action to v2
+- *(deps)* update dependency git-cliff to v2.14.2
+- *(deps)* update rust crate rustix to v1.1.5
+- *(deps)* update taiki-e/install-action action to v2.87.22
+- *(deps)* update rust crate thiserror to v2.0.21
+- *(deps)* update rust crate clap to v4.6.7
+- *(deps)* update rust crate toml to v1.1.6
+
 ## [1.0.0](https://github.com/shuymn/capsule/compare/v0.4.0...v1.0.0) - 2026-10-03
 
 ### Fixed
