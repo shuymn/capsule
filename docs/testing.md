@@ -34,19 +34,36 @@ uv run --no-project scripts/session_pty.py
 In Linux images without uv, run `python3 scripts/session_pty.py` after the build.
 
 The default binary is `target/debug/capsule`; use `--binary <path>` for another
-build. The script prints its artifact directory containing `results.json` and each
-shell's `terminal.log`. Use `--output <new-directory>` to choose a fresh destination.
+build, including a renamed executable. Require that exact build for `init`,
+`worker`, and `fd-config`: the driver puts a disposable `capsule` symlink first on
+each shell's PATH and probes a renamed target beside a conflicting `capsule`.
+The script prints its artifact directory containing `results.json` and each shell's
+`terminal.log`. Use `--output <new-directory>` to choose a fresh destination.
+
+The flicker setup directly launches each fresh Git/tool executable once before
+starting zsh, with a separate 8s timeout, EOF stdin, disposable `HOME`, cwd
+`$HOME/work`, and fixture bin first on `PATH`. Require successful exit, exact
+output, and done markers. Verify the setup-only tool count is exactly one, then
+remove the count and both done markers before shell startup. Keep the production
+500ms deadline, generation counts, accepted-completion witnesses, and gate
+deadlines unchanged; do not retry failed scenarios.
 
 Require successful exit and all contract records:
 
 | Scope | Required behavior |
 |---|---|
+| Binary selection | A renamed selected executable supplies init, worker, and fd-config even beside a different executable named capsule |
+| Cleanup safety | Confirmed-dead worker identities are retired; historical PIDs never become signal targets after reuse |
 | One shell | One worker; empty Enter preserves displayed information; resize/keymap changes reuse acquisition |
+| Revalidation | With file-controlled slow acquisition and unchanged cwd/environment/config, ordinary commands preserve Git/tool information in every intermediate frame and actual shell prompt assignment, including precmd |
+| Replacement | Changed results replace retained display at completion; Missing, Failed, and false conditions remove obsolete information |
+| Invalidation | Changed cwd/exported environment immediately discard retained display; accepted changed configuration discards it after reload |
+| Local display | Status, duration, resize, and keymap changes render while acquisition is held pending |
 | Snapshot | Exported environment bytes and cwd reach acquisition; unset and unexported variables stay absent |
 | Input | Delayed prompt updates preserve the typed buffer and cursor |
 | Transport | A backpressured large request completes without further keyboard input; stale/future responses cannot replace the prompt |
 | Recovery | Worker failure selects fallback; the next command starts a replacement worker |
-| Exit and exec | Pipes close; worker and active acquisition descendants terminate |
+| Exit and exec | Pipes close; worker and active acquisition descendants terminate; exec cleanup is checked after a replacement-ready marker and while the controlled replacement remains alive |
 | Ten shells | Ten distinct workers, one initial acquisition each, and no workers left active after exit |
 
 Record each platform separately. A filesystem that rejects non-UTF-8 names produces
@@ -54,6 +71,9 @@ Record each platform separately. A filesystem that rejects non-UTF-8 names produ
 cwd boundary. Partial `results.json` output from a failed run is not a pass.
 
 Also run `task test` on each platform for fragmented/cancelled frames, partial shell
-reads, frame bounds, command/file limits, and process cleanup regressions. Suite
+reads, frame bounds, command/file limits, and process cleanup regressions. Require
+the shell regression with real initialization and installed precmd order to keep
+retained dollar/backtick payloads literal when a preserved user hook toggles
+`PROMPT_SUBST` in either direction, before any new response is released. Suite
 results and acquisition timings do not replace interactive PTY evidence. Follow
 [benchmarking.md](benchmarking.md) for timing definitions and host requirements.
