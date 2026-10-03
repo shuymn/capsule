@@ -2,6 +2,11 @@
 
 set -euo pipefail
 
+# Hooks export repository-local Git state; fixtures must not reuse that state.
+while IFS= read -r git_env_var; do
+	unset "${git_env_var}"
+done < <(git rev-parse --local-env-vars)
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 check_script="${repo_root}/scripts/release/check.sh"
 version_script="${repo_root}/scripts/release/version.sh"
