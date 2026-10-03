@@ -700,6 +700,18 @@ fn worker_result(
 }
 
 #[cfg(all(test, unix))]
+fn lock_executable_fixtures() -> anyhow::Result<std::sync::MutexGuard<'static, ()>> {
+    // A child spawned by another test can inherit a writable script FD before
+    // CLOEXEC closes it, making exec fail with ETXTBSY even after fs::write returns.
+    // Serialize only executable-fixture tests, including their other OS spawns.
+    static EXECUTABLE_FIXTURES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    EXECUTABLE_FIXTURES
+        .lock()
+        .map_err(|error| anyhow::anyhow!("executable fixture lock poisoned: {error}"))
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
@@ -763,6 +775,7 @@ mod tests {
 
     #[test]
     fn probe_rejects_skipped_failed_and_unfinished_acquisitions() -> anyhow::Result<()> {
+        let _fixtures = lock_executable_fixtures()?;
         let root = tempfile::tempdir()?;
         let probe = probe(root.path())?;
         let before = probe.counts()?;
@@ -781,6 +794,7 @@ mod tests {
 
     #[test]
     fn starship_requires_success_output_and_exact_command_count() -> anyhow::Result<()> {
+        let _fixtures = lock_executable_fixtures()?;
         let root = tempfile::tempdir()?;
         let probe = probe(root.path())?;
         let path_env = format!("{}:{}", probe.bin_dir.display(), std::env::var("PATH")?);
@@ -796,23 +810,31 @@ mod tests {
         )?;
         measure_starship(&starship, root.path(), &environment, true)?;
         executable(&starship, "#!/bin/sh\nexit 42\n")?;
-        assert!(measure_starship(&starship, root.path(), &environment, false).is_err());
+        assert!(
+            measure_starship(&starship, root.path(), &environment, false)
+                .is_err_and(|error| error.to_string().starts_with("starship failed:"))
+        );
         executable(
             &starship,
             "#!/bin/sh\nprintf '%s\\n' 'rustc 1.99.0 (fixture)'\n",
         )?;
-        assert!(measure_starship(&starship, root.path(), &environment, true).is_err());
+        assert!(
+            measure_starship(&starship, root.path(), &environment, true)
+                .is_err_and(|error| error.to_string().starts_with("rustc acquisition mismatch:"))
+        );
         Ok(())
     }
 
     #[test]
-    fn subprocess_deadline_returns_an_error() {
+    fn subprocess_deadline_returns_an_error() -> anyhow::Result<()> {
+        let _fixtures = lock_executable_fixtures()?;
         assert!(
             bounded_output_with_timeout(
                 Command::new("sh").args(["-c", "exec sleep 30"]),
                 Duration::from_millis(20)
             )
-            .is_err()
+            .is_err_and(|error| error.to_string().starts_with("subprocess exceeded"))
         );
+        Ok(())
     }
 }

@@ -407,25 +407,28 @@ mod tests {
     #[tokio::test]
     async fn shutdown_closes_input_and_drains_output_before_reaping() -> anyhow::Result<()> {
         let temp = tempfile::tempdir()?;
-        let probe = probe(temp.path())?;
-        let binary = temp.path().join("worker");
-        let shell = capsule_prompt_bench::resolve_binary(Path::new("sh"), "shell")?;
-        fs::write(
-            &binary,
-            format!(
-                "#!{}\ncat >/dev/null\nprintf '%s\\n' '{}'\n",
-                shell.display(),
-                "K".repeat(MAX_RESPONSE - 1)
-            ),
-        )?;
-        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755))?;
-        let path_env = std::env::var("PATH")?;
-        let environment = BenchmarkEnvironment {
-            home_dir: temp.path(),
-            probe: &probe,
-            path_env: &path_env,
+        let mut worker = {
+            let _fixtures = crate::lock_executable_fixtures()?;
+            let probe = probe(temp.path())?;
+            let binary = temp.path().join("worker");
+            let shell = capsule_prompt_bench::resolve_binary(Path::new("sh"), "shell")?;
+            fs::write(
+                &binary,
+                format!(
+                    "#!{}\ncat >/dev/null\nprintf '%s\\n' '{}'\n",
+                    shell.display(),
+                    "K".repeat(MAX_RESPONSE - 1)
+                ),
+            )?;
+            fs::set_permissions(&binary, fs::Permissions::from_mode(0o755))?;
+            let path_env = std::env::var("PATH")?;
+            let environment = BenchmarkEnvironment {
+                home_dir: temp.path(),
+                probe: &probe,
+                path_env: &path_env,
+            };
+            Worker::spawn(&binary, &environment)?
         };
-        let mut worker = Worker::spawn(&binary, &environment)?;
         worker.shutdown().await?;
         assert!(worker.child.try_wait()?.is_some());
         Ok(())

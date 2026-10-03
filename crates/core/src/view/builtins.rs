@@ -191,6 +191,6 @@ mod tests {
         status.ahead = 0;
         status.behind = 1;
         assert_eq!(indicators(&status), "=$✘»!+?⇣");
-        assert!(indicators(&GitStatus::default()).is_empty());
+        assert_eq!(indicators(&GitStatus::default()), "");
     }
 }
