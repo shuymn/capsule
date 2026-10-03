@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 
+use capsule_protocol::session::Request;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 const INIT: &str = include_str!("../../core/src/init/init.zsh");
@@ -29,7 +30,7 @@ fn functions() -> String {
     format!(
         "zle() {{ :; }}\n{}\nzmodload zsh/system\nzmodload zsh/zselect\n\
         typeset -gi ERRNO=0 _CAPSULE_GENERATION=2 _CAPSULE_FD_IN=0 _CAPSULE_FD_OUT=0\n\
-        typeset -g _CAPSULE_RX='' _CAPSULE_TX='' _CAPSULE_PENDING='' _CAPSULE_FALLBACK=fallback _CAPSULE_PROMPT_SUBST=off\n\
+        typeset -g _CAPSULE_RX='' _CAPSULE_TX='' _CAPSULE_PENDING='' _CAPSULE_FALLBACK=fallback _CAPSULE_PROMPT_SUBST=off _CAPSULE_RENDERED=unchanged\n\
         PROMPT=unchanged\n",
         INIT.replace("\n_capsule_init\n", "\n")
     )
@@ -105,6 +106,44 @@ fn unchanged_display_skips_redraw_but_restores_fallback() -> Result {
     Ok(())
 }
 
+#[test]
+fn preserved_hooks_keep_options_order_and_continue_after_nonzero_returns() -> Result {
+    let home = tempfile::tempdir()?;
+    let script = format!(
+        "precmd_functions=(first missing_hook last)\n\
+        first() {{ first_status=$?; setopt promptsubst; order+=first; return $hook_status; }}\n\
+        last() {{ last_status=$?; order+=last; return 0; }}\n\
+        {INIT}\n\
+        _capsule_finalize_prompt() {{ finalized=1; }}\n{}",
+        r#"
+for hook_status in 0 7; do
+    unsetopt promptsubst
+    order='' finalized=0
+    (exit 9)
+    _capsule_run_precmd_hooks
+    actual=$?
+    [[ $actual == 0 && $finalized == 1 && ${options[promptsubst]} == on ]] || exit 10
+    [[ $order == firstlast ]] || exit 11
+    [[ $first_status == 9 && $last_status == 9 ]] || exit 12
+done
+"#
+    );
+    let result = Command::new("zsh")
+        .args(["-f", "-c", &script])
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").ok_or("missing PATH")?)
+        .env("HOME", home.path())
+        .env("ZDOTDIR", home.path())
+        .output()?;
+    assert!(
+        result.status.success(),
+        "hook dispatch check failed ({}): {}",
+        result.status,
+        String::from_utf8_lossy(&result.stderr)
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn retained_prompt_tracks_user_hook_option_changes_before_a_response() -> Result {
     let home = tempfile::tempdir()?;
@@ -114,7 +153,7 @@ async fn retained_prompt_tracks_user_hook_option_changes_before_a_response() -> 
         user_precmd() {{ if [[ $next_subst == on ]]; then setopt promptsubst; else unsetopt promptsubst; fi; }}\n\
         {INIT}\nzmodload zsh/zselect\n{}",
         r#"
-[[ ${precmd_functions[*]} == '_capsule_precmd user_precmd _capsule_finalize_prompt' ]] || exit 9
+[[ ${precmd_functions[*]} == '_capsule_precmd _capsule_run_precmd_hooks' && ${_CAPSULE_PRECMD_HOOKS[*]} == user_precmd ]] || exit 9
 exec {_CAPSULE_FD_OUT}<&0 {_CAPSULE_FD_IN}>/dev/null
 command "$CAPSULE_TEST_BIN" fd-config <&$_CAPSULE_FD_OUT >&$_CAPSULE_FD_IN || exit 10
 unsetopt promptsubst
@@ -172,6 +211,147 @@ print -r -- COMPLETE
         Some("SAFE")
     );
     input.write_all(b"R\t4\tupdated\tcharacter\t1\n").await?;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(4), output.next_line())
+            .await??
+            .as_deref(),
+        Some("COMPLETE")
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_secs(4), child.wait())
+            .await??
+            .success()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn user_hooks_finish_before_snapshot_and_first_revalidation_retains_display() -> Result {
+    let home = tempfile::tempdir()?;
+    let cwd = home.path().join("other");
+    std::fs::create_dir(&cwd)?;
+    let script = format!(
+        "zle() {{ :; }}\n\
+        precmd_functions=(user_precmd)\n\
+        user_precmd() {{\n\
+            if [[ -n $next_cwd ]]; then cd -- \"$next_cwd\"; next_cwd=''; fi\n\
+            export CAP_LATE=$PWD\n\
+        }}\n\
+        {INIT}\nzmodload zsh/zselect\n{}",
+        r#"
+cd -- "$HOME"
+export CAP_LATE=before
+_capsule_snapshot
+_CAPSULE_CWD=$PWD
+exec {_CAPSULE_FD_OUT}<&0 {_CAPSULE_FD_IN}>&1
+command "$CAPSULE_TEST_BIN" fd-config <&$_CAPSULE_FD_OUT >&$_CAPSULE_FD_IN || exit 10
+next_cwd=$HOME/other
+_CAPSULE_CMD_START=$((EPOCHREALTIME-3))
+(exit 7)
+for hook in "${precmd_functions[@]}"; do "$hook" >/dev/null || exit 11; done
+[[ $_CAPSULE_CWD == "$PWD" ]] || exit 12
+print -r -- READY
+zselect -r $_CAPSULE_FD_OUT -t 300 || exit 13
+_capsule_async_callback
+[[ $PROMPT == $'settled\ncharacter ' ]] || exit 14
+
+_CAPSULE_NEED_GENERATION=1
+true
+for hook in "${precmd_functions[@]}"; do "$hook" >/dev/null || exit 15; done
+[[ $PROMPT == $'settled\ncharacter ' ]] || exit 16
+print -r -- RETAINED
+"#
+    );
+    let mut child = spawn_zsh(&script, home.path())?;
+    let mut input = child.stdin.take().ok_or("missing stdin")?;
+    let mut output = BufReader::new(child.stdout.take().ok_or("missing stdout")?).lines();
+    let line = tokio::time::timeout(Duration::from_secs(4), output.next_line())
+        .await??
+        .ok_or("missing directory-change request")?;
+    let first = Request::decode(line.as_bytes())?;
+    assert_eq!(first.generation, 1);
+    assert_eq!(first.snapshot.cwd, cwd);
+    assert_eq!(first.snapshot.env("CAP_LATE"), Some(cwd.as_os_str()));
+    assert_eq!(first.last_exit_code, 7);
+    assert!(first.duration_ms.is_some_and(|duration| duration >= 3_000));
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(4), output.next_line())
+            .await??
+            .as_deref(),
+        Some("READY")
+    );
+    input.write_all(b"R\t1\tsettled\tcharacter\t1\n").await?;
+    let line = tokio::time::timeout(Duration::from_secs(4), output.next_line())
+        .await??
+        .ok_or("missing revalidation request")?;
+    let next = Request::decode(line.as_bytes())?;
+    assert_eq!(next.generation, 2);
+    assert_eq!(next.snapshot, first.snapshot);
+    assert_eq!(next.last_exit_code, 0);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(4), output.next_line())
+            .await??
+            .as_deref(),
+        Some("RETAINED")
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_secs(4), child.wait())
+            .await??
+            .success()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn user_owned_prompt_survives_snapshot_invalidation_and_ready_responses() -> Result {
+    let home = tempfile::tempdir()?;
+    std::fs::create_dir(home.path().join("other"))?;
+    let script = format!(
+        "zle() {{ :; }}\n\
+        precmd_functions=(user_precmd)\n\
+        user_precmd() {{ export CAP_LATE=$PWD; PROMPT=user-owned; }}\n\
+        {INIT}\nzmodload zsh/zselect\n{}",
+        r#"
+exec {_CAPSULE_FD_OUT}<&0 {_CAPSULE_FD_IN}>&1
+command "$CAPSULE_TEST_BIN" fd-config <&$_CAPSULE_FD_OUT >&$_CAPSULE_FD_IN || exit 10
+cd -- "$HOME/other"
+for hook in "${precmd_functions[@]}"; do "$hook" >/dev/null || exit 11; done
+[[ $PROMPT == user-owned ]] || exit 12
+print -r -- PRESERVED
+
+# Consume a ready response synchronously during another snapshot change.
+zselect -r $_CAPSULE_FD_OUT -t 300 || exit 13
+cd -- "$HOME"
+_CAPSULE_NEED_GENERATION=1
+for hook in "${precmd_functions[@]}"; do "$hook" >/dev/null || exit 14; done
+[[ $PROMPT == user-owned && $_CAPSULE_RENDERED == $'updated\ncharacter ' ]] || exit 15
+
+# Worker startup and the no-transport fallback must also respect ownership.
+_capsule_cleanup_fds
+_capsule_start_coproc() { started=1; }
+for hook in "${precmd_functions[@]}"; do "$hook" >/dev/null || exit 16; done
+[[ $PROMPT == user-owned && $started == 1 && $_CAPSULE_GENERATION == 3 ]] || exit 17
+print -r -- COMPLETE
+"#
+    );
+    let mut child = spawn_zsh(&script, home.path())?;
+    let mut input = child.stdin.take().ok_or("missing stdin")?;
+    let mut output = BufReader::new(child.stdout.take().ok_or("missing stdout")?).lines();
+    let line = tokio::time::timeout(Duration::from_secs(4), output.next_line())
+        .await??
+        .ok_or("missing first request")?;
+    assert_eq!(Request::decode(line.as_bytes())?.generation, 1);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(4), output.next_line())
+            .await??
+            .as_deref(),
+        Some("PRESERVED")
+    );
+    input.write_all(b"R\t2\tupdated\tcharacter\t1\n").await?;
+    let line = tokio::time::timeout(Duration::from_secs(4), output.next_line())
+        .await??
+        .ok_or("missing second request")?;
+    assert_eq!(Request::decode(line.as_bytes())?.generation, 2);
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(4), output.next_line())
             .await??

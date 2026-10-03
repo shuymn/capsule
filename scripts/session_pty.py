@@ -66,7 +66,7 @@ def eventually(predicate, description: str, pump=lambda: None, timeout=8):
 
 
 class Shell:
-    def __init__(self, binary: Path, root: Path, name: str, hold=False, flicker=False):
+    def __init__(self, binary: Path, root: Path, name: str, hold=False, flicker=False, precmd_setup=""):
         self.home = root / name
         self.home.mkdir()
         (self.home / "work").mkdir()
@@ -119,7 +119,8 @@ class Shell:
             "setopt promptsubst\n"
             "bindkey -v\n"
             "KEYTIMEOUT=1\n"
-            'source "$HOME/init.zsh"\n'
+            + precmd_setup
+            + 'source "$HOME/init.zsh"\n'
             "_capsule_test_transition() {\n"
             "  local field\n"
             "  {\n"
@@ -139,9 +140,9 @@ class Shell:
             '  _capsule_test_original_apply "$@"\n'
             "  _capsule_test_transition apply\n"
             "}\n"
-            "functions[_capsule_test_original_precmd]=$functions[_capsule_precmd]\n"
-            "_capsule_precmd() {\n"
-            '  _capsule_test_original_precmd "$@"\n'
+            "functions[_capsule_test_original_finalize]=$functions[_capsule_finalize_prompt]\n"
+            "_capsule_finalize_prompt() {\n"
+            '  _capsule_test_original_finalize "$@"\n'
             "  _capsule_test_transition precmd\n"
             "}\n"
             "functions[_capsule_test_original_callback]=$functions[_capsule_async_callback]\n"
@@ -231,8 +232,15 @@ class Shell:
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", 32, cols, 0, 0))
         os.kill(self.pid, signal.SIGWINCH)
 
-    def state(self):
-        self.ready()
+    def state(self, wait_ready=True):
+        # A genuine shell error skips zsh's initial ZLE hook callbacks.
+        if wait_ready:
+            self.ready()
+        else:
+            eventually(
+                lambda: not (termios.tcgetattr(self.fd)[3] & termios.ICANON),
+                "ZLE raw input mode after hook error", self.pump,
+            )
         target = self.home / "state"
         target.unlink(missing_ok=True)
         self.send(b"\x0f")
@@ -688,13 +696,31 @@ def run_flicker(shell, record):
 
         (shell.home / "tool.mode").write_text("TOOL_NEW")
         (shell.home / "work/other").mkdir()
-        with gates.stage("cd other") as (mark, generation):
+        # Model directory-aware tools updating exports in a later precmd hook.
+        with gates.stage(
+            "_capsule_test_env_hook() { "
+            "if [[ $PWD == $HOME/work/other ]]; then export CAP_FLICKER=exported; fi; "
+            "return 0; }; "
+            "add-zsh-hook precmd _capsule_test_env_hook; "
+            "cd other"
+        ) as (mark, generation):
+            assert_history(shell, mark, generation, set())
+        shell.complete(generation, mark)
+        exported = changed | {b"ENV=exported"}
+        assert_history(shell, mark, generation, set(), exported)
+        record("changed_cwd_discards_settled_external_display_immediately")
+        record("directory_hook_exports_reach_the_directory_change_generation")
+
+        with gates.stage("true") as (mark, generation):
+            assert_history(shell, mark, generation, exported)
+        shell.complete(generation, mark)
+        assert_history(shell, mark, generation, exported, exported)
+        record("first_command_after_directory_hook_update_retains_settled_display")
+
+        with gates.stage("add-zsh-hook -d precmd _capsule_test_env_hook; unset CAP_FLICKER") as (mark, generation):
             assert_history(shell, mark, generation, set())
         shell.complete(generation, mark)
         assert_history(shell, mark, generation, set(), changed)
-        record("changed_cwd_discards_settled_external_display_immediately")
-
-        exported = changed | {b"ENV=exported"}
         with gates.stage("export CAP_FLICKER=exported") as (mark, generation):
             assert_history(shell, mark, generation, set())
         shell.complete(generation, mark)
@@ -753,6 +779,70 @@ def run_flicker(shell, record):
         gates.close()
 
 
+def run_hook_errors(shell, record):
+    shell.complete(1)
+    shell.command("unsetopt promptsubst")
+    shell.complete(2)
+    worker = shell.state()["worker"]
+    payload = b"$(>~/dollar) `>~/backtick`"
+
+    # Withhold all new responses while a command changes PROMPT_SUBST and a
+    # preserved hook raises a genuine shell error (not merely `return 1`).
+    for generation, command in (
+        (3, "_capsule_test_hook_error=1; setopt promptsubst; _CAPSULE_CMD_START=$((EPOCHREALTIME-3)); (exit 7)"),
+        (5, "_capsule_test_hook_error=1; _capsule_test_hook_subst=on; _CAPSULE_CMD_START=$((EPOCHREALTIME-3)); (exit 7)"),
+    ):
+        if generation == 5:
+            shell.command("_capsule_test_hook_error=0; unsetopt promptsubst")
+            shell.complete(4)
+        shell.signal_worker(worker, signal.SIGSTOP)
+        (shell.home / "inject").write_bytes(b"R\t" + str(generation - 1).encode() + b"\t" + payload + b"\tcharacter\t1")
+        shell.send(b"\x10")
+        shell.state()
+        assert (shell.home / "prompt").read_bytes() == payload + b"\ncharacter "
+        (shell.home / "late-hook").unlink()
+        mark = shell.mark()
+        shell.command(command)
+        eventually(
+            lambda: any(item["event"] == b"precmd" for item in shell.transitions(mark, generation)),
+            "finalization after hook error", shell.pump,
+        )
+        state = shell.state(wait_ready=False)
+        assert state["generation"] == generation and state["worker"] == worker
+        assert (shell.home / "prompt").read_bytes() == b"${_CAPSULE_RENDERED}"
+        assert (shell.home / "rendered").read_bytes() == payload + b"\ncharacter "
+        assert not (shell.home / "dollar").exists() and not (shell.home / "backtick").exists()
+        assert (shell.home / "error-hook").exists(), "failing user hook was not reached"
+        assert not (shell.home / "late-hook").exists(), "hook error did not stop subsequent user hooks"
+        shell.pump()
+        assert b"division by zero" in (shell.home / "terminal.log").read_bytes()
+        finalized = [item for item in shell.transitions(mark, generation) if item["event"] == b"precmd"]
+        assert finalized[-1]["status"] == 7 and int(finalized[-1]["duration"]) >= 3000, finalized
+        if generation == 3:
+            shell.signal_worker(worker, signal.SIGCONT)
+            shell.complete(generation, mark)
+    record("command_and_hook_promptsubst_transitions_remain_literal_after_genuine_hook_errors")
+    record("hook_errors_skip_later_user_hooks_but_submit_generations_with_command_status_and_duration")
+
+    shell.signal_worker(worker, signal.SIGKILL)
+    eventually(lambda: shell.state(wait_ready=False)["read_fd"] == 0, "worker failure after hook error", shell.pump)
+    assert (shell.home / "prompt").read_bytes() == b"%~\n%# "
+    (shell.home / "work/other").mkdir()
+    mark = shell.mark()
+    shell.command("cd other; export CAP_VALUE=recovered")
+    shell.complete(6, mark)
+    restarted = shell.state(wait_ready=False)
+    assert restarted["generation"] == 6 and restarted["worker"] != worker
+    assert (shell.home / "value").read_bytes() == b"recovered"
+    assert (shell.home / "cwd").read_bytes() == os.fsencode((shell.home / "work/other").resolve()) + b"\n"
+    assert not (shell.home / "late-hook").exists()
+    record("hook_errors_do_not_prevent_snapshot_invalidation_or_replacement_worker_startup")
+    shell.command("_capsule_test_hook_error=0")
+    shell.complete(7)
+    shell.ready(7)
+    assert (shell.home / "late-hook").exists()
+
+
 def run(binary: Path, output: Path):
     results = []
     shells = []
@@ -760,8 +850,8 @@ def run(binary: Path, output: Path):
         result = {"test": name, "passed": True, **details}
         results.append(result)
         print(json.dumps(result), flush=True)
-    def start(name, hold=False, flicker=False, selected_binary=None):
-        shell = Shell(selected_binary or binary, output, name, hold, flicker)
+    def start(name, hold=False, flicker=False, selected_binary=None, precmd_setup=""):
+        shell = Shell(selected_binary or binary, output, name, hold, flicker, precmd_setup)
         shells.append(shell)
         return shell
     try:
@@ -927,6 +1017,39 @@ def run(binary: Path, output: Path):
         for shell in many:
             shell.assert_workers_gone()
         record("ten_shells_own_ten_workers_and_leave_none_active")
+
+        shell = start("hook-status", precmd_setup=(
+            "_capsule_test_first_status() { "
+            'print -r -- "$?" > "$HOME/first-status"; return 7; }\n'
+            "_capsule_test_last_status() { "
+            'print -r -- "$?" > "$HOME/last-status"; }\n'
+            "precmd_functions=(_capsule_test_first_status _capsule_test_last_status)\n"
+        ))
+        shell.complete(1)
+        shell.command("(exit 9)")
+        shell.complete(2)
+        assert (shell.home / "first-status").read_bytes() == b"9\n"
+        assert (shell.home / "last-status").read_bytes() == b"9\n"
+        assert shell.count() == 2
+        shell.close()
+        shell.assert_workers_gone()
+        record("user_precmd_hooks_receive_original_command_status_after_nonzero_hook_returns")
+
+        shell = start("hook-errors", precmd_setup=(
+            "_capsule_test_user_hook() {\n"
+            "  if (( _capsule_test_hook_error )); then\n"
+            "    [[ $_capsule_test_hook_subst == on ]] && setopt promptsubst\n"
+            "    print -r -- reached > \"$HOME/error-hook\"\n"
+            "    : $((1/0))\n"
+            "  fi\n"
+            "  return 0\n"
+            "}\n"
+            "_capsule_test_late_hook() { print -r -- reached > \"$HOME/late-hook\"; }\n"
+            "precmd_functions=(_capsule_test_user_hook _capsule_test_late_hook)\n"
+        ))
+        run_hook_errors(shell, record)
+        shell.close()
+        shell.assert_workers_gone()
 
         shell = start("flicker", flicker=True)
         run_flicker(shell, record)
