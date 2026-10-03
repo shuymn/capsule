@@ -23,6 +23,7 @@ fn snapshot(cwd: &std::path::Path, env: &[(&str, &str)]) -> Snapshot {
         env: env
             .iter()
             .map(|(name, value)| (OsString::from(name), OsString::from(value)))
+            .chain(std::env::var_os("PATH").map(|value| (OsString::from("PATH"), value)))
             .collect(),
     }
 }
@@ -282,7 +283,7 @@ async fn ready_empty_env_stops_fallback_but_unset_env_does_not() -> TestResult {
     let dir = tempfile::tempdir()?;
     let plan = one_module(
         "{value}",
-        "value=[{env='VALUE'}, {command=['/bin/sh','-c','printf ran > fallback']}]",
+        "value=[{env='VALUE'}, {command=['sh','-c','printf ran > fallback']}]",
     )?;
     let value_plan = &plan.modules[0].values[0];
     let runner = Runner::default();
@@ -321,7 +322,7 @@ async fn empty_file_and_command_are_ready_and_file_text_may_contain_slashes() ->
     );
     let plan = one_module(
         "{value}",
-        "value=[{command=['/bin/sh','-c',':']},{env='FALLBACK'}]",
+        "value=[{command=['sh','-c',':']},{env='FALLBACK'}]",
     )?;
     assert_eq!(
         acquire_value(&plan.modules[0].values[0], &input, &runner, &cancel).await?,
@@ -335,7 +336,7 @@ async fn missing_failed_and_timed_out_candidates_fall_back_in_order() -> TestRes
     let dir = tempfile::tempdir()?;
     let plan = one_module(
         "{value}",
-        "value=[{file='missing'},{command=['/bin/sh','-c','exit 9']},{command=['/bin/sleep','2']},{env='GOOD'},{command=['/bin/sh','-c','printf ran > forbidden']}]",
+        "value=[{file='missing'},{command=['sh','-c','exit 9']},{command=['sleep','2']},{env='GOOD'},{command=['sh','-c','printf ran > forbidden']}]",
     )?;
     let input = snapshot(dir.path(), &[("GOOD", "ready")]);
     assert_eq!(
@@ -366,7 +367,7 @@ async fn missing_and_failed_terminal_states_remain_distinct() -> TestResult {
     );
     let failed = one_module(
         "{value}",
-        "value=[{command=['/bin/sh','-c','exit 9']},{env='MISSING'}]",
+        "value=[{command=['sh','-c','exit 9']},{env='MISSING'}]",
     )?;
     assert!(
         acquire_value(&failed.modules[0].values[0], &input, &runner, &cancel)
@@ -460,6 +461,7 @@ async fn environment_size_limit_applies_before_copying_and_allows_fallback() -> 
     let dir = tempfile::tempdir()?;
     let plan = one_module("{value}", "value=[{env='LARGE'},{env='FALLBACK'}]")?;
     let mut input = snapshot(dir.path(), &[("FALLBACK", "small")]);
+    let large_index = input.env.len();
     input
         .env
         .push(("LARGE".into(), "x".repeat(MAX_OUTPUT_BYTES).into()));
@@ -472,18 +474,18 @@ async fn environment_size_limit_applies_before_copying_and_allows_fallback() -> 
             .map(String::len),
         Some(MAX_OUTPUT_BYTES)
     );
-    input.env[1].1.push("x");
+    input.env[large_index].1.push("x");
     assert_eq!(
         acquire_value(&plan.modules[0].values[0], &input, &runner, &cancel).await?,
         Some("small".to_owned())
     );
-    input.env[1].1 = OsString::from_vec(vec![0xff; MAX_OUTPUT_BYTES]);
+    input.env[large_index].1 = OsString::from_vec(vec![0xff; MAX_OUTPUT_BYTES]);
     assert_eq!(
         acquire_value(&plan.modules[0].values[0], &input, &runner, &cancel).await?,
         Some("small".to_owned())
     );
     assert_eq!(
-        input.env[1].1.as_encoded_bytes(),
+        input.env[large_index].1.as_encoded_bytes(),
         vec![0xff; MAX_OUTPUT_BYTES]
     );
     Ok(())

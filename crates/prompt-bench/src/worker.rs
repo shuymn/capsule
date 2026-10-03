@@ -409,18 +409,21 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let probe = probe(temp.path())?;
         let binary = temp.path().join("worker");
+        let shell = capsule_prompt_bench::resolve_binary(Path::new("sh"), "shell")?;
         fs::write(
             &binary,
             format!(
-                "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{}'\n",
+                "#!{}\ncat >/dev/null\nprintf '%s\\n' '{}'\n",
+                shell.display(),
                 "K".repeat(MAX_RESPONSE - 1)
             ),
         )?;
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o755))?;
+        let path_env = std::env::var("PATH")?;
         let environment = BenchmarkEnvironment {
             home_dir: temp.path(),
             probe: &probe,
-            path_env: "/usr/bin:/bin",
+            path_env: &path_env,
         };
         let mut worker = Worker::spawn(&binary, &environment)?;
         worker.shutdown().await?;

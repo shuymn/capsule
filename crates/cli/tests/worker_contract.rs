@@ -22,7 +22,7 @@ impl Worker {
             .arg("worker")
             .env_clear()
             .env("HOME", home)
-            .env("PATH", "/usr/bin:/bin")
+            .env("PATH", std::env::var_os("PATH").ok_or("missing PATH")?)
             .env("DISPLAY_VAR", "worker-only-value")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -82,7 +82,10 @@ fn request(home: &Path, generation: u64) -> Request {
             cwd: home.to_owned(),
             env: vec![
                 (OsString::from("HOME"), home.as_os_str().to_owned()),
-                (OsString::from("PATH"), OsString::from("/usr/bin:/bin")),
+                (
+                    OsString::from("PATH"),
+                    std::env::var_os("PATH").unwrap_or_default(),
+                ),
                 (
                     OsString::from("COUNT_FILE"),
                     home.join("count").into_os_string(),
@@ -105,7 +108,7 @@ disabled = true
 name = "environment"
 format = "VALUE={value}"
 [module.values]
-value = [{ command = ["/bin/sh", "-c", "printf x >> \"$COUNT_FILE\"; printf '%s' \"${DISPLAY_VAR-unset}\""] }]
+value = [{ command = ["sh", "-c", "printf x >> \"$COUNT_FILE\"; printf '%s' \"${DISPLAY_VAR-unset}\""] }]
 "#;
 
 #[tokio::test]
@@ -191,7 +194,7 @@ async fn real_git_directory_and_optional_time_survive_acquisition_completion() -
         .args(["init", "-b", "main"])
         .current_dir(&repo)
         .env_clear()
-        .env("PATH", "/usr/bin:/bin")
+        .env("PATH", std::env::var_os("PATH").ok_or("missing PATH")?)
         .env("HOME", home.path())
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .output()?;

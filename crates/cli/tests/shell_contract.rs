@@ -36,7 +36,7 @@ fn responses_must_match_exact_generation() -> Result {
     let result = Command::new("zsh")
         .args(["-f", "-c", &script])
         .env_clear()
-        .env("PATH", "/usr/bin:/bin")
+        .env("PATH", std::env::var_os("PATH").ok_or("missing PATH")?)
         .env("HOME", home.path())
         .env("ZDOTDIR", home.path())
         .output()?;
@@ -77,7 +77,7 @@ fn unchanged_display_skips_redraw_but_restores_fallback() -> Result {
     let result = Command::new("zsh")
         .args(["-f", "-c", &script])
         .env_clear()
-        .env("PATH", "/usr/bin:/bin")
+        .env("PATH", std::env::var_os("PATH").ok_or("missing PATH")?)
         .env("HOME", home.path())
         .env("ZDOTDIR", home.path())
         .output()?;
@@ -110,7 +110,7 @@ async fn partial_response_returns_before_the_remaining_bytes_arrive() -> Result 
     let mut child = tokio::process::Command::new("zsh")
         .args(["-f", "-c", &script])
         .env_clear()
-        .env("PATH", "/usr/bin:/bin")
+        .env("PATH", std::env::var_os("PATH").ok_or("missing PATH")?)
         .env("HOME", home.path())
         .env("ZDOTDIR", home.path())
         .env("CAPSULE_TEST_BIN", env!("CARGO_BIN_EXE_capsule"))

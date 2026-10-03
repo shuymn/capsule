@@ -433,8 +433,10 @@ impl ToolchainProbe {
                 shell_quote(&toolchain.to_string_lossy())
             );
         }
+        let shell = resolve_binary(Path::new("sh"), "shell")?;
         let script = format!(
-            "#!/bin/sh\nprintf '%s\\n' start >> {log} || exit 125\n{rustup_env}{rustc} \"$@\"\nstatus=$?\nprintf 'finish:%s\\n' \"$status\" >> {log} || exit 125\nexit \"$status\"\n",
+            "#!{shell}\nprintf '%s\\n' start >> {log} || exit 125\n{rustup_env}{rustc} \"$@\"\nstatus=$?\nprintf 'finish:%s\\n' \"$status\" >> {log} || exit 125\nexit \"$status\"\n",
+            shell = shell.display(),
             log = shell_quote(&log_path.to_string_lossy()),
             rustc = shell_quote(&rustc_bin.to_string_lossy()),
         );
@@ -554,7 +556,7 @@ fn bounded_output_with_timeout(
         }
         if started.elapsed() >= timeout {
             #[cfg(unix)]
-            let _ = Command::new("/bin/kill")
+            let _ = Command::new("kill")
                 .args(["-KILL", "--", &format!("-{}", child.id())])
                 .status();
             let _ = child.kill();
@@ -704,7 +706,11 @@ mod tests {
     use super::*;
 
     fn executable(path: &Path, script: &str) -> anyhow::Result<()> {
-        fs::write(path, script)?;
+        let shell = resolve_binary(Path::new("sh"), "shell")?;
+        fs::write(
+            path,
+            script.replacen("#!/bin/sh", &format!("#!{}", shell.display()), 1),
+        )?;
         fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
         Ok(())
     }
@@ -777,7 +783,7 @@ mod tests {
     fn starship_requires_success_output_and_exact_command_count() -> anyhow::Result<()> {
         let root = tempfile::tempdir()?;
         let probe = probe(root.path())?;
-        let path_env = format!("{}:/usr/bin:/bin", probe.bin_dir.display());
+        let path_env = format!("{}:{}", probe.bin_dir.display(), std::env::var("PATH")?);
         let environment = BenchmarkEnvironment {
             home_dir: root.path(),
             probe: &probe,
@@ -803,7 +809,7 @@ mod tests {
     fn subprocess_deadline_returns_an_error() {
         assert!(
             bounded_output_with_timeout(
-                Command::new("/bin/sh").args(["-c", "exec sleep 30"]),
+                Command::new("sh").args(["-c", "exec sleep 30"]),
                 Duration::from_millis(20)
             )
             .is_err()

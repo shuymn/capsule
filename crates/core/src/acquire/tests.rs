@@ -23,12 +23,21 @@ fn runtime() -> io::Result<Runtime> {
 fn snapshot(cwd: &Path) -> Snapshot {
     Snapshot {
         cwd: cwd.to_owned(),
-        env: Vec::new(),
+        env: std::env::var_os("PATH")
+            .into_iter()
+            .map(|value| (OsString::from("PATH"), value))
+            .collect(),
     }
 }
 
-fn argv(args: &[&str]) -> Vec<String> {
-    args.iter().map(|arg| (*arg).to_owned()).collect()
+fn argv(args: &[&str]) -> io::Result<Vec<String>> {
+    let mut command = args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
+    if let Some(program) = command.first_mut()
+        && !Path::new(program.as_str()).is_absolute()
+    {
+        *program = crate::test_utils::executable(program)?;
+    }
+    Ok(command)
 }
 
 #[test]
@@ -41,11 +50,7 @@ fn command_preserves_raw_environment_and_clears_unspecified_variables() -> TestR
     )];
     runtime()?.block_on(async {
         let output = Runner::default()
-            .command(
-                &argv(&["/usr/bin/env", "-0"]),
-                &input,
-                &CancellationToken::new(),
-            )
+            .command(&argv(&["env", "-0"])?, &input, &CancellationToken::new())
             .await?;
         assert_eq!(output, b"CAPSULE_VALUE=raw\xff\n\t\\\0");
         Ok::<_, AcquireError>(())
@@ -62,12 +67,12 @@ fn command_uses_snapshot_cwd_and_reports_failed_exit() -> TestResult {
         let input = snapshot(directory.path());
         let cancel = CancellationToken::new();
         let output = runner
-            .command(&argv(&["/bin/pwd", "-P"]), &input, &cancel)
+            .command(&argv(&["pwd", "-P"])?, &input, &cancel)
             .await?;
         assert_eq!(output, format!("{}\n", expected.display()).as_bytes());
         let failure = runner
             .command(
-                &argv(&["/bin/sh", "-c", "printf hidden >&2; exit 7"]),
+                &argv(&["sh", "-c", "printf hidden >&2; exit 7"])?,
                 &input,
                 &cancel,
             )
@@ -82,11 +87,12 @@ fn command_uses_snapshot_cwd_and_reports_failed_exit() -> TestResult {
 
 #[test]
 fn command_rejects_excessive_stdout_and_releases_capacity() -> TestResult {
+    let command = argv(&["sh", "-c", "printf '%65537s' x"])?;
     runtime()?.block_on(async {
         let runner = Runner::default();
         let output = runner
             .command(
-                &argv(&["/bin/sh", "-c", "printf '%65537s' x"]),
+                &command,
                 &snapshot(Path::new("/")),
                 &CancellationToken::new(),
             )
@@ -102,7 +108,7 @@ fn timeout_stops_descendants_that_hold_stdout_after_the_leader_exits() -> TestRe
     let directory = tempfile::tempdir()?;
     let liveness = directory.path().join("liveness");
     assert!(
-        std::process::Command::new("/usr/bin/mkfifo")
+        std::process::Command::new("mkfifo")
             .arg(&liveness)
             .status()?
             .success()
@@ -113,13 +119,13 @@ fn timeout_stops_descendants_that_hold_stdout_after_the_leader_exits() -> TestRe
         Mode::empty(),
     )?;
     let mut reader = File::from(fd);
+    let command = argv(&[
+        "sh",
+        "-c",
+        "sh -c 'exec 3>liveness; printf ready >&3; sleep 60' & exit 0",
+    ])?;
     runtime()?.block_on(async {
         let runner = Runner::default();
-        let command = argv(&[
-            "/bin/sh",
-            "-c",
-            "/bin/sh -c 'exec 3>liveness; printf ready >&3; /bin/sleep 60' & exit 0",
-        ]);
         let input = snapshot(directory.path());
         let result = timeout(
             Duration::from_secs(5),
@@ -147,7 +153,7 @@ fn cancellation_stops_running_commands_and_prevents_queued_spawns() -> TestResul
         let command = tokio::spawn(async move {
             command_runner
                 .command(
-                    &argv(&["/bin/sleep", "60"]),
+                    &argv(&["sleep", "60"])?,
                     &snapshot(Path::new("/")),
                     &command_cancel,
                 )
@@ -164,7 +170,7 @@ fn cancellation_stops_running_commands_and_prevents_queued_spawns() -> TestResul
         assert_eq!(runner.processes.available_permits(), 4);
         let queued = runner
             .command(
-                &argv(&["/does/not/exist"]),
+                &argv(&["/does/not/exist"])?,
                 &snapshot(Path::new("/")),
                 &cancel,
             )
@@ -183,7 +189,7 @@ fn dropped_command_future_retains_its_slot_until_the_child_is_reaped() -> TestRe
         let command = tokio::spawn(async move {
             command_runner
                 .command(
-                    &argv(&["/bin/sleep", "60"]),
+                    &argv(&["sleep", "60"])?,
                     &snapshot(Path::new("/")),
                     &CancellationToken::new(),
                 )
@@ -217,7 +223,7 @@ fn file_distinguishes_missing_empty_oversized_and_non_regular_sources() -> TestR
     std::fs::write(&empty, [])?;
     std::fs::write(&large, vec![0; MAX_OUTPUT_BYTES + 1])?;
     assert!(
-        std::process::Command::new("/usr/bin/mkfifo")
+        std::process::Command::new("mkfifo")
             .arg(&fifo)
             .status()?
             .success()
