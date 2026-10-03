@@ -223,7 +223,7 @@ values = { value = [{ env = "AFTER" }] }
         },
     );
     assert_eq!(pending.left1, "before fallback middle after");
-    assert!(pending.left2.is_empty());
+    assert_eq!(pending.left2, "");
 
     observations[4] = observed("tie");
     let file_ready = render(
@@ -245,7 +245,7 @@ values = { value = [{ env = "AFTER" }] }
         },
     );
     assert_eq!(all_ready.left1, "before preferred middle after");
-    assert!(all_ready.left2.is_empty());
+    assert_eq!(all_ready.left2, "");
 
     observations[1].condition = Observation::Ready(false);
     let hidden = render(
