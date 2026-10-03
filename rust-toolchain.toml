@@ -1,6 +1,4 @@
 [toolchain]
-# Nightly: enables unstable rustfmt options in rustfmt.toml (imports, doc comments, etc.).
-# Expect occasional Clippy / rustc churn; pin to a dated nightly if you want a quieter baseline.
-channel = "nightly"
+channel = "stable"
 components = ["rustfmt", "clippy"]
-profile = "default"
+profile = "minimal"

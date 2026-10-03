@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
-#[command(name = "capsule", about = "macOS zsh prompt engine", version)]
+#[command(name = "capsule", about = "Asynchronous zsh prompt engine", version)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -9,13 +9,12 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Daemon management
-    Daemon {
-        #[command(subcommand)]
-        action: Option<DaemonAction>,
-    },
-    /// Connect to the daemon (coproc relay)
-    Connect,
+    /// Session worker started by zsh
+    #[command(hide = true)]
+    Worker,
+    /// Set nonblocking flags on inherited shell endpoints
+    #[command(hide = true)]
+    FdConfig,
     /// Output shell initialization script
     Init {
         /// Target shell
@@ -23,20 +22,6 @@ pub enum Command {
     },
     /// Output preset module definitions as TOML
     Preset,
-}
-
-#[derive(Subcommand)]
-pub enum DaemonAction {
-    /// Install the launchd plist and load the daemon service
-    Install,
-    /// Uninstall the launchd service and remove the plist
-    Uninstall,
-    /// Show daemon metrics and status
-    Status {
-        /// Output in JSON format
-        #[arg(long)]
-        json: bool,
-    },
 }
 
 #[derive(Clone, ValueEnum)]

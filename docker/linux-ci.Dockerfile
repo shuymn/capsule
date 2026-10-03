@@ -12,8 +12,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 RUN sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin
 
-RUN rustup toolchain install nightly --profile default --component clippy --component rustfmt
+RUN rustup toolchain install stable --profile minimal --component clippy --component rustfmt
 
-ENV RUSTUP_TOOLCHAIN=nightly
+ENV RUSTUP_TOOLCHAIN=stable
 
 WORKDIR /workspace

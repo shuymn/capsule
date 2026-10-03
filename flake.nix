@@ -67,206 +67,82 @@
         let
           pkgs = pkgsFor system;
           inherit (pkgs.stdenv.hostPlatform) isDarwin isLinux;
+          package = self.packages.${system}.capsule;
           capsuleHome = if isDarwin then "/Users/capsule" else "/home/capsule";
-          capsuleSocketPath = "${capsuleHome}/.cache/capsule/custom.sock";
-          socketPathEnv = "CAPSULE_SOCKET_PATH";
-          socketPathEnvPrefix = "${socketPathEnv}=";
-
-          hmConfig = home-manager.lib.homeManagerConfiguration {
-            inherit pkgs;
-            modules = [
-              self.homeManagerModules.default
-              {
-                programs.capsule = {
-                  enable = true;
-                  daemon = {
-                    enable = true;
-                    socketPath = capsuleSocketPath;
-                  };
-                  package = self.packages.${system}.capsule;
-                };
-                home = {
-                  username = "capsule";
-                  homeDirectory = capsuleHome;
-                  stateVersion = "26.05";
-                };
-              }
-            ];
+          capsuleConfig = {
+            programs.capsule = {
+              enable = true;
+              inherit package;
+            };
           };
-
-          nixosModuleEval =
-            let
-              eval = lib.nixosSystem {
-                inherit system;
-                modules = [
-                  self.nixosModules.default
-                  {
-                    programs.capsule = {
-                      enable = true;
-                      daemon = {
-                        enable = true;
-                        socketPath = capsuleSocketPath;
-                      };
-                      package = self.packages.${system}.capsule;
-                    };
-                    system.stateVersion = "26.05";
-                  }
-                ];
-              };
-            in
-            {
-              listenStream = builtins.elemAt eval.config.systemd.user.sockets.capsule.listenStreams 0;
-              socketMode = eval.config.systemd.user.sockets.capsule.socketConfig.SocketMode;
-              execStart = eval.config.systemd.user.services.capsule.serviceConfig.ExecStart;
-              sessionSocketPath = eval.config.environment.sessionVariables.${socketPathEnv};
-              daemonSocketPath = lib.removePrefix socketPathEnvPrefix (
-                lib.findFirst (
-                  value: lib.hasPrefix socketPathEnvPrefix value
-                ) "" eval.config.systemd.user.services.capsule.serviceConfig.Environment
-              );
-              nixManaged =
-                if
-                  builtins.elem "CAPSULE_NIX_MANAGED=1" eval.config.systemd.user.services.capsule.serviceConfig.Environment
-                then
-                  "1"
-                else
-                  "0";
+          homeConfig = {
+            home = {
+              username = "capsule";
+              homeDirectory = capsuleHome;
+              stateVersion = "26.05";
             };
-
-          darwinModuleEval =
-            let
-              eval = nix-darwin.lib.darwinSystem {
-                inherit system;
-                modules = [
-                  self.darwinModules.default
-                  {
-                    programs.capsule = {
-                      enable = true;
-                      daemon = {
-                        enable = true;
-                        socketPath = capsuleSocketPath;
-                      };
-                      package = self.packages.${system}.capsule;
-                    };
-                    system.primaryUser = "capsule";
-                    users.users.capsule.home = capsuleHome;
-                    system.stateVersion = 6;
-                  }
-                ];
-              };
-            in
-            {
-              socketPath = eval.config.launchd.user.agents.capsule.serviceConfig.Sockets.Listeners.SockPathName;
-              sockPathMode = eval.config.launchd.user.agents.capsule.serviceConfig.Sockets.Listeners.SockPathMode;
-              command = eval.config.launchd.user.agents.capsule.command;
-              sessionSocketPath = eval.config.environment.variables.${socketPathEnv};
-              daemonSocketPath =
-                eval.config.launchd.user.agents.capsule.serviceConfig.EnvironmentVariables.${socketPathEnv};
-              nixManaged =
-                eval.config.launchd.user.agents.capsule.serviceConfig.EnvironmentVariables.CAPSULE_NIX_MANAGED;
-            };
+          };
+          homeManager =
+            extra:
+            (home-manager.lib.homeManagerConfiguration {
+              inherit pkgs;
+              modules = [
+                self.homeManagerModules.default
+                capsuleConfig
+                homeConfig
+                extra
+              ];
+            }).config;
+          hm = homeManager { };
+          legacy = homeManager { programs.capsule.daemon.enable = true; };
+          legacyRejected = !(builtins.tryEval legacy.home.activationPackage.drvPath).success;
+          noService =
+            config:
+            !(lib.hasAttrByPath [ "systemd" "user" "services" "capsule" ] config)
+            && !(lib.hasAttrByPath [ "systemd" "user" "sockets" "capsule" ] config)
+            && !(lib.hasAttrByPath [ "launchd" "agents" "capsule" ] config)
+            && !(lib.hasAttrByPath [ "launchd" "user" "agents" "capsule" ] config);
+          moduleCheck =
+            name: config: packages: init:
+            assert lib.assertMsg (builtins.elem package packages) "Capsule package is missing";
+            assert lib.assertMsg config.programs.zsh.enable "zsh integration must enable zsh";
+            assert lib.assertMsg (lib.hasInfix " init zsh" init) "Capsule zsh initialization is missing";
+            assert lib.assertMsg (noService config) "Capsule must not register a service or socket";
+            pkgs.runCommandLocal name { } "touch $out";
+          nixos =
+            (lib.nixosSystem {
+              inherit system;
+              modules = [
+                self.nixosModules.default
+                capsuleConfig
+                { system.stateVersion = "26.05"; }
+              ];
+            }).config;
+          darwin =
+            (nix-darwin.lib.darwinSystem {
+              inherit system;
+              modules = [
+                self.darwinModules.default
+                capsuleConfig
+                { system.stateVersion = 6; }
+              ];
+            }).config;
         in
         {
-          package = self.packages.${system}.capsule;
-
+          inherit package;
           home-manager-module =
-            pkgs.runCommandLocal "capsule-home-manager-module-check"
-              {
-                socketPath =
-                  if isDarwin then
-                    hmConfig.config.launchd.agents.capsule.config.Sockets.Listeners.SockPathName
-                  else
-                    hmConfig.config.systemd.user.sockets.capsule.Socket.ListenStream;
-                execStart =
-                  if isDarwin then
-                    builtins.concatStringsSep " " hmConfig.config.launchd.agents.capsule.config.ProgramArguments
-                  else
-                    hmConfig.config.systemd.user.services.capsule.Service.ExecStart;
-                nixManaged =
-                  if isDarwin then
-                    hmConfig.config.launchd.agents.capsule.config.EnvironmentVariables.CAPSULE_NIX_MANAGED
-                  else if
-                    builtins.elem "CAPSULE_NIX_MANAGED=1" hmConfig.config.systemd.user.services.capsule.Service.Environment
-                  then
-                    "1"
-                  else
-                    "0";
-                sessionSocketPath = hmConfig.config.home.sessionVariables.${socketPathEnv};
-                daemonSocketPath =
-                  if isDarwin then
-                    hmConfig.config.launchd.agents.capsule.config.EnvironmentVariables.${socketPathEnv}
-                  else
-                    lib.removePrefix socketPathEnvPrefix (
-                      lib.findFirst (
-                        value: lib.hasPrefix socketPathEnvPrefix value
-                      ) "" hmConfig.config.systemd.user.services.capsule.Service.Environment
-                    );
-              }
-              ''
-                test -n "$socketPath"
-                test "$nixManaged" = "1"
-                test "$sessionSocketPath" = "$socketPath"
-                test "$daemonSocketPath" = "$socketPath"
-                case "$execStart" in
-                  *"capsule daemon"*) ;;
-                  *) echo "unexpected ExecStart/ProgramArguments: $execStart" >&2; exit 1 ;;
-                esac
-                touch "$out"
-              '';
+            assert lib.assertMsg legacyRejected "Legacy daemon options must report a migration error";
+            moduleCheck "capsule-home-manager-module-check" hm hm.home.packages hm.programs.zsh.initContent;
         }
         // lib.optionalAttrs isLinux {
           nixos-module =
-            pkgs.runCommandLocal "capsule-nixos-module-check"
-              {
-                inherit (nixosModuleEval)
-                  listenStream
-                  socketMode
-                  execStart
-                  sessionSocketPath
-                  daemonSocketPath
-                  nixManaged
-                  ;
-                expectedSocketPath = capsuleSocketPath;
-              }
-              ''
-                test "$listenStream" = "$expectedSocketPath"
-                test "$sessionSocketPath" = "$expectedSocketPath"
-                test "$daemonSocketPath" = "$expectedSocketPath"
-                test "$socketMode" = "0700"
-                test "$nixManaged" = "1"
-                case "$execStart" in
-                  *"capsule daemon"*) ;;
-                  *) echo "unexpected ExecStart: $execStart" >&2; exit 1 ;;
-                esac
-                touch "$out"
-              '';
+            moduleCheck "capsule-nixos-module-check" nixos nixos.environment.systemPackages
+              nixos.programs.zsh.interactiveShellInit;
         }
         // lib.optionalAttrs isDarwin {
           darwin-module =
-            pkgs.runCommandLocal "capsule-darwin-module-check"
-              {
-                inherit (darwinModuleEval)
-                  socketPath
-                  sockPathMode
-                  command
-                  sessionSocketPath
-                  daemonSocketPath
-                  nixManaged
-                  ;
-                expectedSocketPath = capsuleSocketPath;
-              }
-              ''
-                test "$socketPath" = "$expectedSocketPath"
-                test "$sessionSocketPath" = "$expectedSocketPath"
-                test "$daemonSocketPath" = "$expectedSocketPath"
-                test "$sockPathMode" = "448"
-                test "$nixManaged" = "1"
-                case "$command" in
-                  *"capsule daemon"*) ;;
-                  *) echo "unexpected command: $command" >&2; exit 1 ;;
-                esac
-                touch "$out"
-              '';
+            moduleCheck "capsule-darwin-module-check" darwin darwin.environment.systemPackages
+              darwin.programs.zsh.interactiveShellInit;
         }
       );
 

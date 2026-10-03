@@ -1,31 +1,45 @@
-# Tooling Pipeline
+# Tooling
 
-Read this file when working with build, CI, hooks, or adding tools.
+Read this file when changing build, CI, hooks, or tool dependencies.
 
-## Source of Truth
+## Commands and configuration
 
-- Use `task` as the primary interface for local development, CI, and git hooks.
-- [Taskfile.yml](../Taskfile.yml) is the source of truth for task definitions. Build output lives under `target/` (Cargo default).
+- Use [Taskfile.yml](../Taskfile.yml) as the command source of truth. Use the stable
+  toolchain in [rust-toolchain.toml](../rust-toolchain.toml) and formatting settings
+  in [rustfmt.toml](../rustfmt.toml).
+- `task check` and `task check:fast` install lefthook hooks. To preserve existing
+  hooks, run the needed components directly: `task fmt:check`, `task lint`,
+  `task release:test`, `task test`, `task doc`, and `task build`.
+- [lefthook.yml](../lefthook.yml) owns hook behavior, including formatter auto-staging
+  and merge/rebase skips. Keep hook logic in Task rather than duplicating scripts.
+- [CI](../.github/workflows/ci.yml) uses the same Task commands on macOS and Linux.
+  The Rust setup action treats rustc warnings as errors through `RUSTFLAGS=-D warnings`.
+- Use `task docker:linux:lint` or `task docker:linux:check` for Linux checks from
+  another OS. They build [the helper image](../docker/linux-ci.Dockerfile), mount the
+  repository, and run with the host UID/GID. The check task skips hook installation.
+- Follow [testing.md](testing.md) for suite and PTY checks,
+  [benchmarking.md](benchmarking.md) for acquisition diagnostics, and
+  [releasing.md](releasing.md) for version, candidate, and promotion rules.
 
-## Hooks and CI
+## Clippy policy
 
-- [lefthook.yml](../lefthook.yml) maps git hook events to `task` commands. Do not duplicate hook logic in shell scripts.
-- Hooks run in `piped` mode, can auto-stage formatter fixes, and skip merge or rebase flows.
-- CI mirrors the same `task` commands used locally (`fmt:check`, `lint`, `release:test`, `test`, `build`).
-- `task release:prepare BUMP=patch|minor|major` updates the canonical workspace version and `Cargo.lock`, generates the changelog with git-cliff, and validates the candidate. Use the git-cliff version pinned in the `Release PR` workflow; Renovate maintains that pin. The workflow runs the same script, creates and verifies a GitHub-signed commit with GraphQL, then compare-and-swap updates the candidate branch before creating or updating its PR.
-- All workspace packages are private, use `version.workspace = true`, and keep internal workspace dependencies path-only. `scripts/release/version.sh check` enforces inheritance as well as the resolved version, so there is no duplicated dependency version to synchronize across SemVer boundaries.
-- `task release:check` validates a release candidate at `HEAD` and prints its derived tag without modifying the repository. Set `RELEASE_SHA` to require an exact commit. `task release:test` exercises its idempotent and fail-closed states in temporary repositories. Follow [releasing.md](releasing.md) for the manual promotion flow.
-- For local Linux parity on non-Linux hosts, use `task docker:linux:lint` or `task docker:linux:check`. These tasks build [docker/linux-ci.Dockerfile](../docker/linux-ci.Dockerfile) with `docker buildx build --load`, use BuildKit cache mounts for apt, bind-mount the repo, and run the workspace with the host UID/GID so `target/` does not become root-owned. `docker:linux:check` intentionally bypasses `install:lefthook` and calls the CI tasks directly.
-- Rust on CI uses [actions-rust-lang/setup-rust-toolchain](https://github.com/actions-rust-lang/setup-rust-toolchain) pinned to a full commit SHA (under the `rust-lang` GitHub org), with the action's built-in cache enabled. Toolchain install still uses the official `https://sh.rustup.rs` script inside that composite action.
-- That action sets **`RUSTFLAGS=-D warnings`** by default for the job, so `task test` and `task build` in CI fail on **rustc** warnings too (not only Clippy). Locally, important lints are already denied via `Cargo.toml` `[lints]`; remaining rustc warnings are caught by `task lint` and CI.
-- The default toolchain is **nightly** ([rust-toolchain.toml](../rust-toolchain.toml)) so `cargo fmt` respects unstable options in [rustfmt.toml](../rustfmt.toml). For a quieter baseline, pin nightly to a specific date in `rust-toolchain.toml`.
-- **Clippy policy** (this is the canonical reference; other docs defer here):
-  - [Cargo.toml](../Cargo.toml) `[lints.rust]` / `[lints.clippy]`: denies common footguns (`unwrap_used`, `expect_used`, `todo`, `dbg_macro`, etc.). These apply to all code including tests.
-  - [clippy.toml](../clippy.toml): tightens complexity and size thresholds.
-  - `allowed-duplicate-crates` permits only `syn`: upstream proc macros currently require incompatible major versions. Keep other duplicate-crate diagnostics enabled. After dependency updates, run `cargo tree --workspace --all-features --target all --locked -d` to inspect duplicates across all workspace members, features, and platforms. Remove this exception when that output no longer lists `syn`.
-  - Crate root (`main.rs` or `lib.rs`): `#![warn(clippy::pedantic, clippy::nursery, clippy::cargo)]` — these become errors under `task lint` (`-D warnings`). When adding a new crate root, copy these attributes.
+- [Cargo.toml](../Cargo.toml) defines workspace lint levels, including forbidden
+  unsafe code and denied `unwrap`/`expect`/`todo`/`dbg!` use in all code and tests.
+- [clippy.toml](../clippy.toml) defines complexity/size thresholds. Enable
+  `#![warn(clippy::pedantic, clippy::nursery, clippy::cargo)]` in each crate root;
+  `task lint` promotes these warnings to errors.
+- Keep duplicate-crate checks enabled. The named exceptions cover incompatible
+  proc-macro `syn` versions and WASI binding/parser `wit-bindgen`/`hashbrown` versions.
+  After dependency updates, inspect both commands below; metadata may retain
+  WASI-only macro dependencies absent from tree output. Remove an exception when
+  its duplicate disappears, and retain diagnostics for the host macOS/Linux graph.
 
-## Adding Tools
+```sh
+cargo tree --workspace --all-features --target all --locked -d
+cargo metadata --all-features --locked
+```
 
-1. Prefer Cargo-installed tools or rustup components when possible.
-2. If you add a new binary dependency, document it in the README and wire optional automation through Task (`preconditions` / `status`) instead of ad-hoc scripts.
+## Adding tools
+
+Prefer Cargo tools or rustup components. Document new binary dependencies in the
+README and wire optional automation through Task `preconditions`/`status` checks.

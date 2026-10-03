@@ -1,5 +1,19 @@
 use std::fmt::Write;
 
+/// Resolve a test program before replacing its environment with a snapshot.
+pub fn executable(name: &str) -> std::io::Result<String> {
+    let path = std::env::var_os("PATH")
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "missing PATH"))?;
+    let program = std::env::split_paths(&path)
+        .map(|directory| directory.join(name))
+        .find(|candidate| candidate.is_file())
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, name.to_owned()))?;
+    let program = std::path::absolute(program)?;
+    std::str::from_utf8(program.as_os_str().as_encoded_bytes())
+        .map(str::to_owned)
+        .map_err(std::io::Error::other)
+}
+
 /// Checks whether `text` contains ANSI SGR codes matching the given sequence.
 ///
 /// Different terminal libraries may emit combined (`\x1b[1;32m`) or split

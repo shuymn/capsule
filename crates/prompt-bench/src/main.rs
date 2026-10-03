@@ -1,33 +1,34 @@
-//! Benchmark capsule (daemon socket) vs `starship prompt`.
+//! Measure prompt responses only after verifying the requested local workload ran.
 
 #![warn(clippy::pedantic, clippy::nursery, clippy::cargo)]
 
+mod worker;
+
 use std::{
     ffi::OsString,
+    fmt::Write as _,
     fs,
-    io::{self, BufRead, BufReader, Write},
+    io::{self, Read, Seek},
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
-    sync::atomic::{AtomicU64, Ordering},
+    process::{Command, Output, Stdio},
     time::{Duration, Instant},
 };
 
 use anyhow::Context;
 use capsule_prompt_bench::{
-    DEFAULT_ITERATIONS, RENDER_RESULT_WAIT_SECS, RunMetadata, ScenarioResult, UPDATE_WAIT_MS,
-    build_path_env, resolve_binary, summarize,
+    ACQUISITION_WAIT_SECS, DEFAULT_ITERATIONS, RunMetadata, ScenarioResult, build_path_env,
+    resolve_binary, summarize,
 };
-use capsule_protocol::{Message, Request, SessionId, generation::PromptGeneration};
+use capsule_protocol::session::{Request, Snapshot};
 use clap::Parser;
 use serde::Serialize;
 
-/// Monotonic request counter shared across all benchmark connections. The daemon rejects
-/// `generation` that does not increase per [`SessionId`], so this must not reset when
-/// reconnecting per workload.
-static CAPSULE_PROMPT_GENERATION: AtomicU64 = AtomicU64::new(0);
+use self::worker::Worker;
 
 #[derive(Parser, Debug)]
-#[command(about = "Benchmark capsule and starship prompt latency.")]
+#[command(
+    about = "Verify capsule and starship acquisition workloads and report diagnostic durations."
+)]
 struct Args {
     /// Path to the capsule binary (expect a release build; default is `target/release/capsule`).
     #[arg(long, default_value = "target/release/capsule")]
@@ -57,6 +58,7 @@ struct Args {
 struct Workload {
     path: PathBuf,
     subdirs: Vec<PathBuf>,
+    toolchain: bool,
 }
 
 #[derive(Serialize)]
@@ -68,17 +70,20 @@ struct JsonReport<'a> {
 fn main() -> anyhow::Result<()> {
     #[cfg(unix)]
     {
-        unix_main()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(unix_main())
     }
     #[cfg(not(unix))]
     {
-        eprintln!("prompt-bench: unix-only (requires unix domain sockets)");
+        eprintln!("prompt-bench: unix-only (requires the capsule session worker)");
         std::process::exit(2);
     }
 }
 
 #[cfg(unix)]
-fn unix_main() -> anyhow::Result<()> {
+async fn unix_main() -> anyhow::Result<()> {
     let args = Args::parse();
     if args.iterations < 1 {
         anyhow::bail!("--iterations must be at least 1");
@@ -89,6 +94,7 @@ fn unix_main() -> anyhow::Result<()> {
     let starship_bin =
         resolve_binary(&args.starship_bin, "starship").context("resolve starship binary")?;
     let git_bin = resolve_binary(&args.git_bin, "git").context("resolve git binary")?;
+    let rustc_bin = resolve_binary(Path::new("rustc"), "rustc").context("resolve rustc binary")?;
 
     let temp = tempfile::Builder::new()
         .prefix("prompt-bench-")
@@ -96,34 +102,39 @@ fn unix_main() -> anyhow::Result<()> {
         .context("create temp dir")?;
     let root = temp.path();
     let home_dir = root.join("home");
-    fs::create_dir_all(home_dir.join(".capsule")).context("create fake HOME/.capsule")?;
+    fs::create_dir_all(&home_dir).context("create fake HOME")?;
 
     let workloads =
         create_workloads(root, &git_bin, args.iterations).context("create benchmark workloads")?;
 
     write_bench_config(&home_dir).context("write bench config")?;
+    let probe =
+        ToolchainProbe::create(root, &rustc_bin).context("create rustc acquisition probe")?;
+    let path_env = format!(
+        "{}:{}",
+        probe.bin_dir.display(),
+        build_path_env(&capsule_bin, &starship_bin, &git_bin, Some(&rustc_bin))
+    );
 
-    eprintln!("Starting capsule daemon...");
-    let mut daemon = start_daemon(&capsule_bin, &home_dir).context("start daemon")?;
-
-    let results = match run_benchmark(
-        &workloads,
-        &capsule_bin,
-        &starship_bin,
-        &git_bin,
-        &home_dir,
-        args.iterations,
-    ) {
-        Ok(r) => r,
-        Err(e) => {
-            stop_daemon(&mut daemon);
-            return Err(e);
-        }
+    let environment = BenchmarkEnvironment {
+        home_dir: &home_dir,
+        probe: &probe,
+        path_env: &path_env,
     };
+    let mut worker = Worker::spawn(&capsule_bin, &environment)?;
+    let result = run_benchmark(
+        &mut worker,
+        &workloads,
+        &starship_bin,
+        &environment,
+        args.iterations,
+    )
+    .await;
+    let shutdown = worker.shutdown().await;
+    let results = result?;
+    shutdown?;
 
-    stop_daemon(&mut daemon);
-
-    let rustc = try_command_output(&["rustc", "-V"]);
+    let rustc = probe.version;
     let metadata = RunMetadata {
         iterations: args.iterations,
         capsule_bin: capsule_bin.display().to_string(),
@@ -159,19 +170,16 @@ fn format_ms(value: f64) -> String {
 }
 
 fn render_markdown(metadata: &RunMetadata, results: &[ScenarioResult]) -> String {
-    // Build a lookup: workload -> starship fast p50 for speedup calculation.
-    let starship_p50: std::collections::HashMap<&str, f64> = results
-        .iter()
-        .filter(|r| r.tool == "starship")
-        .map(|r| (r.workload.as_str(), r.fast.p50_ms))
-        .collect();
-
     let mut lines: Vec<String> = vec![
         "# Prompt Benchmark Report".to_owned(),
         String::new(),
-        "capsule: direct daemon socket (fast = RenderResult, slow = +Update with git/toolchain)."
+        "capsule: persistent session worker (initial = first matching response; completed = explicit complete=1)."
             .to_owned(),
-        "starship: `starship prompt` subprocess.".to_owned(),
+        "starship: `starship prompt` subprocess with an isolated explicit configuration.".to_owned(),
+        "These paths do not measure interactive zsh input latency. No cross-tool speedup is inferred."
+            .to_owned(),
+        "Every sample requires completion; same-generation redraws verify zero new rustc acquisitions."
+            .to_owned(),
         String::new(),
         "## Environment".to_owned(),
         String::new(),
@@ -183,33 +191,22 @@ fn render_markdown(metadata: &RunMetadata, results: &[ScenarioResult]) -> String
         String::new(),
         "## Results".to_owned(),
         String::new(),
-        "| Workload | Tool | p50 ms | p95 ms | vs starship |".to_owned(),
+        "| Workload | Tool | initial p50 / completed p50 ms | initial p95 / completed p95 ms | verified rustc calls |".to_owned(),
         "| --- | --- | ---: | ---: | ---: |".to_owned(),
     ];
 
     for r in results {
         let p50 = r.slow.as_ref().map_or_else(
-            || format_ms(r.fast.p50_ms),
+            || format!("{} / —", format_ms(r.fast.p50_ms)),
             |s| format!("{} / {}", format_ms(r.fast.p50_ms), format_ms(s.p50_ms)),
         );
         let p95 = r.slow.as_ref().map_or_else(
-            || format_ms(r.fast.p95_ms),
+            || format!("{} / —", format_ms(r.fast.p95_ms)),
             |s| format!("{} / {}", format_ms(r.fast.p95_ms), format_ms(s.p95_ms)),
         );
-        let speedup = if r.tool == "starship" {
-            String::new()
-        } else if let Some(&star_p50) = starship_p50.get(r.workload.as_str()) {
-            let fast_x = format!("x{:.1}", star_p50 / r.fast.p50_ms);
-            match r.slow.as_ref() {
-                Some(s) => format!("{fast_x} / x{:.1}", star_p50 / s.p50_ms),
-                None => fast_x,
-            }
-        } else {
-            String::new()
-        };
         lines.push(format!(
             "| {} | {} | {} | {} | {} |",
-            r.workload, r.tool, p50, p95, speedup,
+            r.workload, r.tool, p50, p95, r.toolchain_acquisitions,
         ));
     }
 
@@ -220,7 +217,7 @@ fn try_command_output(argv: &[&str]) -> String {
     if argv.is_empty() {
         return "unknown".to_owned();
     }
-    let Ok(out) = Command::new(argv[0]).args(&argv[1..]).output() else {
+    let Ok((out, _)) = bounded_output(Command::new(argv[0]).args(&argv[1..])) else {
         return "unknown".to_owned();
     };
     if !out.status.success() {
@@ -233,13 +230,20 @@ fn run_command(cmd: &[&str], cwd: &Path) -> anyhow::Result<()> {
     if cmd.is_empty() {
         anyhow::bail!("empty command");
     }
-    let status = Command::new(cmd[0])
-        .args(&cmd[1..])
-        .current_dir(cwd)
-        .status()
-        .with_context(|| format!("run {}", cmd.join(" ")))?;
-    if !status.success() {
-        anyhow::bail!("command failed: {}", cmd.join(" "));
+    let (output, _) = bounded_output(
+        Command::new(cmd[0])
+            .args(&cmd[1..])
+            .current_dir(cwd)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null"),
+    )
+    .with_context(|| format!("run {}", cmd.join(" ")))?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "command failed: {}: {}",
+            cmd.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
     Ok(())
 }
@@ -268,10 +272,8 @@ fn create_toolchain_repo(repo: &Path, git_bin: &Path) -> anyhow::Result<()> {
             .with_context(|| nested.display().to_string())?;
     }
 
-    fs::write(
-        repo.join("Cargo.toml"),
-        "[package]\nname = \"prompt-bench-toolchain\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
-    )?;
+    fs::write(repo.join("Cargo.toml"), TOOLCHAIN_MANIFEST)?;
+    fs::write(repo.join(".gitignore"), "_bench_*/\n")?;
     fs::write(
         repo.join("src").join("main.rs"),
         "fn main() {\n    println!(\"toolchain marker\");\n}\n",
@@ -282,11 +284,17 @@ fn create_toolchain_repo(repo: &Path, git_bin: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn create_subdirs(base: &Path, count: usize) -> anyhow::Result<Vec<PathBuf>> {
+const TOOLCHAIN_MANIFEST: &str =
+    "[package]\nname = \"prompt-bench-toolchain\"\nversion = \"0.1.0\"\nedition = \"2024\"\n";
+
+fn create_subdirs(base: &Path, count: usize, toolchain: bool) -> anyhow::Result<Vec<PathBuf>> {
     let mut dirs = Vec::with_capacity(count);
     for i in 0..count {
         let d = base.join(format!("_bench_{i:04}"));
         fs::create_dir_all(&d).with_context(|| d.display().to_string())?;
+        if toolchain {
+            fs::write(d.join("Cargo.toml"), TOOLCHAIN_MANIFEST)?;
+        }
         dirs.push(d);
     }
     Ok(dirs)
@@ -313,332 +321,498 @@ fn create_workloads(
             "outside".to_owned(),
             Workload {
                 path: outside.clone(),
-                subdirs: create_subdirs(&outside, subdir_count)?,
+                subdirs: create_subdirs(&outside, subdir_count, false)?,
+                toolchain: false,
             },
         ),
         (
             "repo-toolchain".to_owned(),
             Workload {
                 path: repo_toolchain.clone(),
-                subdirs: create_subdirs(&repo_toolchain, subdir_count)?,
+                subdirs: create_subdirs(&repo_toolchain, subdir_count, true)?,
+                toolchain: true,
             },
         ),
     ])
 }
 
 fn write_bench_config(home_dir: &Path) -> io::Result<()> {
-    const CONFIG: &str = r#"[[module]]
+    let config_dir = home_dir.join(".config/capsule");
+    fs::create_dir_all(&config_dir)?;
+    fs::write(config_dir.join("config.toml"), CAPSULE_CONFIG)?;
+    fs::write(home_dir.join("starship.toml"), STARSHIP_CONFIG)
+}
+
+const CAPSULE_CONFIG: &str = r#"schema_version = 2
+[[module]]
 name = "rust"
-icon = "🦀"
 when = { files = ["Cargo.toml"] }
+format = "{version}"
 
-[[module.source]]
-command = ["rustc", "--version"]
-regex = "rustc (\S+)"
+[module.values]
+version = [{ command = ["rustc", "--version"] }]
 "#;
-    fs::write(home_dir.join(".capsule").join("config.toml"), CONFIG)
+
+const STARSHIP_CONFIG: &str = r#"format = '$directory$git_branch$git_status${custom.rust}$character'
+add_newline = false
+command_timeout = 5000
+
+[custom.rust]
+detect_files = ["Cargo.toml"]
+command = "rustc --version"
+format = '$output '
+shell = ["sh"]
+"#;
+
+struct BenchmarkEnvironment<'a> {
+    home_dir: &'a Path,
+    probe: &'a ToolchainProbe,
+    path_env: &'a str,
 }
 
-#[cfg(unix)]
-fn start_daemon(capsule_bin: &Path, home_dir: &Path) -> anyhow::Result<Child> {
-    use std::os::unix::net::UnixStream;
-
-    let home = OsString::from(home_dir.as_os_str());
-    let mut child = Command::new(capsule_bin)
-        .arg("daemon")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .env("HOME", home)
-        .spawn()
-        .with_context(|| format!("spawn {}", capsule_bin.display()))?;
-
-    let sock_path = home_dir.join(".capsule").join("capsule.sock");
-    for _ in 0..200 {
-        std::thread::sleep(Duration::from_millis(10));
-        if sock_path.exists() && UnixStream::connect(&sock_path).is_ok() {
-            return Ok(child);
+impl BenchmarkEnvironment<'_> {
+    fn snapshot(&self, cwd: &Path) -> Snapshot {
+        Snapshot {
+            cwd: cwd.to_path_buf(),
+            env: vec![
+                (OsString::from("HOME"), self.home_dir.as_os_str().to_owned()),
+                (
+                    OsString::from("XDG_CONFIG_HOME"),
+                    self.home_dir.join(".config").into_os_string(),
+                ),
+                (OsString::from("PATH"), OsString::from(self.path_env)),
+                (OsString::from("GIT_CONFIG_NOSYSTEM"), OsString::from("1")),
+                (
+                    OsString::from("GIT_CONFIG_GLOBAL"),
+                    OsString::from("/dev/null"),
+                ),
+            ],
         }
     }
-
-    let _ = child.kill();
-    let _ = child.wait();
-    anyhow::bail!("daemon failed to start within 2s");
 }
 
-#[cfg(unix)]
-fn stop_daemon(child: &mut Child) {
-    let pid = child.id();
-    let _ = Command::new("kill")
-        .args(["-TERM", &pid.to_string()])
-        .status();
-    for _ in 0..30 {
-        if let Ok(Some(_)) = child.try_wait() {
-            return;
+struct ToolchainProbe {
+    bin_dir: PathBuf,
+    log_path: PathBuf,
+    version: String,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct AcquisitionCounts {
+    started: usize,
+    completed: usize,
+    failed: usize,
+}
+
+impl ToolchainProbe {
+    fn create(root: &Path, rustc_bin: &Path) -> anyhow::Result<Self> {
+        let (output, _) =
+            bounded_output(Command::new(rustc_bin).arg("--version").current_dir(root))?;
+        anyhow::ensure!(output.status.success(), "rustc --version failed");
+        let version = String::from_utf8(output.stdout)?.trim().to_owned();
+        anyhow::ensure!(
+            version.starts_with("rustc "),
+            "unexpected rustc version: {version}"
+        );
+
+        let bin_dir = root.join("probe-bin");
+        fs::create_dir_all(&bin_dir)?;
+        let log_path = root.join("rustc-acquisitions.log");
+        fs::write(&log_path, "")?;
+        let rustup_home = std::env::var_os("RUSTUP_HOME").or_else(|| {
+            std::env::var_os("HOME")
+                .map(|home| PathBuf::from(home).join(".rustup").into_os_string())
+        });
+        let mut rustup_env = rustup_home.map_or_else(String::new, |path| {
+            format!("RUSTUP_HOME={} ", shell_quote(&path.to_string_lossy()))
+        });
+        if let Some(toolchain) = std::env::var_os("RUSTUP_TOOLCHAIN") {
+            let _ = write!(
+                rustup_env,
+                "RUSTUP_TOOLCHAIN={} ",
+                shell_quote(&toolchain.to_string_lossy())
+            );
         }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-}
+        let shell = resolve_binary(Path::new("sh"), "shell")?;
+        let script = format!(
+            "#!{shell}\nprintf '%s\\n' start >> {log} || exit 125\n{rustup_env}{rustc} \"$@\"\nstatus=$?\nprintf 'finish:%s\\n' \"$status\" >> {log} || exit 125\nexit \"$status\"\n",
+            shell = shell.display(),
+            log = shell_quote(&log_path.to_string_lossy()),
+            rustc = shell_quote(&rustc_bin.to_string_lossy()),
+        );
+        let wrapper = bin_dir.join("rustc");
+        fs::write(&wrapper, script)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
 
-#[cfg(unix)]
-struct CapsuleSample {
-    fast_ms: f64,
-    total_ms: f64,
-}
-
-#[cfg(unix)]
-struct CapsuleConn {
-    read: BufReader<std::os::unix::net::UnixStream>,
-    write: std::os::unix::net::UnixStream,
-    path_env: String,
-}
-
-#[cfg(unix)]
-impl CapsuleConn {
-    fn connect(sock_path: &Path, path_env: String) -> anyhow::Result<Self> {
-        use std::os::unix::net::UnixStream;
-
-        let stream = UnixStream::connect(sock_path)
-            .with_context(|| format!("connect {}", sock_path.display()))?;
-        stream
-            .set_read_timeout(Some(Duration::from_secs(RENDER_RESULT_WAIT_SECS)))
-            .context("set read timeout")?;
-        let write = stream
-            .try_clone()
-            .context("clone unix stream for writing")?;
+            fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755))?;
+        }
         Ok(Self {
-            read: BufReader::new(stream),
-            write,
-            path_env,
+            bin_dir,
+            log_path,
+            version,
         })
     }
 
-    fn measure(&mut self, cwd: &Path, update_wait: Duration) -> anyhow::Result<CapsuleSample> {
-        let generation = CAPSULE_PROMPT_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
-        let session_id = SessionId::from_hex(b"deadbeefcafebabe").context("bench session id")?;
-        let req = Request {
-            session_id,
-            generation: PromptGeneration::new(generation),
-            cwd: cwd.display().to_string(),
-            cols: 120,
-            last_exit_code: 0,
-            duration_ms: None,
-            keymap: "main".into(),
-            env_vars: vec![("PATH".into(), self.path_env.clone())],
-        };
-        let mut wire = req.to_wire();
-        wire.push(b'\n');
-
-        self.read
-            .get_mut()
-            .set_read_timeout(Some(Duration::from_secs(RENDER_RESULT_WAIT_SECS)))
-            .context("set read timeout for RenderResult")?;
-
-        let start = Instant::now();
-        self.write
-            .write_all(&wire)
-            .context("send request to daemon")?;
-        self.write.flush().context("flush daemon socket")?;
-
-        let requested_generation = PromptGeneration::new(generation);
-        let mut line = Vec::new();
-        loop {
-            line.clear();
-            match self.read.read_until(b'\n', &mut line) {
-                Ok(0) => anyhow::bail!(
-                    "daemon closed before RenderResult for generation {}",
-                    requested_generation.get()
-                ),
-                Ok(_) => {
-                    if line.last() == Some(&b'\n') {
-                        line.pop();
-                    }
-                    if let Message::RenderResult(rr) =
-                        Message::from_wire(&line).context("parse RenderResult")?
-                        && rr.generation == requested_generation
-                    {
-                        break;
-                    }
+    fn counts(&self) -> anyhow::Result<AcquisitionCounts> {
+        let mut counts = AcquisitionCounts::default();
+        for line in fs::read_to_string(&self.log_path)?.lines() {
+            match line {
+                "start" => counts.started += 1,
+                "finish:0" => counts.completed += 1,
+                line if line.starts_with("finish:") => {
+                    counts.completed += 1;
+                    counts.failed += 1;
                 }
-                Err(e) => return Err(e).context("read RenderResult line"),
+                _ => anyhow::bail!("invalid acquisition record: {line}"),
             }
         }
-        let fast_ms = start.elapsed().as_secs_f64() * 1000.0;
+        Ok(counts)
+    }
 
-        self.read
-            .get_mut()
-            .set_read_timeout(Some(update_wait))
-            .context("set read timeout for Update")?;
-
-        let mut total_ms = fast_ms;
-        loop {
-            line.clear();
-            match self.read.read_until(b'\n', &mut line) {
-                Ok(0) => break,
-                Ok(_) => {
-                    if line.last() == Some(&b'\n') {
-                        line.pop();
-                    }
-                    let message = Message::from_wire(&line).context("parse Update line")?;
-                    if let Message::Update(update) = message
-                        && update.generation == requested_generation
-                    {
-                        total_ms = start.elapsed().as_secs_f64() * 1000.0;
-                        break;
-                    }
-                }
-                Err(e)
-                    if e.kind() == io::ErrorKind::WouldBlock
-                        || e.kind() == io::ErrorKind::TimedOut =>
-                {
-                    break;
-                }
-                Err(e) => return Err(e).context("read Update line"),
-            }
-        }
-
-        Ok(CapsuleSample { fast_ms, total_ms })
+    fn verify(&self, before: AcquisitionCounts, expected: usize) -> anyhow::Result<()> {
+        let after = self.counts()?;
+        anyhow::ensure!(
+            after.started == before.started + expected
+                && after.completed == before.completed + expected
+                && after.failed == before.failed,
+            "rustc acquisition mismatch: expected {expected} successful calls, before {before:?}, after {after:?}"
+        );
+        Ok(())
     }
 }
 
-fn rustc_path() -> Option<PathBuf> {
-    resolve_binary(Path::new("rustc"), "rustc").ok()
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-fn measure_starship(starship_bin: &Path, cwd: &Path) -> anyhow::Result<f64> {
-    let start = Instant::now();
-    let _ = Command::new(starship_bin)
-        .args(["prompt", "--status=0", "--cmd-duration=0"])
-        .current_dir(cwd)
-        .env("STARSHIP_SHELL", "zsh")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .with_context(|| format!("run {}", starship_bin.display()))?;
-    Ok(start.elapsed().as_secs_f64() * 1000.0)
+fn measure_starship(
+    starship_bin: &Path,
+    cwd: &Path,
+    environment: &BenchmarkEnvironment<'_>,
+    toolchain: bool,
+) -> anyhow::Result<f64> {
+    let before = environment.probe.counts()?;
+    let (output, elapsed) = bounded_output(
+        Command::new(starship_bin)
+            .args([
+                "prompt",
+                "--status=0",
+                "--cmd-duration=0",
+                "--terminal-width=240",
+            ])
+            .current_dir(cwd)
+            .env("STARSHIP_SHELL", "zsh")
+            .env("HOME", environment.home_dir)
+            .env("XDG_CONFIG_HOME", environment.home_dir.join(".config"))
+            .env(
+                "STARSHIP_CONFIG",
+                environment.home_dir.join("starship.toml"),
+            )
+            .env("PATH", environment.path_env),
+    )
+    .with_context(|| format!("run {}", starship_bin.display()))?;
+    anyhow::ensure!(
+        output.status.success(),
+        "starship failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if toolchain {
+        anyhow::ensure!(
+            String::from_utf8_lossy(&output.stdout).contains(&environment.probe.version),
+            "starship prompt is missing rustc output"
+        );
+    }
+    environment.probe.verify(before, usize::from(toolchain))?;
+    Ok(elapsed.as_secs_f64() * 1000.0)
+}
+
+fn bounded_output(command: &mut Command) -> anyhow::Result<(Output, Duration)> {
+    bounded_output_with_timeout(command, Duration::from_secs(ACQUISITION_WAIT_SECS))
+}
+
+fn bounded_output_with_timeout(
+    command: &mut Command,
+    timeout: Duration,
+) -> anyhow::Result<(Output, Duration)> {
+    let mut stdout = tempfile::tempfile()?;
+    let mut stderr = tempfile::tempfile()?;
+    command
+        .stdin(Stdio::null())
+        .stdout(stdout.try_clone()?)
+        .stderr(stderr.try_clone()?);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+
+        command.process_group(0);
+    }
+    let started = Instant::now();
+    let mut child = command.spawn()?;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if started.elapsed() >= timeout {
+            #[cfg(unix)]
+            let _ = Command::new("kill")
+                .args(["-KILL", "--", &format!("-{}", child.id())])
+                .status();
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!("subprocess exceeded {}s deadline", timeout.as_secs_f64());
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let elapsed = started.elapsed();
+    stdout.rewind()?;
+    stderr.rewind()?;
+    let mut output = Output {
+        status,
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+    };
+    stdout.read_to_end(&mut output.stdout)?;
+    stderr.read_to_end(&mut output.stderr)?;
+    Ok((output, elapsed))
 }
 
 #[cfg(unix)]
-#[allow(clippy::too_many_arguments)]
-fn run_benchmark(
+async fn run_benchmark(
+    worker: &mut Worker,
     workloads: &[(String, Workload)],
-    capsule_bin: &Path,
     starship_bin: &Path,
-    git_bin: &Path,
-    home_dir: &Path,
+    environment: &BenchmarkEnvironment<'_>,
     iterations: usize,
 ) -> anyhow::Result<Vec<ScenarioResult>> {
     let mut results = Vec::new();
-    let total = workloads.len() * 3;
-    let sock_path = home_dir.join(".capsule").join("capsule.sock");
-    let path_env = build_path_env(capsule_bin, starship_bin, git_bin, rustc_path().as_deref());
-    let update_wait = Duration::from_millis(UPDATE_WAIT_MS);
-
-    let mut step = 0usize;
-
-    // Phase 1: capsule (uncached) — unique cwd per iteration to force cache miss.
+    let mut generation = 0;
     for (name, workload) in workloads {
-        step += 1;
-        eprintln!("[{step}/{total}] capsule {name}");
-
-        let mut conn = CapsuleConn::connect(&sock_path, path_env.clone())?;
-        let mut subdir_idx = 0usize;
-
-        for _ in 0..2 {
-            conn.measure(&workload.subdirs[subdir_idx], update_wait)
-                .with_context(|| format!("capsule warm-up {name}"))?;
-            subdir_idx += 1;
+        eprintln!("capsule acquisition: {name}");
+        let mut samples = Vec::with_capacity(iterations);
+        for (index, cwd) in workload.subdirs.iter().take(iterations + 2).enumerate() {
+            generation += 1;
+            let sample = worker
+                .measure(
+                    &request(generation, cwd, environment),
+                    environment.probe,
+                    usize::from(workload.toolchain),
+                )
+                .await
+                .with_context(|| format!("capsule acquisition {name}"))?;
+            if index >= 2 {
+                samples.push(sample);
+            }
         }
-
-        let mut capsule_samples = Vec::with_capacity(iterations);
-        for _ in 0..iterations {
-            capsule_samples.push(
-                conn.measure(&workload.subdirs[subdir_idx], update_wait)
-                    .with_context(|| format!("capsule sample {name}"))?,
-            );
-            subdir_idx += 1;
-        }
-
-        let fast_values: Vec<f64> = capsule_samples.iter().map(|s| s.fast_ms).collect();
-        let total_values: Vec<f64> = capsule_samples.iter().map(|s| s.total_ms).collect();
-        let has_slow = capsule_samples
-            .iter()
-            .any(|s| (s.total_ms - s.fast_ms).abs() > f64::EPSILON);
-        results.push(ScenarioResult {
-            tool: "capsule".to_owned(),
-            workload: name.clone(),
-
-            fast: summarize(&fast_values),
-            slow: if has_slow {
-                Some(summarize(&total_values))
-            } else {
-                None
-            },
-        });
+        results.push(worker_result(
+            "capsule acquisition",
+            name,
+            &samples,
+            usize::from(workload.toolchain) * iterations,
+        ));
     }
-
-    // Phase 2: capsule (cached) — same cwd for every iteration to hit the cache.
-    let cached_drain_wait = Duration::from_millis(1);
     for (name, workload) in workloads {
-        step += 1;
-        eprintln!("[{step}/{total}] capsule (cached) {name}");
-
-        let mut conn = CapsuleConn::connect(&sock_path, path_env.clone())?;
-        let cached_cwd = &workload.path;
-
-        // Warm-up: wait for Update so that slow-module results are cached.
-        for _ in 0..2 {
-            conn.measure(cached_cwd, update_wait)
-                .with_context(|| format!("capsule cached warm-up {name}"))?;
+        eprintln!("capsule same-generation redraw: {name}");
+        generation += 1;
+        let mut current = request(generation, &workload.path, environment);
+        worker
+            .measure(&current, environment.probe, usize::from(workload.toolchain))
+            .await
+            .with_context(|| format!("capsule redraw acquisition warm-up {name}"))?;
+        let mut samples = Vec::with_capacity(iterations);
+        for index in 0..iterations + 2 {
+            // A changed glyph distinguishes this redraw from buffered duplicate
+            // complete responses for the previous request in the same generation.
+            current.keymap = if index % 2 == 0 { "vicmd" } else { "main" }.into();
+            current.cols = if index % 2 == 0 { 239 } else { 240 };
+            let sample = worker
+                .measure(&current, environment.probe, 0)
+                .await
+                .with_context(|| format!("capsule same-generation redraw {name}"))?;
+            if index >= 2 {
+                samples.push(sample);
+            }
         }
-
-        let mut cached_fast = Vec::with_capacity(iterations);
-        for _ in 0..iterations {
-            let sample = conn
-                .measure(cached_cwd, cached_drain_wait)
-                .with_context(|| format!("capsule cached sample {name}"))?;
-            cached_fast.push(sample.fast_ms);
-        }
-
-        results.push(ScenarioResult {
-            tool: "capsule (cached)".to_owned(),
-            workload: name.clone(),
-
-            fast: summarize(&cached_fast),
-            slow: None,
-        });
+        results.push(worker_result(
+            "capsule same-generation redraw",
+            name,
+            &samples,
+            0,
+        ));
     }
-
-    // Phase 3: starship
     for (name, workload) in workloads {
-        step += 1;
-        eprintln!("[{step}/{total}] starship {name}");
-
-        for warmup_cwd in workload.subdirs.iter().take(2) {
-            measure_starship(starship_bin, warmup_cwd)
-                .with_context(|| format!("starship warm-up {name}"))?;
+        eprintln!("starship: {name}");
+        let mut values = Vec::with_capacity(iterations);
+        for (index, cwd) in workload.subdirs.iter().take(iterations + 2).enumerate() {
+            let sample = measure_starship(starship_bin, cwd, environment, workload.toolchain)
+                .with_context(|| format!("starship sample {name}"))?;
+            if index >= 2 {
+                values.push(sample);
+            }
         }
-
-        let mut starship_values = Vec::with_capacity(iterations);
-        for sample_cwd in workload.subdirs.iter().skip(2).take(iterations) {
-            starship_values.push(
-                measure_starship(starship_bin, sample_cwd)
-                    .with_context(|| format!("starship sample {name}"))?,
-            );
-        }
-
         results.push(ScenarioResult {
             tool: "starship".to_owned(),
             workload: name.clone(),
-
-            fast: summarize(&starship_values),
+            fast: summarize(&values),
             slow: None,
+            toolchain_acquisitions: usize::from(workload.toolchain) * iterations,
         });
     }
-
     results.sort_by(|a, b| (&a.workload, &a.tool).cmp(&(&b.workload, &b.tool)));
-
     Ok(results)
+}
+
+fn request(generation: u64, cwd: &Path, environment: &BenchmarkEnvironment<'_>) -> Request {
+    Request {
+        generation,
+        snapshot: environment.snapshot(cwd),
+        cols: 240,
+        last_exit_code: 0,
+        duration_ms: None,
+        keymap: "main".into(),
+    }
+}
+
+fn worker_result(
+    tool: &str,
+    workload: &str,
+    samples: &[worker::Sample],
+    calls: usize,
+) -> ScenarioResult {
+    ScenarioResult {
+        tool: tool.to_owned(),
+        workload: workload.to_owned(),
+        fast: summarize(
+            &samples
+                .iter()
+                .map(|sample| sample.initial_ms)
+                .collect::<Vec<_>>(),
+        ),
+        slow: Some(summarize(
+            &samples
+                .iter()
+                .map(|sample| sample.completed_ms)
+                .collect::<Vec<_>>(),
+        )),
+        toolchain_acquisitions: calls,
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    use super::*;
+
+    fn executable(path: &Path, script: &str) -> anyhow::Result<()> {
+        let shell = resolve_binary(Path::new("sh"), "shell")?;
+        fs::write(
+            path,
+            script.replacen("#!/bin/sh", &format!("#!{}", shell.display()), 1),
+        )?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+        Ok(())
+    }
+
+    fn probe(root: &Path) -> anyhow::Result<ToolchainProbe> {
+        let rustc = root.join("real-rustc");
+        executable(
+            &rustc,
+            "#!/bin/sh\nprintf '%s\\n' 'rustc 1.99.0 (fixture)'\n",
+        )?;
+        ToolchainProbe::create(root, &rustc)
+    }
+
+    #[test]
+    fn schema_v2_fixture_activates_one_command_in_every_toolchain_cwd() -> anyhow::Result<()> {
+        use capsule_core::plan::{ConfigPlan, FormatPart, Source};
+
+        let capsule = ConfigPlan::parse(CAPSULE_CONFIG)?;
+        assert_eq!(capsule.modules.len(), 1);
+        assert_eq!(capsule.modules[0].format.0, vec![FormatPart::Value(0)]);
+        assert_eq!(capsule.modules[0].values[0].name, "version");
+        assert_eq!(
+            capsule.modules[0].values[0].candidates[0].source,
+            Source::Command(vec!["rustc".into(), "--version".into()])
+        );
+        let starship: toml::Value = toml::from_str(STARSHIP_CONFIG)?;
+        assert!(
+            starship["format"]
+                .as_str()
+                .is_some_and(|format| format.contains("${custom.rust}"))
+        );
+        assert_eq!(
+            starship["custom"]["rust"]["command"].as_str(),
+            Some("rustc --version")
+        );
+        let root = tempfile::tempdir()?;
+        write_bench_config(root.path())?;
+        assert_eq!(
+            fs::read_to_string(root.path().join(".config/capsule/config.toml"))?,
+            CAPSULE_CONFIG
+        );
+        for cwd in create_subdirs(&root.path().join("rust"), 3, true)? {
+            assert!(cwd.join(&capsule.modules[0].when.files[0]).is_file());
+        }
+        for cwd in create_subdirs(&root.path().join("outside"), 3, false)? {
+            assert!(!cwd.join("Cargo.toml").exists());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn probe_rejects_skipped_failed_and_unfinished_acquisitions() -> anyhow::Result<()> {
+        let root = tempfile::tempdir()?;
+        let probe = probe(root.path())?;
+        let before = probe.counts()?;
+        assert!(probe.verify(before, 1).is_err());
+        let (output, _) =
+            bounded_output(Command::new(probe.bin_dir.join("rustc")).arg("--version"))?;
+        assert!(output.status.success());
+        assert!(String::from_utf8(output.stdout)?.contains(&probe.version));
+        probe.verify(before, 1)?;
+        fs::write(&probe.log_path, "start\n")?;
+        assert!(probe.verify(before, 1).is_err());
+        fs::write(&probe.log_path, "start\nfinish:1\n")?;
+        assert!(probe.verify(before, 1).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn starship_requires_success_output_and_exact_command_count() -> anyhow::Result<()> {
+        let root = tempfile::tempdir()?;
+        let probe = probe(root.path())?;
+        let path_env = format!("{}:{}", probe.bin_dir.display(), std::env::var("PATH")?);
+        let environment = BenchmarkEnvironment {
+            home_dir: root.path(),
+            probe: &probe,
+            path_env: &path_env,
+        };
+        let starship = root.path().join("starship");
+        executable(
+            &starship,
+            "#!/bin/sh\ntest \"$STARSHIP_CONFIG\" = \"$HOME/starship.toml\" || exit 1\nrustc --version\n",
+        )?;
+        measure_starship(&starship, root.path(), &environment, true)?;
+        executable(&starship, "#!/bin/sh\nexit 42\n")?;
+        assert!(measure_starship(&starship, root.path(), &environment, false).is_err());
+        executable(
+            &starship,
+            "#!/bin/sh\nprintf '%s\\n' 'rustc 1.99.0 (fixture)'\n",
+        )?;
+        assert!(measure_starship(&starship, root.path(), &environment, true).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn subprocess_deadline_returns_an_error() {
+        assert!(
+            bounded_output_with_timeout(
+                Command::new("sh").args(["-c", "exec sleep 30"]),
+                Duration::from_millis(20)
+            )
+            .is_err()
+        );
+    }
 }

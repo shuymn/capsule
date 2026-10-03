@@ -75,6 +75,7 @@ tasks:
       Runs unit, integration, and documentation tests across the workspace.
     cmds:
       - cargo test --workspace --all-targets --all-features --locked
+      - cargo test --workspace --doc --all-features --locked
 
   doc:
     desc: Build documentation
@@ -96,7 +97,7 @@ tasks:
     desc: Check formatting
     summary: |
       Verifies Rust formatting without modifying files.
-      Uses the repo toolchain (nightly) so rustfmt.toml unstable options apply.
+      Uses stable Rust and the edition settings in rustfmt.toml.
     cmds:
       - cargo fmt --all -- --check
 
@@ -104,7 +105,7 @@ tasks:
     aliases: [fmt]
     desc: Format code
     summary: |
-      Formats all Rust sources in the workspace (nightly rustfmt; see rustfmt.toml).
+      Formats all Rust sources in the workspace with stable rustfmt.
     cmds:
       - cargo fmt --all
 
@@ -163,7 +164,7 @@ tasks:
     desc: Benchmark capsule against starship
     summary: |
       Builds the release binary and runs the prompt benchmark.
-      capsule is measured via direct daemon socket; starship via subprocess.
+      capsule uses its session worker; starship uses a subprocess.
       Requires starship and git to be installed locally.
     cmds:
       - task: build:release

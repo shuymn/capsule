@@ -7,5 +7,7 @@ single-char-binding-names-threshold = 2
 excessive-nesting-threshold = 6
 
 # Proc-macro dependencies are migrating from syn 2 to syn 3 independently.
+# getrandom's WASI preview-2 and preview-3 bindings require different wit-bindgen versions.
+# Their macro metadata also retains wasmparser's older hashbrown beside indexmap's version.
 # See docs/tooling.md for the dependency check and removal condition.
-allowed-duplicate-crates = ["syn"]
+allowed-duplicate-crates = ["syn", "wit-bindgen", "hashbrown"]
