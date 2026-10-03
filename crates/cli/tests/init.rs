@@ -29,7 +29,7 @@ fn generated_init_preserves_user_hooks_and_can_be_evaluated_twice()
     input.write_all(&init.stdout)?;
     input.write_all(
         br#"
-[[ ${precmd_functions[*]} == '_capsule_precmd user_precmd' ]] || exit 11
+[[ ${precmd_functions[*]} == '_capsule_precmd user_precmd _capsule_finalize_prompt' ]] || exit 11
 [[ ${preexec_functions[*]} == '_capsule_preexec user_preexec' ]] || exit 12
 [[ ${zshexit_functions[*]} == '_capsule_cleanup_fds user_exit' ]] || exit 13
 [[ -n $PROMPT ]] || exit 14
