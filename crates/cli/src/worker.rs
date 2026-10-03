@@ -33,16 +33,44 @@ pub fn run() -> anyhow::Result<()> {
     result
 }
 
-struct State {
-    request: Arc<Request>,
-    plan: Arc<ConfigPlan>,
+#[derive(Default)]
+struct LoadedPlan {
+    config: ConfigPlan,
+    // Compare the bounded source rather than compiled regexes. An unchanged
+    // source reuses the Arc, including when a rejected reload keeps this plan.
+    source: Option<String>,
+}
+
+struct Display {
     modules: Vec<ModuleObservation>,
     context: ContextInfo,
+}
+
+struct State {
+    request: Arc<Request>,
+    plan: Arc<LoadedPlan>,
+    modules: Vec<ModuleObservation>,
+    context: ContextInfo,
+    // Only a settled generation may supply display data. Never feed retained
+    // observations back into acquisition or turn new Pending states into Ready.
+    retained: Option<Display>,
     complete: bool,
 }
 
 impl State {
-    fn new(request: Arc<Request>, plan: Arc<ConfigPlan>) -> Self {
+    fn new(request: Arc<Request>, plan: Arc<LoadedPlan>, previous: Option<Self>) -> Self {
+        let retained = previous
+            .filter(|previous| previous.request.snapshot == request.snapshot)
+            .and_then(|previous| {
+                if previous.complete {
+                    Some(Display {
+                        modules: previous.modules,
+                        context: previous.context,
+                    })
+                } else {
+                    previous.retained
+                }
+            });
         let context = ContextInfo {
             directory: local_directory(&request.snapshot),
             read_only: false,
@@ -53,6 +81,7 @@ impl State {
             plan,
             modules: Vec::new(),
             context,
+            retained,
             complete: false,
         }
     }
@@ -68,18 +97,32 @@ impl State {
                 }
             }
         }
+        self.retained = None;
         self.complete = true;
     }
 
     fn render(&self) -> Result<Vec<u8>, session::Error> {
         let now = time::OffsetDateTime::now_local().ok();
+        let local;
+        let (context, modules) = if self.complete {
+            (&self.context, self.modules.as_slice())
+        } else if let Some(retained) = &self.retained {
+            (&retained.context, retained.modules.as_slice())
+        } else {
+            local = ContextInfo {
+                directory: local_directory(&self.request.snapshot),
+                read_only: false,
+                git: None,
+            };
+            (&local, &[][..])
+        };
         let lines = view::render(
-            &self.plan,
+            &self.plan.config,
             &ViewInput {
-                directory: &self.context.directory,
-                read_only: self.context.read_only,
-                git: self.context.git.as_ref(),
-                modules: &self.modules,
+                directory: &context.directory,
+                read_only: context.read_only,
+                git: context.git.as_ref(),
+                modules,
                 cols: usize::from(self.request.cols),
                 last_exit_code: self.request.last_exit_code,
                 duration_ms: self.request.duration_ms,
@@ -98,7 +141,7 @@ impl State {
 
 enum Change {
     Complete,
-    Plan(Arc<ConfigPlan>, Option<String>),
+    Plan(Arc<LoadedPlan>, Option<String>),
     Context(Result<ContextInfo, AcquireError>),
     Condition(usize, Result<bool, AcquireError>),
     Value(usize, usize, Result<Option<String>, AcquireError>),
@@ -111,7 +154,7 @@ struct Event {
 
 struct Acquisition {
     request: Arc<Request>,
-    plan: Arc<ConfigPlan>,
+    plan: Arc<LoadedPlan>,
     runner: Runner,
     cancel: CancellationToken,
     tx: mpsc::Sender<Event>,
@@ -135,7 +178,7 @@ async fn serve() -> anyhow::Result<()> {
     let mut active_generation = 0;
     let mut pending: Option<Arc<Request>> = None;
     let mut state: Option<State> = None;
-    let mut plan = Arc::new(ConfigPlan::default());
+    let mut plan = Arc::new(LoadedPlan::default());
     let mut last_diagnostic = None;
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut hangup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
@@ -152,19 +195,23 @@ async fn serve() -> anyhow::Result<()> {
                 result = &mut writer => { result??; break; }
                 frame = frames.next() => {
                     let Some(frame) = frame? else { break; };
-                    let request = Request::decode(&frame)?;
+                    let mut request = Request::decode(&frame)?;
+                    // Environment order is not part of the acquisition input.
+                    request.snapshot.env.sort_unstable_by(|a, b| a.0.cmp(&b.0));
                     match state.as_mut() {
                         Some(current) if request.generation < current.request.generation => continue,
                         Some(current) if request.generation == current.request.generation => {
                             let current_request = Arc::make_mut(&mut current.request);
                             current_request.cols = request.cols;
                             current_request.keymap = request.keymap;
+                            current_request.last_exit_code = request.last_exit_code;
+                            current_request.duration_ms = request.duration_ms;
                         }
                         _ => {
                             active_cancel.cancel();
                             let request = Arc::new(request);
                             pending = Some(request.clone());
-                            state = Some(State::new(request, plan.clone()));
+                            state = Some(State::new(request, plan.clone(), state.take()));
                         }
                     }
                 }
@@ -205,7 +252,7 @@ async fn serve() -> anyhow::Result<()> {
 fn apply_change(
     state: &mut State,
     change: Change,
-    plan: &mut Arc<ConfigPlan>,
+    plan: &mut Arc<LoadedPlan>,
     last_diagnostic: &mut Option<String>,
 ) {
     match change {
@@ -218,7 +265,11 @@ fn apply_change(
                 }
                 *last_diagnostic = diagnostic;
             }
+            if !Arc::ptr_eq(&state.plan, &next) {
+                state.retained = None;
+            }
             state.modules = next
+                .config
                 .modules
                 .iter()
                 .map(ModuleObservation::pending)
@@ -255,16 +306,17 @@ async fn send_event(
 
 async fn acquire_generation(
     request: Arc<Request>,
-    previous: Arc<ConfigPlan>,
+    previous: Arc<LoadedPlan>,
     runner: Runner,
     cancel: CancellationToken,
     tx: mpsc::Sender<Event>,
 ) {
     let work = async {
-        let (plan, diagnostic) = match load_plan(&request.snapshot, &runner, &cancel).await {
-            Ok(plan) => (Arc::new(plan), None),
-            Err(error) => (previous, Some(error.to_string())),
-        };
+        let (plan, diagnostic) =
+            match load_plan(&request.snapshot, &runner, &cancel, &previous).await {
+                Ok(plan) => (plan, None),
+                Err(error) => (previous, Some(error.to_string())),
+            };
         send_event(
             &tx,
             request.generation,
@@ -275,7 +327,7 @@ async fn acquire_generation(
         let mut jobs = JoinSet::new();
         let (context_request, context_runner, context_cancel, context_tx) =
             (request.clone(), runner.clone(), cancel.clone(), tx.clone());
-        let git_enabled = !plan.view.git.disabled;
+        let git_enabled = !plan.config.view.git.disabled;
         jobs.spawn(async move {
             let result = acquire_context(
                 &context_request.snapshot,
@@ -299,7 +351,7 @@ async fn acquire_generation(
             cancel: cancel.clone(),
             tx: tx.clone(),
         });
-        for index in 0..acquisition.plan.modules.len() {
+        for index in 0..acquisition.plan.config.modules.len() {
             jobs.spawn(acquire_module(index, acquisition.clone()));
         }
         while let Some(result) = jobs.join_next().await {
@@ -329,8 +381,13 @@ async fn acquire_module(index: usize, acquisition: Arc<Acquisition>) {
         cancel,
         tx,
     } = acquisition.as_ref();
-    let condition =
-        acquire_condition(&plan.modules[index].when, &request.snapshot, runner, cancel).await;
+    let condition = acquire_condition(
+        &plan.config.modules[index].when,
+        &request.snapshot,
+        runner,
+        cancel,
+    )
+    .await;
     let matches = matches!(condition, Ok(true));
     send_event(
         tx,
@@ -343,7 +400,7 @@ async fn acquire_module(index: usize, acquisition: Arc<Acquisition>) {
         return;
     }
     let mut values = JoinSet::new();
-    for value_index in 0..plan.modules[index].values.len() {
+    for value_index in 0..plan.config.modules[index].values.len() {
         let acquisition = acquisition.clone();
         values.spawn(async move {
             let Acquisition {
@@ -354,7 +411,7 @@ async fn acquire_module(index: usize, acquisition: Arc<Acquisition>) {
                 tx,
             } = acquisition.as_ref();
             let value = acquire_value(
-                &plan.modules[index].values[value_index],
+                &plan.config.modules[index].values[value_index],
                 &request.snapshot,
                 runner,
                 cancel,
@@ -393,14 +450,25 @@ async fn load_plan(
     snapshot: &Snapshot,
     runner: &Runner,
     cancel: &CancellationToken,
-) -> anyhow::Result<ConfigPlan> {
+    previous: &Arc<LoadedPlan>,
+) -> anyhow::Result<Arc<LoadedPlan>> {
+    let mut source = None;
     for path in config_paths(snapshot) {
         let path = snapshot.cwd.join(path);
         if let Some(bytes) = runner.file(&path, cancel).await? {
-            return Ok(ConfigPlan::parse(std::str::from_utf8(&bytes)?)?);
+            source = Some(String::from_utf8(bytes)?);
+            break;
         }
     }
-    Ok(ConfigPlan::default())
+    if source == previous.source {
+        return Ok(previous.clone());
+    }
+    let config = source
+        .as_deref()
+        .map(ConfigPlan::parse)
+        .transpose()?
+        .unwrap_or_default();
+    Ok(Arc::new(LoadedPlan { config, source }))
 }
 
 async fn write_frames(

@@ -1,4 +1,4 @@
-//! Pure prompt composition from a compiled plan and current observations.
+//! Pure prompt composition from a compiled plan and display observations.
 //!
 //! Keep display text and styles separate through layout. Serialize ANSI and zsh
 //! percent escapes only after the complete grapheme-aware line fits its width.
@@ -26,7 +26,7 @@ pub struct ViewInput<'a> {
     pub directory: &'a str,
     /// Whether the acquired directory permissions indicate read-only access.
     pub read_only: bool,
-    /// Git status from the current acquisition generation, when available.
+    /// Git status from the worker-selected display snapshot, when available.
     pub git: Option<&'a GitStatus>,
     /// Observations aligned with the plan's module and value declaration order.
     pub modules: &'a [ModuleObservation],

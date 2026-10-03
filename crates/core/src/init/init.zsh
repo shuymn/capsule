@@ -49,7 +49,8 @@ _capsule_snapshot() {
     local _capsule_env_key
     _capsule_escape_field "$PWD"
     _CAPSULE_SNAPSHOT=$_CAPSULE_ESCAPED
-    for _capsule_env_key in ${(k)parameters}; do
+    # Keep equivalent exported environments byte-identical across generations.
+    for _capsule_env_key in ${(ok)parameters}; do
         [[ ${parameters[$_capsule_env_key]} == *export* ]] || continue
         _capsule_escape_field "$_capsule_env_key"
         _CAPSULE_SNAPSHOT+=$'\t'$_CAPSULE_ESCAPED
@@ -185,21 +186,54 @@ _capsule_precmd() {
             _CAPSULE_CMD_START=''
         fi
         _CAPSULE_CWD=$PWD
-        PROMPT=$_CAPSULE_FALLBACK
-        (( _CAPSULE_FD_IN )) || _capsule_start_coproc
-        if ! _capsule_snapshot; then _capsule_cleanup_fds; fi
+        local _capsule_previous_snapshot=$_CAPSULE_SNAPSHOT
+        if (( !_CAPSULE_FD_IN )); then
+            PROMPT=$_CAPSULE_FALLBACK
+            _capsule_start_coproc
+        fi
+        if ! _capsule_snapshot; then
+            _capsule_cleanup_fds
+            PROMPT=$_CAPSULE_FALLBACK
+        elif [[ $_CAPSULE_SNAPSHOT != "$_capsule_previous_snapshot" ]]; then
+            PROMPT=$_CAPSULE_FALLBACK
+        fi
         _CAPSULE_NEED_GENERATION=0
     fi
     print
     _capsule_send
-    (( _CAPSULE_FD_OUT )) && _capsule_async_callback
+    if (( _CAPSULE_FD_OUT )); then
+        # Retained text must follow the option even when no response is ready.
+        _capsule_refresh_retained_prompt
+        _capsule_async_callback
+    else
+        PROMPT=$_CAPSULE_FALLBACK
+    fi
+    return 0
+}
+
+_capsule_refresh_retained_prompt() {
+    # Use the option captured before emulate; leave fallback and user prompts alone.
+    if [[ $PROMPT != "$_CAPSULE_FALLBACK" && ( $PROMPT == '${_CAPSULE_RENDERED}' || $PROMPT == "$_CAPSULE_RENDERED" ) ]]; then
+        if [[ $_CAPSULE_PROMPT_SUBST == on ]]; then PROMPT='${_CAPSULE_RENDERED}'; else PROMPT=$_CAPSULE_RENDERED; fi
+    fi
+    return 0
+}
+
+_capsule_finalize_prompt() {
+    _CAPSULE_PROMPT_SUBST=${options[promptsubst]}
+    emulate -L zsh
+    # User precmd hooks may have changed the option after our early hook.
+    _capsule_refresh_retained_prompt
     return 0
 }
 
 _capsule_redraw() {
     emulate -L zsh
     if [[ $_CAPSULE_LAST_COLS != ${COLUMNS:-80} || $_CAPSULE_LAST_KEYMAP != ${KEYMAP:-main} ]]; then
-        _capsule_send
+        if ! _capsule_send; then
+            PROMPT=$_CAPSULE_FALLBACK
+            zle reset-prompt 2>/dev/null
+        fi
     fi
 }
 
@@ -218,7 +252,8 @@ _capsule_init() {
     typeset -g _CAPSULE_LAST_COLS='' _CAPSULE_LAST_KEYMAP='' _CAPSULE_RENDERED=''
     typeset -g _CAPSULE_FALLBACK=$'%~\n%# '
     PROMPT=$_CAPSULE_FALLBACK
-    precmd_functions=(_capsule_precmd "${(@)precmd_functions:#_capsule_precmd}")
+    precmd_functions=("${(@)precmd_functions:#_capsule_finalize_prompt}")
+    precmd_functions=(_capsule_precmd "${(@)precmd_functions:#_capsule_precmd}" _capsule_finalize_prompt)
     preexec_functions=(_capsule_preexec "${(@)preexec_functions:#_capsule_preexec}")
     zshexit_functions=(_capsule_cleanup_fds "${(@)zshexit_functions:#_capsule_cleanup_fds}")
     autoload -Uz add-zle-hook-widget
