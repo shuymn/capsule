@@ -120,7 +120,7 @@ spec:
               app: github-actions
             - context: Nix (ubuntu-latest)
               app: github-actions
-            - context: security / gitleaks
+            - context: security / betterleaks
               app: github-actions
   variables:
     - name: MAINTAIN_APP_ID
@@ -144,7 +144,6 @@ spec:
         - actions-rust-lang/setup-rust-toolchain@*
         - cachix/cachix-action@*
         - cachix/install-nix-action@*
-        - gitleaks/gitleaks-action@*
         - oven-sh/setup-bun@*
         - shuymn/github-actions/.github/actions/setup-task@*
         - shuymn/github-actions/.github/workflows/gha.yml@*
