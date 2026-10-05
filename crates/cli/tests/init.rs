@@ -5,9 +5,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-#[test]
-fn generated_init_preserves_user_hooks_and_can_be_evaluated_twice()
--> Result<(), Box<dyn std::error::Error>> {
+fn check_initialization(hook_setup: &str) -> Result<(), Box<dyn std::error::Error>> {
     let init = Command::new(env!("CARGO_BIN_EXE_capsule"))
         .args(["init", "zsh"])
         .output()?;
@@ -25,6 +23,7 @@ fn generated_init_preserves_user_hooks_and_can_be_evaluated_twice()
         .spawn()?;
     let mut input = child.stdin.take().ok_or("missing zsh stdin")?;
     input.write_all(b"precmd_functions=(user_precmd)\npreexec_functions=(user_preexec)\nzshexit_functions=(user_exit)\nuser_exit() { :; }\n")?;
+    input.write_all(hook_setup.as_bytes())?;
     input.write_all(&init.stdout)?;
     input.write_all(&init.stdout)?;
     input.write_all(
@@ -62,9 +61,22 @@ _capsule_run_precmd_hooks
     let output = child.wait_with_output()?;
     assert!(
         output.status.success(),
-        "zsh: {}: {}",
+        "zsh (setup {hook_setup:?}): {}: {}",
         output.status,
         String::from_utf8_lossy(&output.stderr)
     );
+    Ok(())
+}
+
+#[test]
+fn generated_init_preserves_user_hooks_and_can_be_evaluated_twice()
+-> Result<(), Box<dyn std::error::Error>> {
+    for hook_setup in [
+        "",
+        "autoload -Uz add-zsh-hook\n",
+        "autoload -Uz add-zsh-hook\nadd-zsh-hook precmd user_precmd\n",
+    ] {
+        check_initialization(hook_setup)?;
+    }
     Ok(())
 }

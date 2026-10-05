@@ -321,7 +321,8 @@ _capsule_init() {
     typeset -ga _CAPSULE_PRECMD_HOOKS=("${_capsule_hooks[@]}")
     precmd_functions=(_capsule_precmd _capsule_run_precmd_hooks)
     autoload -Uz add-zsh-hook
-    autoload +X add-zsh-hook || return
+    # Load through the read-only API: autoload +X also fails when already loaded.
+    add-zsh-hook -L precmd >/dev/null || return
     if [[ $functions[add-zsh-hook] != "$functions[_capsule_add_zsh_hook]" ]]; then
         functions[_capsule_original_add_zsh_hook]=$functions[add-zsh-hook]
         functions[add-zsh-hook]=$functions[_capsule_add_zsh_hook]

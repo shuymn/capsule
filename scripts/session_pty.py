@@ -843,6 +843,37 @@ def run_hook_errors(shell, record):
     assert (shell.home / "late-hook").exists()
 
 
+def run_preloaded_hook_helper(shell, record):
+    shell.complete(1)
+    worker = shell.state()["worker"]
+    (shell.home / ".capsule/config.toml").write_text(
+        "schema_version = 2\n"
+        "[[module]]\nname = 'file'\nwhen.files = ['foo.md']\nformat = 'FILE={value}'\n"
+        "[module.values]\nvalue = [{file = 'foo.md'}]\n"
+    )
+    # Use real Git and ordinary commands, not manually invoked Capsule hooks.
+    for generation, command, branch, value, untracked in [
+        (2, "git init -q && git symbolic-ref HEAD refs/heads/HOOK_BEFORE", b"HOOK_BEFORE", None, False),
+        (3, "touch foo.md", b"HOOK_BEFORE", b"FILE=", True),
+        (4, "git symbolic-ref HEAD refs/heads/HOOK_AFTER; print -r -- updated > foo.md", b"HOOK_AFTER", b"FILE=updated", True),
+        (5, "rm foo.md", b"HOOK_AFTER", None, False),
+    ]:
+        shell.command(command)
+        shell.complete(generation)
+        state = shell.state()
+        assert state["generation"] == generation and state["worker"] == worker, state
+        rendered = (shell.home / "rendered").read_bytes()
+        prompt = (shell.home / "prompt").read_bytes()
+        effective = rendered if prompt == b"${_CAPSULE_RENDERED}" else prompt
+        assert branch in effective, effective
+        assert (b"[?]" in effective) == untracked, effective
+        if value is None:
+            assert b"FILE=" not in effective, effective
+        else:
+            assert value in effective, effective
+    record("preloaded_add_zsh_hook_preserves_command_reacquisition_of_git_and_modules")
+
+
 def run(binary: Path, output: Path):
     results = []
     shells = []
@@ -1017,6 +1048,15 @@ def run(binary: Path, output: Path):
         for shell in many:
             shell.assert_workers_gone()
         record("ten_shells_own_ten_workers_and_leave_none_active")
+
+        shell = start("preloaded-hook-helper", precmd_setup=(
+            "autoload -Uz add-zsh-hook add-zle-hook-widget\n"
+            "_capsule_test_existing_hook() { :; }\n"
+            "add-zsh-hook precmd _capsule_test_existing_hook\n"
+        ))
+        run_preloaded_hook_helper(shell, record)
+        shell.close()
+        shell.assert_workers_gone()
 
         shell = start("hook-status", precmd_setup=(
             "_capsule_test_first_status() { "
