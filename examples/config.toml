@@ -6,25 +6,42 @@ schema_version = 2
 [[module]]
 name = "node"
 when.files = ["package.json"]
-format = "v{version}"
+format = "v{version}[ (requested {requested})]"
 connector = "via"
 style = { fg = "green" }
 
 [module.values]
 version = [{ command = ["node", "--version"], regex = 'v?(\d[\d.]*)' }]
-# To also show the requested version, append "[ (requested {requested})]" to
-# format and uncomment this value:
-# requested = [{ file = ".node-version" }]
+# Try request files in cwd in order; do not use them as executable-version fallbacks.
+# Without either file, the optional section in format is omitted.
+requested = [{ file = ".node-version" }, { file = ".nvmrc" }]
 
 # A required profile and optional region use the current exported environment.
+# AWS and Nix compete for one line2 context: the lowest priority ready module wins.
+# Remove arbitration from both modules to show both contexts.
 [[module]]
 name = "context"
 when.env = ["AWS_PROFILE"]
 slot = "line2"
+arbitration = { group = "context", priority = 10 }
 format = "{profile}[ ({region})]"
 connector = "as"
 style = { fg = "yellow" }
 
 [module.values]
 profile = [{ env = "AWS_PROFILE" }]
+# Unset AWS_REGION permits fallback; an empty exported value stops fallback.
 region = [{ env = "AWS_REGION" }, { env = "AWS_DEFAULT_REGION" }]
+
+# Use this context when inside a Nix shell and no higher-priority context is ready.
+[[module]]
+name = "nix_shell"
+when.env = ["IN_NIX_SHELL"]
+slot = "line2"
+arbitration = { group = "context", priority = 20 }
+format = "nix ({kind})"
+connector = "in"
+style = { fg = "blue" }
+
+[module.values]
+kind = [{ env = "IN_NIX_SHELL" }]
