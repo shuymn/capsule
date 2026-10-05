@@ -55,6 +55,7 @@ Require successful exit and all contract records:
 | Binary selection | A renamed selected executable supplies init, worker, and fd-config even beside a different executable named capsule |
 | Cleanup safety | Confirmed-dead worker identities are retired; historical PIDs never become signal targets after reuse |
 | One shell | One worker; empty Enter preserves displayed information; resize/keymap changes reuse acquisition |
+| Initialization | With `add-zsh-hook` already loaded by another integration, ordinary commands advance generations and update real Git state and file-backed modules using the same worker |
 | Revalidation | With file-controlled slow acquisition and unchanged cwd/environment/config, ordinary commands preserve Git/tool information in every intermediate frame and actual shell prompt assignment, including finalized precmd; the first command after a directory-aware precmd hook updates exports also preserves the settled display |
 | Replacement | Changed results replace retained display at completion; Missing, Failed, and false conditions remove obsolete information |
 | Invalidation | Changed cwd/exported environment immediately discard retained display; accepted changed configuration discards it after reload |
@@ -81,6 +82,6 @@ invalidation, and replacement-worker startup. Require initialized shell regressi
 to preserve user-owned prompts during changed snapshots, ready responses, and
 worker startup. Verify hook ordering, each hook's original command status, and
 continuation after ordinary nonzero returns, plus `add-zsh-hook` registration, removal, and listing after repeated
-initialization. Suite results and acquisition timings do not replace interactive
-PTY evidence. Follow
+initialization with `add-zsh-hook` absent, marked for autoload, or already loaded.
+Suite results and acquisition timings do not replace interactive PTY evidence. Follow
 [benchmarking.md](benchmarking.md) for timing definitions and host requirements.
