@@ -85,7 +85,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
 
       - name: Set up Task
-        uses: shuymn/github-actions/.github/actions/setup-task@c004be08c192e408a05731e452ccdf0d5b78139a # main
+        uses: shuymn/github-actions/.github/actions/setup-task@f51099547b3a24d085c3eea9fef8c464a88ea871 # main
 
       - name: Verify release contract
         id: contract
