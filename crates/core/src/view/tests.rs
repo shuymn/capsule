@@ -131,20 +131,22 @@ fn character_keymap_and_status_use_current_inputs_only() {
 #[test]
 fn literal_data_is_safe_with_prompt_substitution_on_and_off()
 -> Result<(), Box<dyn std::error::Error>> {
-    let data = "literal $HOME $(printf EXPANDED) `printf EXPANDED` \\ %B %{data%}";
+    let data = "literal $HOME $(printf EXPANDED) `printf EXPANDED` \\$ %B %{data%} \\";
     let serialized = StyledText::new(data, Style::new()).to_zsh(ColorMap::default());
+    // Direct text under PROMPT_SUBST models an option change after Capsule's
+    // last refresh, such as a failing named precmd hook. The shell's line
+    // separator follows a trailing backslash.
     let output = std::process::Command::new("zsh")
         .args([
             "-f",
             "-c",
             r#"
-rendered=$VIEW_PROMPT
+rendered=$VIEW_PROMPT$'\n'$VIEW_PROMPT
 setopt promptsubst
-PROMPT='${rendered}'
-print -P -r -- "$PROMPT"
+print -P -r -- '${rendered}'
+print -P -r -- "$rendered"
 unsetopt promptsubst
-PROMPT=$rendered
-print -P -r -- "$PROMPT"
+print -P -r -- "$rendered"
 "#,
         ])
         .env("VIEW_PROMPT", serialized)
@@ -156,7 +158,7 @@ print -P -r -- "$PROMPT"
     );
     assert_eq!(
         String::from_utf8(output.stdout)?,
-        format!("{data}\n{data}\n")
+        format!("{data}\n{data}\n").repeat(3)
     );
     Ok(())
 }
@@ -402,6 +404,27 @@ fn pathological_zero_width_data_still_fits_the_response_byte_limit()
         !output.left1.contains('\u{301}'),
         "a single oversized grapheme is omitted intact"
     );
+    let frame = capsule_protocol::session::response(u64::MAX, &output.left1, &output.left2, true)?;
+    assert!(frame.len() <= capsule_protocol::session::MAX_RESPONSE + 1);
+    Ok(())
+}
+
+#[test]
+fn quoted_backslashes_on_both_lines_fit_the_response_byte_limit()
+-> Result<(), Box<dyn std::error::Error>> {
+    // A backslash has the largest prompt-quoting and wire-escaping expansion.
+    let data = "\\".repeat(32_000);
+    let mut plan = ConfigPlan::default();
+    plan.view.character.glyph.clone_from(&data);
+    let output = render(
+        &plan,
+        &ViewInput {
+            directory: &data,
+            cols: usize::from(u16::MAX),
+            ..input()
+        },
+    );
+    assert!(output.left1.contains('…') && output.left2.contains('…'));
     let frame = capsule_protocol::session::response(u64::MAX, &output.left1, &output.left2, true)?;
     assert!(frame.len() <= capsule_protocol::session::MAX_RESPONSE + 1);
     Ok(())

@@ -5,9 +5,9 @@ use unicode_width::UnicodeWidthStr as _;
 
 use crate::render::style::{ColorMap, Style};
 
-// Leave room for styles, percent quoting, wire escaping, and the second line
-// within the session protocol's 64 KiB response limit.
-const MAX_LINE_TEXT_BYTES: usize = 8 * 1024;
+// Prompt quoting and wire escaping expand a backslash to 11 bytes. Leave room
+// for both lines and styles within the session protocol's 64 KiB response limit.
+const MAX_LINE_TEXT_BYTES: usize = 2 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Span {
@@ -181,8 +181,9 @@ mod tests {
         assert!(plain.contains("\\n\\t"));
         assert!(plain.contains("\\u{202e}"));
         assert_eq!(text.width(), plain.width());
+        assert!(plain.contains("%B$HOME`echo no`"));
         let serialized = text.to_zsh(ColorMap::default());
-        assert!(serialized.contains("%%B$HOME`echo no`"));
+        assert!(serialized.contains("%%B"));
         assert!(!serialized.contains('\x1b'));
     }
 }

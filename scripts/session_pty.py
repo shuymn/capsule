@@ -844,6 +844,59 @@ def run_hook_errors(shell, record):
     assert (shell.home / "late-hook").exists()
 
 
+def run_named_hook_error(shell, record):
+    # zsh runs a named precmd() before precmd_functions, so its genuine shell
+    # error skips every Capsule hook before the worker-rendered prompt expands.
+    payload = b"$(printf x > ~/dollar) `printf x > ~/backtick` \\"
+    markers = (shell.home / "dollar", shell.home / "backtick")
+    log = shell.home / "terminal.log"
+    shell.complete(1)
+    (shell.home / "work/data").write_bytes(payload)
+    (shell.home / ".capsule/config.toml").write_text(
+        "schema_version = 2\n[git]\ndisabled = true\n"
+        "[[module]]\nname = 'data'\nformat = '{value}'\n"
+        "[module.values]\nvalue = [{file = 'data'}]\n"
+    )
+    shell.command("unsetopt promptsubst")
+    shell.complete(2)
+    worker = shell.state()["worker"]
+    retained = (shell.home / "prompt").read_bytes()
+    assert retained == (shell.home / "rendered").read_bytes(), "option-off prompt must hold retained text"
+    shell.pump()
+    before = log.stat().st_size
+    shell.command("_capsule_test_named_error=1")
+    eventually(lambda: (shell.home / "named-error").exists(), "named precmd hook", shell.pump)
+    eventually(lambda: b"division by zero" in log.read_bytes()[before:], "genuine named hook error", shell.pump)
+    state = shell.state(wait_ready=False)
+    assert state["generation"] == 2 and state["worker"] == worker, "named hook error did not skip Capsule hooks"
+    expanded = log.read_bytes()[before:]
+    assert payload in expanded[expanded.index(b"division by zero"):], "expanded prompt did not show the payload"
+    assert (shell.home / "prompt").read_bytes() == retained
+    assert not any(marker.exists() for marker in markers)
+    record("named_precmd_error_expands_worker_display_literally")
+
+    # A matching response after the error still sees the option captured before it.
+    frame = next(line for line in reversed(shell.log_lines("frames")) if line.startswith(b"R\t2\t"))
+    (shell.home / "inject").write_bytes(b"R\t2\t" + frame.split(b"\t")[2] + b"\tinjected\t1")
+    mark = shell.mark()
+    shell.send(b"\x10")
+    eventually(lambda: any(item["event"] == b"apply" for item in shell.transitions(mark, 2)), "late response", shell.pump)
+    shell.state(wait_ready=False)
+    rendered = (shell.home / "rendered").read_bytes()
+    assert rendered.endswith(b"\ninjected ") and (shell.home / "prompt").read_bytes() == rendered
+    assert not any(marker.exists() for marker in markers)
+    record("response_after_named_precmd_error_stays_literal")
+
+    mark = shell.mark()
+    shell.command("_capsule_test_named_error=0; (exit 7)")
+    shell.complete(3, mark)
+    finalized = [item for item in shell.transitions(mark, 3) if item["event"] == b"precmd"]
+    assert finalized and finalized[-1]["status"] == 7, finalized
+    assert shell.state()["worker"] == worker
+    assert not any(marker.exists() for marker in markers)
+    record("named_precmd_recovery_keeps_command_status_and_worker")
+
+
 def run_preloaded_hook_helper(shell, record):
     shell.complete(1)
     worker = shell.state()["worker"]
@@ -1089,6 +1142,20 @@ def run(binary: Path, output: Path):
             "precmd_functions=(_capsule_test_user_hook _capsule_test_late_hook)\n"
         ))
         run_hook_errors(shell, record)
+        shell.close()
+        shell.assert_workers_gone()
+
+        shell = start("named-hook-error", precmd_setup=(
+            "precmd() {\n"
+            "  if (( _capsule_test_named_error )); then\n"
+            "    setopt promptsubst\n"
+            "    print -r -- reached > \"$HOME/named-error\"\n"
+            "    : $((1/0))\n"
+            "  fi\n"
+            "  return 0\n"
+            "}\n"
+        ))
+        run_named_hook_error(shell, record)
         shell.close()
         shell.assert_workers_gone()
 

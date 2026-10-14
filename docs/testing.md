@@ -78,6 +78,7 @@ Require successful exit and all contract records:
 | Input | Delayed prompt updates preserve the typed buffer and cursor |
 | Transport | A backpressured large request completes without further keyboard input; stale/future responses cannot replace the prompt |
 | Recovery | Worker failure selects fallback; the next command starts a replacement worker even if a preserved precmd hook raises a genuine shell error |
+| Named hook | After a named `precmd` enables `PROMPT_SUBST` and raises a genuine shell error, the expanded worker display and a later matching response stay literal without marker side effects; the next command keeps its status and worker |
 | Exit and exec | Pipes close; worker and active acquisition descendants terminate; exec cleanup is checked after a replacement-ready marker and while the controlled replacement remains alive |
 | Ten shells | Ten distinct workers, one initial acquisition each, and no workers left active after exit |
 
