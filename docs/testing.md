@@ -4,8 +4,10 @@ Read this file before writing or modifying tests.
 
 ## Suite and conventions
 
-- Use `task test` for unit/integration targets and doctests. Cargo's `--all-targets`
-  does not include doctests; the task runs them separately.
+- Use `task test` for PTY-driver CLI regressions, unit/integration targets, and
+  doctests. The CLI regressions require Python 3 but no built Capsule binary or
+  PTY. Cargo's `--all-targets` does not include doctests; the task runs them
+  separately.
 - Use `cargo test -p <crate> <filter> --locked` for focused checks. See
   [tooling.md](tooling.md) for full verification and Git-hook side effects.
 - Put unit tests in a final `#[cfg(test)] mod tests`, inline or in `tests.rs`.
@@ -40,6 +42,18 @@ each shell's PATH and probes a renamed target beside a conflicting `capsule`.
 The script prints its artifact directory containing `results.json` and each shell's
 `terminal.log`. Use `--output <new-directory>` to choose a fresh destination.
 
+- WHEN `--output` names a new directory, the driver SHALL create it exclusively
+  with mode `0700` (or stricter under the caller's umask).
+- WHEN `--output` names an existing directory, file, or symlink, the driver SHALL
+  reject it without changing its contents or target.
+- WHEN `--output` is omitted, the driver SHALL keep the private
+  `tempfile.mkdtemp()` default.
+
+Use a trusted or sticky parent directory whose other users cannot replace the
+new output entry. Private output permissions do not protect against an attacker
+controlling its parent or arbitrary same-UID code. Run the CLI regressions independently with
+`python3 -m unittest discover -s scripts -p test_session_pty.py`.
+
 The flicker setup directly launches each fresh Git/tool executable once before
 starting zsh, with a separate 8s timeout, EOF stdin, disposable `HOME`, cwd
 `$HOME/work`, and fixture bin first on `PATH`. Require successful exit, exact
@@ -64,6 +78,7 @@ Require successful exit and all contract records:
 | Input | Delayed prompt updates preserve the typed buffer and cursor |
 | Transport | A backpressured large request completes without further keyboard input; stale/future responses cannot replace the prompt |
 | Recovery | Worker failure selects fallback; the next command starts a replacement worker even if a preserved precmd hook raises a genuine shell error |
+| Named hook | After a named `precmd` enables `PROMPT_SUBST` and raises a genuine shell error, the expanded worker display and a later matching response stay literal without marker side effects; the next command keeps its status and worker |
 | Exit and exec | Pipes close; worker and active acquisition descendants terminate; exec cleanup is checked after a replacement-ready marker and while the controlled replacement remains alive |
 | Ten shells | Ten distinct workers, one initial acquisition each, and no workers left active after exit |
 

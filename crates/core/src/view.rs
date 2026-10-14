@@ -1,7 +1,7 @@
 //! Pure prompt composition from a compiled plan and display observations.
 //!
 //! Keep display text and styles separate through layout. Serialize ANSI and zsh
-//! percent escapes only after the complete grapheme-aware line fits its width.
+//! prompt quoting only after the complete grapheme-aware line fits its width.
 
 mod builtins;
 mod text;
@@ -53,9 +53,9 @@ pub struct PromptLines {
 
 /// Render one immutable observation snapshot without filesystem or command access.
 ///
-/// The shell must assign the returned data directly when `PROMPT_SUBST` is off,
-/// or use a one-level parameter reference when it is on. Percent escapes are
-/// quoted here; dollar signs, backticks, and backslashes remain literal data.
+/// Data stays literal when zsh expands the returned lines directly with
+/// `PROMPT_SUBST` on or off, or through a one-level parameter reference. Hooks
+/// that change the option or fail before Capsule's hooks cannot make it code.
 #[must_use]
 pub fn render(plan: &ConfigPlan, input: &ViewInput<'_>) -> PromptLines {
     let config = &plan.view;

@@ -105,8 +105,7 @@ impl Style {
 
     /// Apply ANSI styling to `text`, wrapping escape sequences in zsh `%{..%}`.
     ///
-    /// `%` characters in `text` are escaped to `%%` so that zsh `PROMPT_PERCENT`
-    /// does not interpret them as prompt sequences.
+    /// `text` is quoted as in [`Style::paint_with`].
     #[must_use]
     pub fn paint(&self, text: &str) -> String {
         self.paint_with(text, ColorMap::default())
@@ -114,13 +113,15 @@ impl Style {
 
     /// Apply ANSI styling using a caller-provided symbolic color mapping.
     ///
-    /// `%` characters in `text` are escaped to `%%` so that zsh `PROMPT_PERCENT`
-    /// does not interpret them as prompt sequences.
+    /// `text` displays literally whether zsh expands the prompt with
+    /// `PROMPT_SUBST` on or off. `%` becomes `%%`; `$`, `` ` ``, and `\` are
+    /// backslash-escaped inside a one-column truncation, `%1<<\$%<<`, which
+    /// hides the backslash when prompt substitution has not removed it.
     #[must_use]
     pub fn paint_with(&self, text: &str, color_map: ColorMap) -> String {
         use std::fmt::Write;
 
-        let escaped = text.replace('%', "%%");
+        let escaped = quote_prompt_text(text);
 
         if self.fg.is_none() && !self.bold && !self.dimmed {
             return escaped;
@@ -208,6 +209,22 @@ where
             "invalid ANSI foreground code `{code}`, expected one of 30..=37 or 90..=97"
         )))
     }
+}
+
+fn quote_prompt_text(text: &str) -> String {
+    let mut quoted = String::with_capacity(text.len());
+    for character in text.chars() {
+        match character {
+            '%' => quoted.push_str("%%"),
+            '$' | '`' | '\\' => {
+                quoted.push_str("%1<<\\");
+                quoted.push(character);
+                quoted.push_str("%<<");
+            }
+            character => quoted.push(character),
+        }
+    }
+    quoted
 }
 
 const fn is_valid_foreground_code(code: u16) -> bool {

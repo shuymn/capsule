@@ -1,6 +1,6 @@
 # Architecture
 
-Read this file when changing session ownership, acquisition, rendering, or shell integration. Keep zsh input responsive on macOS and Linux and minimize the code one maintainer must own. Support the two-line prompt, directory, Git, status/vi mode, duration, optional time, configured values, styles, and reload.
+Read this file when changing session ownership, acquisition, rendering, or shell integration. Read [threat-model.md](threat-model.md) before changing trust boundaries, execution authority, or distribution. Keep zsh input responsive on macOS and Linux and minimize the code one maintainer must own. Support the two-line prompt, directory, Git, status/vi mode, duration, optional time, configured values, styles, and reload.
 
 ## Ownership
 
@@ -33,7 +33,7 @@ Use generic configuration for tool-specific values; see [extending.md](extending
 - WHEN evaluating a display snapshot, Capsule SHALL hide a module whose condition is pending, false, or failed. WHEN a required value is unavailable, Capsule SHALL hide the module; unavailable optional sections SHALL be omitted.
 - WHEN a candidate is missing, fails extraction, fails execution, or times out, Capsule SHALL try the next candidate. WHEN a candidate is ready, including an empty value, Capsule SHALL stop fallback. Generation cancellation SHALL end acquisition.
 - WHEN observations arrive in any order, Capsule SHALL retain declaration order and select at most one ready module per arbitration group across both slots, using lowest priority then declaration order.
-- WHEN rendering data, Capsule SHALL display controls as data, keep text/style separate through grapheme-safe width adjustment, and serialize styles and zsh prompt escapes last.
+- WHEN rendering data, Capsule SHALL display controls as data, keep text/style separate through grapheme-safe width adjustment, and serialize styles and zsh prompt escapes last. Serialized data SHALL display literally whether zsh expands it with `PROMPT_SUBST` on or off: a named `precmd` function runs before Capsule's hooks and can change the option, then fail and skip them.
 - WHEN preserved `precmd_functions` hooks complete or abort, Capsule SHALL finalize its own retained prompt for the actual `PROMPT_SUBST` option before prompt expansion, keeping response text literal even without a new response. Capture the option and refresh retained text in the first Capsule hook as well. Run preserved hooks in order through `_capsule_run_precmd_hooks`, with snapshot capture, generation submission, and prompt finalization in its `always` block; preserve shell errors and skip subsequent user hooks after a genuine shell error, but continue after ordinary nonzero returns as zsh does. Give every preserved hook the original command exit status. Forward `add-zsh-hook` registration, removal, and listing to the captured hooks; preserve them across repeated initialization. Capsule SHALL preserve the user's option and leave user-owned prompts unchanged across fallback selection and synchronous/asynchronous responses; matching responses SHALL still replace Capsule's fallback.
 - WHEN a response's generation differs from the current shell generation, Capsule SHALL leave the prompt unchanged.
 - WHEN an accepted response leaves the displayed prompt unchanged, Capsule SHALL skip redraw; a matching result SHALL still replace fallback.

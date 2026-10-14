@@ -72,8 +72,9 @@ tasks:
   test:
     desc: Run all tests
     summary: |
-      Runs unit, integration, and documentation tests across the workspace.
+      Runs PTY-driver CLI regressions plus unit, integration, and documentation tests.
     cmds:
+      - python3 -m unittest discover -s scripts -p test_session_pty.py
       - cargo test --workspace --all-targets --all-features --locked
       - cargo test --workspace --doc --all-features --locked
 

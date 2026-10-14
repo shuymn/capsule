@@ -60,4 +60,4 @@ See the [configuration guide](docs/extending.md) for XDG paths, value sources, c
 
 ## Development
 
-Use stable Rust and Task. Read [architecture](docs/architecture.md) for runtime contracts, [tooling](docs/tooling.md) for checks, and [release procedures](docs/releasing.md) for publishing.
+Use stable Rust and Task; tests also require Python 3 and zsh. Read [architecture](docs/architecture.md) for runtime contracts, [tooling](docs/tooling.md) for checks, and [release procedures](docs/releasing.md) for publishing.
