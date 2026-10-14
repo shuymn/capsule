@@ -1,6 +1,6 @@
 # Architecture
 
-Read this file when changing session ownership, acquisition, rendering, or shell integration. Keep zsh input responsive on macOS and Linux and minimize the code one maintainer must own. Support the two-line prompt, directory, Git, status/vi mode, duration, optional time, configured values, styles, and reload.
+Read this file when changing session ownership, acquisition, rendering, or shell integration. Read [threat-model.md](threat-model.md) before changing trust boundaries, execution authority, or distribution. Keep zsh input responsive on macOS and Linux and minimize the code one maintainer must own. Support the two-line prompt, directory, Git, status/vi mode, duration, optional time, configured values, styles, and reload.
 
 ## Ownership
 
