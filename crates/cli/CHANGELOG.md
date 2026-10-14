@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.4](https://github.com/shuymn/capsule/compare/v1.0.3...v1.0.4) - 2026-10-14
+
+### Fixed
+
+- *(prompt)* keep data literal under PROMPT_SUBST
+- *(scripts)* refuse existing PTY output paths
+
+### Other
+
+- add threat model
+- *(deps)* update rust crate serde_json to v1.0.152 (#243)
+- *(deps)* update rust crate serde_json to v1.0.152
+- *(deps)* update taiki-e/install-action action to v2.87.27 (#242)
+- *(deps)* update taiki-e/install-action action to v2.87.27
+- *(deps)* update rust crate toml to v1.1.8 (#240)
+- *(deps)* update rust crate toml to v1.1.8
+- *(deps)* update docker/dockerfile docker tag to v1.28 (#238)
+- *(deps)* update docker/dockerfile docker tag to v1.28
+- *(deps)* update rust crate toml to v1.1.7 (#237)
+- *(deps)* update rust crate toml to v1.1.7
+- *(deps)* update actions/upload-artifact action to v7.0.2 (#236)
+- *(deps)* update actions/upload-artifact action to v7.0.2
+- *(deps)* update actions/download-artifact action to v8.0.2 (#235)
+- *(deps)* update actions/download-artifact action to v8.0.2
+- *(deps)* update taiki-e/install-action action to v2.87.26 (#234)
+- *(deps)* update taiki-e/install-action action to v2.87.26
+- *(deps)* update taiki-e/install-action action to v2.87.25 (#233)
+- *(deps)* update taiki-e/install-action action to v2.87.25
+- *(deps)* update taiki-e/install-action action to v2.87.24 (#232)
+- *(deps)* update taiki-e/install-action action to v2.87.24
+- *(deps)* update rust crate tokio to v1.53.2 (#231)
+- *(deps)* update rust crate tokio to v1.53.2
+
 ## [1.0.3](https://github.com/shuymn/capsule/compare/v1.0.2...v1.0.3) - 2026-10-05
 
 ### Fixed
