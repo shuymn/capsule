@@ -4,8 +4,10 @@ Read this file before writing or modifying tests.
 
 ## Suite and conventions
 
-- Use `task test` for unit/integration targets and doctests. Cargo's `--all-targets`
-  does not include doctests; the task runs them separately.
+- Use `task test` for PTY-driver CLI regressions, unit/integration targets, and
+  doctests. The CLI regressions require Python 3 but no built Capsule binary or
+  PTY. Cargo's `--all-targets` does not include doctests; the task runs them
+  separately.
 - Use `cargo test -p <crate> <filter> --locked` for focused checks. See
   [tooling.md](tooling.md) for full verification and Git-hook side effects.
 - Put unit tests in a final `#[cfg(test)] mod tests`, inline or in `tests.rs`.
@@ -39,6 +41,18 @@ build, including a renamed executable. Require that exact build for `init`,
 each shell's PATH and probes a renamed target beside a conflicting `capsule`.
 The script prints its artifact directory containing `results.json` and each shell's
 `terminal.log`. Use `--output <new-directory>` to choose a fresh destination.
+
+- WHEN `--output` names a new directory, the driver SHALL create it exclusively
+  with mode `0700` (or stricter under the caller's umask).
+- WHEN `--output` names an existing directory, file, or symlink, the driver SHALL
+  reject it without changing its contents or target.
+- WHEN `--output` is omitted, the driver SHALL keep the private
+  `tempfile.mkdtemp()` default.
+
+Use a trusted or sticky parent directory whose other users cannot replace the
+new output entry. Private output permissions do not protect against an attacker
+controlling its parent or arbitrary same-UID code. Run the CLI regressions independently with
+`python3 -m unittest discover -s scripts -p test_session_pty.py`.
 
 The flicker setup directly launches each fresh Git/tool executable once before
 starting zsh, with a separate 8s timeout, EOF stdin, disposable `HOME`, cwd

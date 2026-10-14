@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Exercise the real zsh/worker boundary in disposable homes (no benchmarks).
 
-Run after `task build`: uv run scripts/session_pty.py --output /tmp/capsule-pty
+Run after `task build`: uv run --no-project scripts/session_pty.py
+Use --output <new-directory> to create a private artifact directory.
 The standard-library-only driver also runs with python3 on Linux CI images.
 """
 
@@ -1113,8 +1114,16 @@ def main():
     parser.add_argument("--binary", type=Path, default=Path("target/debug/capsule"))
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    output = args.output or Path(tempfile.mkdtemp(prefix="capsule-pty-"))
-    output.mkdir(parents=True, exist_ok=True)
+    if args.output is None:
+        output = Path(tempfile.mkdtemp(prefix="capsule-pty-"))
+    else:
+        output = args.output
+        try:
+            output.mkdir(mode=0o700, parents=True)
+        except FileExistsError:
+            parser.error(f"output directory already exists: {output}")
+        except OSError as error:
+            parser.error(f"cannot create output directory: {error}")
     print(f"PTY artifacts: {output}", flush=True)
     run(args.binary.resolve(), output.resolve())
 

@@ -60,4 +60,4 @@ XDG パス、取得元、表示条件、書式、スタイル、再読み込み�
 
 ## 開発
 
-stable Rust と Task を使います。実行時の契約は[アーキテクチャ](docs/architecture.md)、検証は[開発ツール](docs/tooling.md)、公開は[リリース手順](docs/releasing.md)を参照してください。
+stable Rust と Task を使います。テストには Python 3 と zsh も必要です。実行時の契約は[アーキテクチャ](docs/architecture.md)、検証は[開発ツール](docs/tooling.md)、公開は[リリース手順](docs/releasing.md)を参照してください。
