@@ -5,8 +5,9 @@ Read this file before writing or modifying tests.
 ## Suite and conventions
 
 - Use `task test` for PTY-driver CLI regressions, unit/integration targets, and
-  doctests. The CLI regressions require Python 3 but no built Capsule binary or
-  PTY. Cargo's `--all-targets` does not include doctests; the task runs them
+  doctests. The CLI regressions require uv but no built Capsule binary or PTY.
+  uv runs every Python script with the version pinned in
+  [.python-version](../.python-version), so local, CI, and Docker runs match. Cargo's `--all-targets` does not include doctests; the task runs them
   separately.
 - Use `cargo test -p <crate> <filter> --locked` for focused checks. See
   [tooling.md](tooling.md) for full verification and Git-hook side effects.
@@ -23,17 +24,13 @@ Read this file before writing or modifying tests.
 
 Run [scripts/session_pty.py](../scripts/session_pty.py) on both macOS and Linux when
 changing shell integration, worker transport, or acquisition lifecycle. It requires
-zsh, Python 3, and `ps`, uses real PTYs and disposable homes, and leaves user shell
-configuration untouched. Build and run on the target OS from the repository root.
-
-macOS and Linux:
+zsh, uv, Git, and `ps`, uses real PTYs and disposable homes, and leaves user shell
+configuration untouched. CI runs it on macOS and Linux; run it locally on the
+target OS from the repository root, or in the Linux image with `task docker:linux:check`:
 
 ```sh
-task build
-uv run --no-project scripts/session_pty.py
+task test:pty
 ```
-
-In Linux images without uv, run `python3 scripts/session_pty.py` after the build.
 
 The default binary is `target/debug/capsule`; use `--binary <path>` for another
 build, including a renamed executable. Require that exact build for `init`,
@@ -52,7 +49,7 @@ The script prints its artifact directory containing `results.json` and each shel
 Use a trusted or sticky parent directory whose other users cannot replace the
 new output entry. Private output permissions do not protect against an attacker
 controlling its parent or arbitrary same-UID code. Run the CLI regressions independently with
-`python3 -m unittest discover -s scripts -p test_session_pty.py`.
+`uv run --no-project python -m unittest discover -s scripts -p test_session_pty.py`.
 
 The flicker setup directly launches each fresh Git/tool executable once before
 starting zsh, with a separate 8s timeout, EOF stdin, disposable `HOME`, cwd
