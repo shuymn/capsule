@@ -19,6 +19,10 @@
 
 大きなリポジトリ（追跡ファイル 50,000、変更 200、未追跡 200）で、別の端末からブランチを切り替えた直後に空の行で Enter を押したときの値です。どちらのツールも既定の設定で、GitHub-hosted runner 上でツールごとに交互に 50 回計測した p50 / p90 を示します。
 
+<p align="center">
+  <img src="assets/benchmarks/prompt-latency.svg" alt="Linux と macOS の runner でのプロンプト遅延の棒グラフ。入力が止まる時間は capsule が約 1.5 ms、starship が 74〜126 ms。新しいブランチの表示も capsule の方が早い。">
+</p>
+
 | Runner | ツール | 入力が止まる時間 | 新しいブランチの表示まで |
 |---|---|---|---|
 | ubuntu-latest（AMD EPYC、4 vCPU） | capsule 1.1.1 | 1.4 / 1.4 ms | 53 / 58 ms |

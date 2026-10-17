@@ -33,6 +33,8 @@ or an equally recorded run, under these rules:
 - The workflow pins Starship by version and SHA-256 per platform; update them together.
 - Save published results under [benchmarks/](benchmarks/) with the run link, and quote them
   from there; workflow logs and artifacts expire.
+- Regenerate the README chart from the same run's artifacts:
+  `uv run --no-project scripts/latency_chart.py <linux>/results.json <macos>/results.json assets/benchmarks/prompt-latency.svg`.
 
 Run locally with `task bench:latency` (requires zsh, Git, uv, and Starship).
 

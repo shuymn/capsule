@@ -19,6 +19,10 @@ A zsh prompt that never makes you wait to type. `capsule` is written in Rust for
 
 Pressing Enter on an empty line in a large repository (50,000 tracked files, 200 modified, 200 untracked) right after the branch was switched from another terminal. Both tools use their default configuration. Values are p50 / p90 of 50 interleaved samples per tool on GitHub-hosted runners.
 
+<p align="center">
+  <img src="assets/benchmarks/prompt-latency.svg" alt="Bar chart of prompt latency on Linux and macOS runners: input blocked is about 1.5 ms for capsule versus 74 to 126 ms for starship; the fresh branch appears sooner with capsule as well.">
+</p>
+
 | Runner | Tool | Input blocked | Fresh branch shown |
 |---|---|---|---|
 | ubuntu-latest (AMD EPYC, 4 vCPU) | capsule 1.1.1 | 1.4 / 1.4 ms | 53 / 58 ms |
