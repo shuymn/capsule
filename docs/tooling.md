@@ -15,8 +15,9 @@ Read this file when changing build, CI, hooks, or tool dependencies.
 - [CI](../.github/workflows/ci.yml) uses the same Task commands on macOS and Linux.
   The Rust setup action treats rustc warnings as errors through `RUSTFLAGS=-D warnings`.
 - Run Python scripts through uv with the version in [.python-version](../.python-version).
-  CI and the Linux helper image install a pinned uv; Renovate updates uv,
-  `.python-version`, and the image digests.
+  CI installs uv 0.13.x from taiki-e/install-action's manifest; the Linux helper image
+  copies a digest-pinned uv. Renovate updates install-action, `.python-version`, and the
+  image digest.
 - Use `task docker:linux:lint` or `task docker:linux:check` for Linux checks from
   another OS. They build [the helper image](../docker/linux-ci.Dockerfile), mount the
   repository, and run with the host UID/GID. The check task skips hook installation.
