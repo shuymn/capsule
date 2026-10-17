@@ -31,6 +31,8 @@ or an equally recorded run, under these rules:
 - Do not publish timings from a machine running other work; use them for correctness
   checks only.
 - The workflow pins Starship by version and SHA-256 per platform; update them together.
+- Save published results under [benchmarks/](benchmarks/) with the run link, and quote them
+  from there; workflow logs and artifacts expire.
 
 Run locally with `task bench:latency` (requires zsh, Git, uv, and Starship).
 
