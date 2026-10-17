@@ -300,3 +300,77 @@ fn cancelled_blocking_jobs_keep_both_slots_until_their_actual_completion() -> Te
     })?;
     Ok(())
 }
+
+#[test]
+fn deduplicating_runner_shares_identical_commands_within_one_scope() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let count = directory.path().join("count");
+    let counted = |label: &str| {
+        argv(&[
+            "sh",
+            "-c",
+            &format!("printf x >> {}; printf {label}", count.display()),
+        ])
+    };
+    let (same, other) = (counted("same")?, counted("other")?);
+    let input = snapshot(directory.path());
+    let mut changed = input.clone();
+    changed
+        .env
+        .push((OsString::from("CAPSULE_SCOPE"), OsString::from("changed")));
+    let runs = || std::fs::read(&count).map(|bytes| bytes.len());
+    runtime()?.block_on(async {
+        let cancel = CancellationToken::new();
+        let scope = Runner::default().deduplicating();
+        let (first, second) = tokio::join!(
+            scope.command(&same, &input, &cancel),
+            scope.command(&same, &input, &cancel)
+        );
+        assert_eq!((first?, second?), (b"same".to_vec(), b"same".to_vec()));
+        assert_eq!(scope.command(&same, &input, &cancel).await?, b"same");
+        assert_eq!(runs()?, 1, "identical argv, cwd, and environment run once");
+
+        assert_eq!(scope.command(&other, &input, &cancel).await?, b"other");
+        assert_eq!(scope.command(&same, &changed, &cancel).await?, b"same");
+        assert_eq!(
+            runs()?,
+            3,
+            "a different argv or environment runs separately"
+        );
+
+        scope
+            .deduplicating()
+            .command(&same, &input, &cancel)
+            .await?;
+        Runner::default().command(&same, &input, &cancel).await?;
+        Runner::default().command(&same, &input, &cancel).await?;
+        assert_eq!(runs()?, 6, "fresh scopes and plain runners run every call");
+        Ok::<_, Box<dyn Error>>(())
+    })?;
+    Ok(())
+}
+
+#[test]
+fn deduplicating_runner_shares_failures() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let count = directory.path().join("count");
+    let failing = argv(&[
+        "sh",
+        "-c",
+        &format!("printf x >> {}; exit 7", count.display()),
+    ])?;
+    let input = snapshot(directory.path());
+    runtime()?.block_on(async {
+        let cancel = CancellationToken::new();
+        let scope = Runner::default().deduplicating();
+        for _ in 0..2 {
+            let failure = scope.command(&failing, &input, &cancel).await;
+            assert!(
+                matches!(failure, Err(AcquireError::FailedExit(status)) if status.code() == Some(7))
+            );
+        }
+        assert_eq!(std::fs::read(&count)?, b"x", "a shared failure runs once");
+        Ok::<_, Box<dyn Error>>(())
+    })?;
+    Ok(())
+}
