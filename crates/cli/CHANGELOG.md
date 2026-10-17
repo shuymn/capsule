@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0](https://github.com/shuymn/capsule/compare/v1.0.4...v1.1.0) - 2026-10-17
+
+### Added
+
+- *(prompt)* reacquire on empty enter
+
+### Other
+
+- *(review)* check init.zsh hook interactions
+- *(pty)* add user hook interaction matrix
+- derive expected prompt generations
+- *(deps)* update rust crate tokio-util to v0.7.20
+- *(deps)* update actions/create-github-app-token action to v3.3.0 (#248)
+- *(deps)* update actions/create-github-app-token action to v3.3.0
+- *(deps)* update taiki-e/install-action action to v2.87.28 (#247)
+- *(deps)* update taiki-e/install-action action to v2.87.28
+- *(deps)* update rust crate serde_json to v1.0.154 (#246)
+- *(deps)* update rust crate serde_json to v1.0.154
+
 ## [1.0.4](https://github.com/shuymn/capsule/compare/v1.0.3...v1.0.4) - 2026-10-14
 
 ### Fixed
