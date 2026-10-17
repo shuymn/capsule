@@ -302,6 +302,36 @@ async fn same_generation_rerenders_without_reacquiring_and_environment_is_replac
 }
 
 #[tokio::test]
+async fn identical_commands_run_once_per_generation_across_values_and_modules() -> Result {
+    let home = tempfile::tempdir()?;
+    let command = r#"["sh", "-c", "printf x >> \"$COUNT_FILE\"; printf 'tool 1.2.3-beta'"]"#;
+    write_config(
+        home.path(),
+        &format!(
+            "schema_version = 2\n[git]\ndisabled = true\n\
+            [[module]]\nname = 'version'\nformat = 'V={{version}}[ ({{channel}})]'\n\
+            [module.values]\n\
+            version = [{{ command = {command}, regex = '(\\d+\\.\\d+\\.\\d+)' }}]\n\
+            channel = [{{ command = {command}, regex = '-(\\w+)' }}]\n\
+            [[module]]\nname = 'raw'\nformat = 'RAW={{value}}'\n\
+            [module.values]\nvalue = [{{ command = {command} }}]\n"
+        ),
+    )?;
+    let mut worker = Worker::start(home.path())?;
+    let mut input = request(home.path(), 1);
+    let first = worker.render(&input).await?;
+    assert!(
+        first.contains("V=1.2.3 (beta)") && first.contains("RAW=tool 1.2.3-beta"),
+        "{first:?}"
+    );
+    assert_eq!(std::fs::read(home.path().join("count"))?, b"x");
+    input.generation = 2;
+    worker.render(&input).await?;
+    assert_eq!(std::fs::read(home.path().join("count"))?, b"xx");
+    worker.close().await
+}
+
+#[tokio::test]
 async fn failed_reload_preserves_last_valid_plan_then_accepts_fixed_configuration() -> Result {
     let home = tempfile::tempdir()?;
     write_config(home.path(), CONFIG)?;

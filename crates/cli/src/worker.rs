@@ -311,6 +311,8 @@ async fn acquire_generation(
     cancel: CancellationToken,
     tx: mpsc::Sender<Event>,
 ) {
+    // Identical commands in this generation share one execution.
+    let runner = runner.deduplicating();
     let work = async {
         let (plan, diagnostic) =
             match load_plan(&request.snapshot, &runner, &cancel, &previous).await {

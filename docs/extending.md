@@ -18,7 +18,7 @@ Define modules with `[[module]]` and named candidate arrays under `[module.value
 | `file = "relative/path"` | Read text relative to cwd; reject absolute paths and `.` / `..` components; trim whitespace |
 | `command = ["program", "arg"]` | Execute argv directly with cwd and the full exported environment; trim stdout |
 
-Try candidates in array order. Missing data, regex mismatch, command failure, and timeout permit fallback. The first success stops fallback, including an empty value. Optional `regex` extracts capture group 1. Shell syntax requires an explicit shell executable in argv. Consult [architecture](architecture.md) for resource limits.
+Try candidates in array order. Missing data, regex mismatch, command failure, and timeout permit fallback. The first success stops fallback, including an empty value. Optional `regex` extracts capture group 1. Shell syntax requires an explicit shell executable in argv. Within one prompt, identical argv runs once and every candidate using it shares the output, so several regexes can extract different values from one command. Consult [architecture](architecture.md) for resource limits.
 
 Keep candidates semantically equivalent. A version file declares the requested version; a version command reports the executable selected by the shell. Use separate named values when displaying both.
 
