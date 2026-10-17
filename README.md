@@ -21,7 +21,7 @@ The two-line prompt shows the directory, Git, custom values, command duration, a
 
 Requirements: macOS or Linux and zsh. Git information requires `git` on the shell's exported `PATH`.
 
-For an existing daemon-based installation, complete the [migration steps](docs/migration.md) before replacing the binary.
+Upgrading from 0.x (shared daemon)? Complete the [migration steps](docs/migration.md) before replacing the binary.
 
 ```sh
 brew install shuymn/tap/capsule
@@ -60,4 +60,4 @@ See the [configuration guide](docs/extending.md) for XDG paths, value sources, c
 
 ## Development
 
-Use stable Rust and Task; tests also require Python 3 and zsh. Read [architecture](docs/architecture.md) for runtime contracts, [tooling](docs/tooling.md) for checks, and [release procedures](docs/releasing.md) for publishing.
+Use stable Rust and Task; tests also require uv, zsh, and Git. Read [architecture](docs/architecture.md) for runtime contracts, [tooling](docs/tooling.md) for checks, and [release procedures](docs/releasing.md) for publishing.

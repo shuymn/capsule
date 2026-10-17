@@ -43,7 +43,7 @@ Use generic configuration for tool-specific values; see [extending.md](extending
 
 Keep acquisition states distinct: `Pending` is unfinished, `Ready` contains a value, `Missing` has no matching source data, and `Failed` retains the acquisition error. Allocate fresh observations per generation; never copy retained display into acquisition. Decode OS bytes only at the display boundary. Trim file/command output, preserve environment text, and extract regex capture group 1.
 
-Keep at most one settled display snapshot in the worker, not a cwd cache. Superseding unfinished work may retain that same snapshot only while inputs and the accepted plan remain unchanged. With no compatible settled display, render only local inputs until completion. The completion bit describes acquisition, not whether the displayed information is retained. This replaces unconditional hiding at every generation boundary: previously validated same-input display may remain visible, but unfinished new results may not.
+Keep at most one settled display snapshot in the worker; do not retain displays per cwd. Superseding unfinished work may keep showing that snapshot only while cwd, exported environment, and the accepted plan remain unchanged. With no compatible settled display, render only local inputs until completion. The completion bit describes acquisition, not whether the displayed information is retained.
 
 ## Resources and shutdown
 
@@ -63,4 +63,4 @@ Keep permit ownership with blocking tasks and delayed reapers until they finish.
 
 Each command owns a process group. Clean up the group and reap the direct child after completion, cancellation, timeout, output overflow, or worker shutdown. Bound pipe cleanup when descendants retain stdout. Commands that deliberately leave the group/session are outside this lifecycle guarantee.
 
-Use rustix for safe OS operations and CLOEXEC shell descriptors. Shell exit/exec closes the transport; worker EOF/signals cancel active work. Preserve these boundaries with the real-platform checks in [testing.md](testing.md). Use [migration.md](migration.md) for installed-service transitions.
+Use rustix for safe OS operations and CLOEXEC shell descriptors. Shell exit/exec closes the transport; worker EOF/signals cancel active work. Preserve these boundaries with the real-platform checks in [testing.md](testing.md).

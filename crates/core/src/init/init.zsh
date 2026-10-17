@@ -45,21 +45,21 @@ _capsule_escape_field() {
 _capsule_snapshot() {
     emulate -L zsh
     unsetopt multibyte
+    # Sorted keys keep equivalent exported environments byte-identical across generations.
+    local -a _capsule_keys=(${(ok)parameters[(R)*export*]}) _capsule_values _capsule_fields
     local _capsule_env_key
-    _capsule_escape_field "$PWD"
-    _CAPSULE_SNAPSHOT=$_CAPSULE_ESCAPED
-    # Keep equivalent exported environments byte-identical across generations.
-    for _capsule_env_key in ${(ok)parameters}; do
-        [[ ${parameters[$_capsule_env_key]} == *export* ]] || continue
-        _capsule_escape_field "$_capsule_env_key"
-        _CAPSULE_SNAPSHOT+=$'\t'$_CAPSULE_ESCAPED
-        _capsule_escape_field "${(P)_capsule_env_key}"
-        _CAPSULE_SNAPSHOT+=$'\t'$_CAPSULE_ESCAPED
-        if (( ${#_CAPSULE_SNAPSHOT} > 261000 )); then
-            _CAPSULE_SNAPSHOT=''
-            return 1
-        fi
-    done
+    for _capsule_env_key in $_capsule_keys; do _capsule_values+=("${(P)_capsule_env_key}"); done
+    # Escape every field with one array substitution per character; per-field calls dominate precmd.
+    _capsule_fields=("$PWD" "${(@)_capsule_keys:^_capsule_values}")
+    _capsule_fields=("${(@)_capsule_fields//\\/\\\\}")
+    _capsule_fields=("${(@)_capsule_fields//$'\t'/\\t}")
+    _capsule_fields=("${(@)_capsule_fields//$'\n'/\\n}")
+    _capsule_fields=("${(@)_capsule_fields//$'\r'/\\r}")
+    _CAPSULE_SNAPSHOT=${(pj:\t:)_capsule_fields}
+    if (( ${#_CAPSULE_SNAPSHOT} > 261000 )); then
+        _CAPSULE_SNAPSHOT=''
+        return 1
+    fi
 }
 
 _capsule_flush() {
