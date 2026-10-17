@@ -4,6 +4,7 @@ Read when reviewing code. Prioritize behavior, lifecycle safety, regressions, an
 
 - Check public behavior, defaults, examples, and errors against [architecture.md](architecture.md) and the implementation.
 - Trace generation changes, environment replacement, partial I/O, cancellation, resource bounds, and child cleanup through success and failure paths.
+- For [init.zsh](../crates/core/src/init/init.zsh) changes, check every Capsule state variable after both a command and empty Enter, combined with a user hook (named `precmd` or preserved `precmd_functions`) that changes cwd, exports, or `PROMPT_SUBST`, or raises a genuine shell error.
 - Verify configuration validation, ordered fallback, arbitration, grapheme layout, and prompt-data escaping at their owning boundaries.
 - Check that APIs expose only necessary state, ownership is explicit, and errors preserve useful context.
 - Require tests for changed contracts and concrete regressions; use [testing.md](testing.md) to distinguish unit checks from real shell/platform evidence.
