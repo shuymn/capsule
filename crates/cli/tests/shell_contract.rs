@@ -181,7 +181,6 @@ expanded=$(print -P -r -- "$PROMPT")
 [[ $PROMPT == "$expected" && $expanded == "$expected" ]] || exit 17
 
 # The final hook must not seize fallback or a prompt assigned by a user hook.
-# Each finalization starts a generation, so the response below targets 8.
 for preserved in "$_CAPSULE_FALLBACK" 'user-owned'; do
     PROMPT=$preserved
     setopt promptsubst
@@ -192,7 +191,8 @@ for preserved in "$_CAPSULE_FALLBACK" 'user-owned'; do
     [[ $PROMPT == "$preserved" ]] || exit 23
 done
 PROMPT=$_CAPSULE_RENDERED
-print -r -- SAFE
+# Every finalization starts a generation; report the one the response must match.
+print -r -- "SAFE $_CAPSULE_GENERATION"
 
 zselect -r $_CAPSULE_FD_OUT -t 300 || exit 18
 _capsule_async_callback
@@ -203,13 +203,13 @@ print -r -- COMPLETE
     let mut child = spawn_zsh(&script, home.path())?;
     let mut input = child.stdin.take().ok_or("missing stdin")?;
     let mut output = BufReader::new(child.stdout.take().ok_or("missing stdout")?).lines();
-    assert_eq!(
-        tokio::time::timeout(Duration::from_secs(4), output.next_line())
-            .await??
-            .as_deref(),
-        Some("SAFE")
-    );
-    input.write_all(b"R\t8\tupdated\tcharacter\t1\n").await?;
+    let safe = tokio::time::timeout(Duration::from_secs(4), output.next_line())
+        .await??
+        .ok_or("missing safe marker")?;
+    let generation = safe.strip_prefix("SAFE ").ok_or("unexpected safe marker")?;
+    input
+        .write_all(format!("R\t{generation}\tupdated\tcharacter\t1\n").as_bytes())
+        .await?;
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(4), output.next_line())
             .await??

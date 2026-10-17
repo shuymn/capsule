@@ -83,6 +83,8 @@ Require successful exit and all contract records:
 | Exit and exec | Pipes close; worker and active acquisition descendants terminate; exec cleanup is checked after a replacement-ready marker and while the controlled replacement remains alive |
 | Ten shells | Ten distinct workers, one initial acquisition each, and no workers left active after exit |
 
+Every prompt that reaches Capsule finalization starts a generation, so derive expected generations with `Shell.next_generation()` or `Shell.run_line()` instead of hard-coding counts. A genuine error in a named `precmd` skips Capsule's hooks and leaves the generation unchanged; assert that case directly.
+
 Record each platform separately. A filesystem that rejects non-UTF-8 names produces
 `non_utf8_fixture_supported = false`; require the Linux record with `true` for that
 cwd boundary. Partial `results.json` output from a failed run is not a pass.
