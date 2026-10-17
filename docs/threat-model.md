@@ -6,7 +6,7 @@
 
 - 基準実装: `280378d718d9b61a16ef02b5cd9c350ff6b94e2f` に prompt 引用と PTY 回帰の変更を加えたもの、workspace version `1.0.3`、schema v2、macOS / Linux の対話的 zsh とセッション単位の worker。静的確認を始めた `6d84750` からの上流差分は依存と release workflow の更新のみである。
 - 対象: `init zsh` / `preset`、内部の `worker` / `fd-config`、シェルと worker のパイプ、設定・環境・ファイル・Git・コマンドの取得、プロンプト表示、Nix 統合、CI とリリースの配布経路。
-- 対象外: 旧共有 daemon / socket の実装、OS・zsh・端末・Git 自体の脆弱性調査、外部パッケージ管理基盤の監査、ベンチマーク・開発用スクリプトの個別監査。旧サービスの停止は [migration.md](migration.md) に従え。
+- 対象外: OS・zsh・端末・Git 自体の脆弱性調査、外部パッケージ管理基盤の監査、ベンチマーク・開発用スクリプトの個別監査。
 - 根拠は設計資料とソースの静的確認、および第8節の検証記録である。検証記録にない項目はテストの所在だけを記録したもので、攻撃再現と外部設定の確認は実施していない。
 - 「現行対策」はソースで確認できる実装、「前提」は実行環境が満たす条件、「残存リスク」は対策後も成立し得る経路として区別せよ。脅威シナリオを確認済み脆弱性や重大度判定として扱うな。
 
@@ -144,7 +144,7 @@ STRIDE を分類ラベルとして使う。`E` は root への昇格だけでな
 
 - **主体・条件:** 途中で切れた frame、backpressure、非 UTF-8 OS bytes、古い worker 応答、descriptor の漏えいによる偽応答が発生する。
 - **想定影響:** 別世代の prompt を採用する、秘密 snapshot が別主体へ届く、I/O 待ちで入力が止まる。
-- **現行対策:** 継承パイプを使い、shell endpoints を CLOEXEC / NONBLOCK にする。Rust は frame 上限、escaping、数値、環境 key の重複・NUL・`=` を検証し、unterminated EOF を拒否する。reader は取消をまたいで partial bytes を保持する。shell は応答長と世代の完全一致を確認し、通信停止時は fallback、次の command で worker を再起動する。
+- **現行対策:** 継承パイプを使い、shell endpoints を CLOEXEC / NONBLOCK にする。Rust は frame 上限、escaping、数値、環境 key の重複・NUL・`=` を検証し、unterminated EOF を拒否する。reader は取消をまたいで partial bytes を保持する。shell は応答長と世代の完全一致を確認し、通信停止時は fallback、次の prompt で worker を再起動する。
 - **残存リスク・扱い:** shell 側の `R` parsing は trusted worker を前提としたもので、Rust の `Response::decode` 相当の全面検証や再 sanitize を行わない。`K` / 世代番号に MAC・nonce・peer 認証はない。descriptor へのアクセス権を持つ主体や同一 UID の任意コードを排除できない。将来 socket / shared worker に戻す場合は、この前提を流用せず認証・session 分離から再設計せよ。
 
 ### T09 — prompt の鮮度・真実性の過信（S / T、B2・B3・B4、A3）

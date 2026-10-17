@@ -21,7 +21,7 @@
 
 要件は macOS または Linux と zsh です。Git の表示には、シェルが export した `PATH` 上に `git` が必要です。
 
-旧 daemon 版から更新する場合は、バイナリを置き換える前に[移行手順](docs/migration.md)を実施してください。
+0.x（共有 daemon 版）から更新する場合は、バイナリを置き換える前に[移行手順](docs/migration.md)を実施してください。
 
 ```sh
 brew install shuymn/tap/capsule
@@ -60,4 +60,4 @@ XDG パス、取得元、表示条件、書式、スタイル、再読み込み�
 
 ## 開発
 
-stable Rust と Task を使います。テストには Python 3 と zsh も必要です。実行時の契約は[アーキテクチャ](docs/architecture.md)、検証は[開発ツール](docs/tooling.md)、公開は[リリース手順](docs/releasing.md)を参照してください。
+stable Rust と Task を使います。テストには uv、zsh、Git も必要です。実行時の契約は[アーキテクチャ](docs/architecture.md)、検証は[開発ツール](docs/tooling.md)、公開は[リリース手順](docs/releasing.md)を参照してください。
