@@ -928,6 +928,44 @@ def run_preloaded_hook_helper(shell, record):
     record("preloaded_add_zsh_hook_preserves_command_reacquisition_of_git_and_modules")
 
 
+def run_empty_enter(shell, record):
+    shell.complete(1)
+    worker = shell.state()["worker"]
+    (shell.home / ".capsule/config.toml").write_text("schema_version = 2\n")
+    shell.command("git init -q && git symbolic-ref HEAD refs/heads/ENTER_BEFORE; _CAPSULE_CMD_START=$((EPOCHREALTIME-3)); (exit 7)")
+    shell.complete(2)
+    shell.state()
+    assert b"ENTER_BEFORE" in (shell.home / "rendered").read_bytes()
+
+    def assert_refreshed(generation, mark):
+        state = shell.state()
+        assert state["generation"] == generation and state["worker"] == worker, state
+        rendered = (shell.home / "rendered").read_bytes()
+        assert b"ENTER_AFTER" in rendered and b"ENTER_BEFORE" not in rendered, rendered
+        finalized = [item for item in shell.transitions(mark, generation) if item["event"] == b"precmd"]
+        assert finalized[-1]["status"] == 7 and int(finalized[-1]["duration"]) >= 3000, finalized
+
+    # Another terminal changes Git state; an empty line must show it.
+    subprocess.run(
+        ["git", "symbolic-ref", "HEAD", "refs/heads/ENTER_AFTER"],
+        cwd=shell.home / "work", env={"HOME": str(shell.home), "PATH": "/usr/bin:/bin"}, check=True,
+    )
+    mark = shell.mark()
+    shell.command("")
+    shell.complete(3, mark)
+    assert_refreshed(3, mark)
+    record("empty_enter_refreshes_git_and_preserves_command_status_and_duration")
+
+    # Repeated empty lines supersede unfinished work and settle on the newest generation.
+    mark = shell.mark()
+    (shell.home / "zle-ready").unlink(missing_ok=True)
+    shell.send(b"\n" * 5)
+    shell.ready(8)
+    shell.complete(8, mark)
+    assert_refreshed(8, mark)
+    record("repeated_empty_enter_settles_on_the_newest_generation_with_one_worker", enters=5)
+
+
 def run(binary: Path, output: Path):
     results = []
     shells = []
@@ -973,19 +1011,8 @@ def run(binary: Path, output: Path):
         shell.complete(1)
         original = shell.state()
         assert shell.count() == 1
-        initial_prompt = (shell.home / "rendered").read_bytes()
-        initial_expansion = (shell.home / "prompt").read_bytes()
-        assert b"VALUE=initial" in initial_prompt
+        assert b"VALUE=initial" in (shell.home / "rendered").read_bytes()
         record("one_shell_starts_one_worker", worker=original["worker"])
-
-        for _ in range(5):
-            shell.send(b"\n")
-            state = shell.state()
-            assert state["generation"] == 1 and state["worker"] == original["worker"]
-            assert (shell.home / "rendered").read_bytes() == initial_prompt
-            assert (shell.home / "prompt").read_bytes() == initial_expansion
-        assert shell.count() == 1
-        record("empty_enter_preserves_information_and_reuses_acquisitions", enters=5)
 
         shell.resize(70)
         eventually(lambda: shell.state()["cols"] == 70, "resize request", shell.pump)
@@ -1040,7 +1067,7 @@ def run(binary: Path, output: Path):
         assert before["cursor"] == after["cursor"] == len(typed) - 3
         assert b"VALUE=after-gate" in (shell.home / "rendered").read_bytes()
         record("asynchronous_prompt_update_preserves_typed_buffer_and_cursor")
-        shell.send(b"\x03")
+        shell.send(b"\x15")
         shell.command("unset CAP_GATE; export CAP_VALUE=bulk")
         shell.complete(5)
 
@@ -1102,6 +1129,11 @@ def run(binary: Path, output: Path):
         for shell in many:
             shell.assert_workers_gone()
         record("ten_shells_own_ten_workers_and_leave_none_active")
+
+        shell = start("empty-enter")
+        run_empty_enter(shell, record)
+        shell.close()
+        shell.assert_workers_gone()
 
         shell = start("preloaded-hook-helper", precmd_setup=(
             "autoload -Uz add-zsh-hook add-zle-hook-widget\n"
