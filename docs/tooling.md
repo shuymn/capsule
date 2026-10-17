@@ -21,7 +21,7 @@ Read this file when changing build, CI, hooks, or tool dependencies.
   another OS. They build [the helper image](../docker/linux-ci.Dockerfile), mount the
   repository, and run with the host UID/GID. The check task skips hook installation.
 - Follow [testing.md](testing.md) for suite and PTY checks,
-  [benchmarking.md](benchmarking.md) for acquisition diagnostics, and
+  [benchmarking.md](benchmarking.md) for latency comparisons and acquisition diagnostics, and
   [releasing.md](releasing.md) for version, candidate, and promotion rules.
 
 ## Clippy policy
