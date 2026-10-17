@@ -273,6 +273,18 @@ class Shell:
             )
         eventually(found, f"generation {generation} complete", self.pump, timeout=timeout)
 
+    def next_generation(self, wait_ready=True):
+        # Every prompt that reaches Capsule finalization starts a generation.
+        return self.state(wait_ready)["generation"] + 1
+
+    def run_line(self, source, wait_ready=True):
+        """Submit one input line and wait until the generation it starts settles."""
+        generation = self.next_generation(wait_ready)
+        mark = self.mark()
+        self.command(source)
+        self.complete(generation, mark)
+        return generation, mark
+
     def count(self):
         path = self.home / "count"
         return len(path.read_bytes()) if path.exists() else 0
@@ -906,14 +918,13 @@ def run_preloaded_hook_helper(shell, record):
         "[module.values]\nvalue = [{file = 'foo.md'}]\n"
     )
     # Use real Git and ordinary commands, not manually invoked Capsule hooks.
-    for generation, command, branch, value, untracked in [
-        (2, "git init -q && git symbolic-ref HEAD refs/heads/HOOK_BEFORE", b"HOOK_BEFORE", None, False),
-        (3, "touch foo.md", b"HOOK_BEFORE", b"FILE=", True),
-        (4, "git symbolic-ref HEAD refs/heads/HOOK_AFTER; print -r -- updated > foo.md", b"HOOK_AFTER", b"FILE=updated", True),
-        (5, "rm foo.md", b"HOOK_AFTER", None, False),
+    for command, branch, value, untracked in [
+        ("git init -q && git symbolic-ref HEAD refs/heads/HOOK_BEFORE", b"HOOK_BEFORE", None, False),
+        ("touch foo.md", b"HOOK_BEFORE", b"FILE=", True),
+        ("git symbolic-ref HEAD refs/heads/HOOK_AFTER; print -r -- updated > foo.md", b"HOOK_AFTER", b"FILE=updated", True),
+        ("rm foo.md", b"HOOK_AFTER", None, False),
     ]:
-        shell.command(command)
-        shell.complete(generation)
+        generation, _ = shell.run_line(command)
         state = shell.state()
         assert state["generation"] == generation and state["worker"] == worker, state
         rendered = (shell.home / "rendered").read_bytes()
@@ -932,8 +943,7 @@ def run_empty_enter(shell, record):
     shell.complete(1)
     worker = shell.state()["worker"]
     (shell.home / ".capsule/config.toml").write_text("schema_version = 2\n")
-    shell.command("git init -q && git symbolic-ref HEAD refs/heads/ENTER_BEFORE; _CAPSULE_CMD_START=$((EPOCHREALTIME-3)); (exit 7)")
-    shell.complete(2)
+    shell.run_line("git init -q && git symbolic-ref HEAD refs/heads/ENTER_BEFORE; _CAPSULE_CMD_START=$((EPOCHREALTIME-3)); (exit 7)")
     shell.state()
     assert b"ENTER_BEFORE" in (shell.home / "rendered").read_bytes()
 
@@ -950,20 +960,88 @@ def run_empty_enter(shell, record):
         ["git", "symbolic-ref", "HEAD", "refs/heads/ENTER_AFTER"],
         cwd=shell.home / "work", env={"HOME": str(shell.home), "PATH": "/usr/bin:/bin"}, check=True,
     )
-    mark = shell.mark()
-    shell.command("")
-    shell.complete(3, mark)
-    assert_refreshed(3, mark)
+    generation, mark = shell.run_line("")
+    assert_refreshed(generation, mark)
     record("empty_enter_refreshes_git_and_preserves_command_status_and_duration")
 
     # Repeated empty lines supersede unfinished work and settle on the newest generation.
+    generation = shell.next_generation() + 4
     mark = shell.mark()
     (shell.home / "zle-ready").unlink(missing_ok=True)
     shell.send(b"\n" * 5)
-    shell.ready(8)
-    shell.complete(8, mark)
-    assert_refreshed(8, mark)
+    shell.ready(generation)
+    shell.complete(generation, mark)
+    assert_refreshed(generation, mark)
     record("repeated_empty_enter_settles_on_the_newest_generation_with_one_worker", enters=5)
+
+
+MATRIX_PAYLOAD = "$(print -n x > ~/dollar) `print -n x > ~/backtick`"
+MATRIX_SETUP = (
+    f"export CAP_VALUE={shlex.quote(MATRIX_PAYLOAD)}\n"
+    "typeset -gi _capsule_test_count=0\n"
+    "_capsule_test_matrix() {\n"
+    "  local action\n"
+    '  [[ -s $HOME/matrix-action ]] || return 0\n'
+    '  read -r action < $HOME/matrix-action\n'
+    "  [[ $action == $1:* ]] || return 0\n"
+    '  : > $HOME/matrix-action\n'
+    "  case ${action#*:} in\n"
+    '    cd) if [[ $PWD == $HOME/work ]]; then cd -- $HOME/work/matrix; else cd -- $HOME/work; fi ;;\n'
+    f'    export) export CAP_VALUE={shlex.quote(MATRIX_PAYLOAD)}" $((++_capsule_test_count))" ;;\n'
+    "    setopt) if [[ -o promptsubst ]]; then unsetopt promptsubst; else setopt promptsubst; fi ;;\n"
+    "    error) : $((1/0)) ;;\n"
+    "  esac\n"
+    "}\n"
+    "precmd() { _capsule_test_matrix named; }\n"
+    "_capsule_test_matrix_hook() { _capsule_test_matrix hook; }\n"
+    "precmd_functions=(_capsule_test_matrix_hook)\n"
+)
+
+
+def run_hook_matrix(shell, record):
+    """Combine user-hook state changes with command and empty-Enter prompts."""
+    shell.complete(1)
+    worker = shell.state()["worker"]
+    (shell.home / "work/matrix").mkdir()
+    markers = (shell.home / "dollar", shell.home / "backtick")
+    cwd, value, subst, count = shell.home / "work", MATRIX_PAYLOAD.encode(), True, 0
+    status, duration = None, None
+    actions = ["none", "hook:cd", "hook:export", "hook:setopt", "hook:error", "named:cd", "named:export", "named:setopt"]
+    for index, (action, trigger) in enumerate((a, t) for a in actions for t in ("command", "empty")):
+        case = (action, trigger)
+        (shell.home / "matrix-action").write_text(action)
+        exit_code = 10 + index
+        line = f"_CAPSULE_CMD_START=$((EPOCHREALTIME-3)); (exit {exit_code})" if trigger == "command" else ""
+        generation, mark = shell.run_line(line, wait_ready=False)
+        state = shell.state(wait_ready=False)
+        assert state["generation"] == generation and state["worker"] == worker, (case, state)
+
+        kind = action.partition(":")[2]
+        if kind == "cd":
+            cwd = shell.home / "work" if cwd != shell.home / "work" else shell.home / "work/matrix"
+        elif kind == "export":
+            count += 1
+            value = MATRIX_PAYLOAD.encode() + f" {count}".encode()
+        elif kind == "setopt":
+            subst = not subst
+        # Acquisition sees cwd and exports after every hook ran or aborted.
+        assert (shell.home / "cwd").read_bytes() == os.fsencode(cwd.resolve()) + b"\n", case
+        assert (shell.home / "value").read_bytes() == value, case
+
+        finalized = [item for item in shell.transitions(mark, generation) if item["event"] == b"precmd"][-1]
+        if trigger == "command":
+            assert finalized["status"] == exit_code and int(finalized["duration"]) >= 3000, (case, finalized)
+            status, duration = finalized["status"], finalized["duration"]
+        else:
+            assert (finalized["status"], finalized["duration"]) == (status, duration), (case, finalized)
+
+        rendered = (shell.home / "rendered").read_bytes()
+        # Serialization escapes `$` and backticks; the command text must still be displayed.
+        assert b"print -n x > ~/dollar" in rendered, (case, rendered)
+        expected_prompt = b"${_CAPSULE_RENDERED}" if subst else rendered
+        assert (shell.home / "prompt").read_bytes() == expected_prompt, case
+        assert not any(marker.exists() for marker in markers), case
+    record("user_hook_changes_keep_snapshot_status_and_literal_prompt_for_commands_and_empty_enter", cases=len(actions) * 2)
 
 
 def run(binary: Path, output: Path):
@@ -1024,8 +1102,7 @@ def run(binary: Path, output: Path):
         assert shell.count() == 1
         record("resize_and_keymap_rerender_without_acquisition")
 
-        shell.command("unset CAP_REMOVE; CAP_PRIVATE=private; export CAP_VALUE=$'日本語\\tline\\n\\\\tail'; export CAP_RAW=$'raw-\\xff'")
-        shell.complete(2)
+        shell.run_line("unset CAP_REMOVE; CAP_PRIVATE=private; export CAP_VALUE=$'日本語\\tline\\n\\\\tail'; export CAP_RAW=$'raw-\\xff'")
         assert (shell.home / "value").read_bytes() == "日本語\tline\n\\tail".encode()
         assert (shell.home / "raw").read_bytes() == b"raw-\xff"
         assert (shell.home / "removed").read_bytes() == b"unset"
@@ -1034,6 +1111,7 @@ def run(binary: Path, output: Path):
 
         raw_cwd = os.fsencode(shell.home / "work") + b"/raw-\xff"
         non_utf8 = True
+        generation = shell.next_generation()
         try:
             os.mkdir(raw_cwd)
             shell.command("cd $'raw-\\xff'")
@@ -1046,21 +1124,22 @@ def run(binary: Path, output: Path):
             directory.mkdir()
             raw_cwd = os.fsencode(directory)
             shell.command("cd '日本語 cwd'")
-        shell.complete(3)
+        shell.complete(generation)
         assert (shell.home / "cwd").read_bytes() == raw_cwd + b"\n"
         record("cwd_bytes_reach_acquisition", non_utf8_fixture_supported=non_utf8)
 
         os.mkfifo(shell.home / "gate")
+        generation = shell.next_generation()
         shell.command("export CAP_GATE=1 CAP_VALUE=after-gate")
         eventually((shell.home / "gate-ready").exists, "gated acquisition", shell.pump)
-        shell.ready(4)
+        shell.ready(generation)
         shell.send(b"echo cursor-marker\x1b[D\x1b[D\x1b[D")
         before = shell.state()
         typed = (shell.home / "buffer").read_bytes()
         gate = os.open(shell.home / "gate", os.O_WRONLY | os.O_NONBLOCK)
         os.write(gate, b"release\n")
         os.close(gate)
-        shell.complete(4)
+        shell.complete(generation)
         after = shell.state()
         assert typed == b"echo cursor-marker"
         assert (shell.home / "buffer").read_bytes() == typed
@@ -1068,18 +1147,18 @@ def run(binary: Path, output: Path):
         assert b"VALUE=after-gate" in (shell.home / "rendered").read_bytes()
         record("asynchronous_prompt_update_preserves_typed_buffer_and_cursor")
         shell.send(b"\x15")
-        shell.command("unset CAP_GATE; export CAP_VALUE=bulk")
-        shell.complete(5)
+        shell.run_line("unset CAP_GATE; export CAP_VALUE=bulk")
 
         state = shell.state()
+        generation = state["generation"] + 1
         shell.signal_worker(state["worker"], signal.SIGSTOP)
         shell.command("export CAP_BULK_A=${(l:95000::x:)} CAP_BULK_B=${(l:95000::y:)}")
         pending = shell.state()
         assert pending["tx"] > 0, pending
-        assert pending["generation"] == 6
+        assert pending["generation"] == generation
         shell.signal_worker(state["worker"], signal.SIGCONT)
         # No keyboard input until the worker finishes: credit notifications must progress TX.
-        shell.complete(6)
+        shell.complete(generation)
         drained = shell.state()
         assert drained["tx"] == drained["pending"] == 0
         record("backpressure_completes_large_request_without_more_keyboard_input", queued_bytes=pending["tx"])
@@ -1096,8 +1175,7 @@ def run(binary: Path, output: Path):
         shell.signal_worker(current["worker"], signal.SIGKILL)
         eventually(lambda: shell.state()["read_fd"] == 0, "worker failure fallback", shell.pump)
         assert (shell.home / "prompt").read_bytes() == b"%~\n%# "
-        shell.command("unset CAP_BULK_A CAP_BULK_B")
-        shell.complete(7)
+        shell.run_line("unset CAP_BULK_A CAP_BULK_B")
         restarted = shell.state()
         assert restarted["worker"] != current["worker"]
         record("worker_failure_uses_fallback_and_next_command_restarts_worker")
@@ -1132,6 +1210,11 @@ def run(binary: Path, output: Path):
 
         shell = start("empty-enter")
         run_empty_enter(shell, record)
+        shell.close()
+        shell.assert_workers_gone()
+
+        shell = start("hook-matrix", precmd_setup=MATRIX_SETUP)
+        run_hook_matrix(shell, record)
         shell.close()
         shell.assert_workers_gone()
 
