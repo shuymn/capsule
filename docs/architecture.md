@@ -29,6 +29,7 @@ Use generic configuration for tool-specific values; see [extending.md](extending
 - WHEN the user presses Enter on an empty command line, Capsule SHALL retain the last command's exit status and duration.
 - WHEN transport fails or the worker stops, Capsule SHALL select fallback and discard worker-owned retained display; the next prompt SHALL start a replacement worker.
 - WHEN spawning a command, Capsule SHALL use direct argv and replace its environment with the snapshot, preserving absent versus empty variables and non-UTF-8 bytes. Non-exported parameters, aliases, and functions are excluded.
+- WHEN one generation requests the same argv with the same cwd and environment more than once, Capsule SHALL run it once and share its outcome, including failure; a later generation SHALL run it again.
 - WHEN a snapshot exceeds its bound, Capsule SHALL omit acquisition rather than truncate the snapshot. Diagnostics SHALL exclude environment contents.
 - WHEN configuration validation fails, Capsule SHALL reject the entire new plan, report the reason, and retain the last valid plan; a fresh worker uses defaults.
 - WHEN evaluating a display snapshot, Capsule SHALL hide a module whose condition is pending, false, or failed. WHEN a required value is unavailable, Capsule SHALL hide the module; unavailable optional sections SHALL be omitted.

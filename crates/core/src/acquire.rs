@@ -18,7 +18,7 @@ use tokio::{
     io::{AsyncRead, AsyncReadExt},
     process::{Child, ChildStdout, Command},
     signal::unix::{Signal as ChildSignals, SignalKind, signal},
-    sync::{OwnedSemaphorePermit, Semaphore},
+    sync::{OnceCell, OwnedSemaphorePermit, Semaphore},
     task::{JoinError, JoinSet},
     time::{Instant, sleep_until, timeout},
 };
@@ -55,6 +55,24 @@ pub enum AcquireError {
     Task(#[from] JoinError),
 }
 
+impl AcquireError {
+    /// Copy a shared outcome for another consumer; OS and task errors keep their message.
+    fn duplicate(&self) -> Self {
+        match self {
+            Self::InvalidCommand => Self::InvalidCommand,
+            Self::Cancelled => Self::Cancelled,
+            Self::TimedOut => Self::TimedOut,
+            Self::OutputTooLarge => Self::OutputTooLarge,
+            Self::FailedExit(status) => Self::FailedExit(*status),
+            Self::Io(error) => Self::Io(io::Error::new(error.kind(), error.to_string())),
+            Self::Task(error) => Self::Io(io::Error::other(error.to_string())),
+        }
+    }
+}
+
+type SharedCommand = Arc<OnceCell<Result<Vec<u8>, AcquireError>>>;
+type CommandScope = Arc<Mutex<Vec<(Vec<String>, Snapshot, SharedCommand)>>>;
+
 /// Shared acquisition limits: four subprocesses and two blocking filesystem jobs.
 ///
 /// Each operation has a 500 ms deadline including capacity waiting. A cancelled
@@ -66,14 +84,30 @@ pub struct Runner {
     processes: Arc<Semaphore>,
     files: Arc<Semaphore>,
     reapers: Arc<Mutex<JoinSet<()>>>,
+    commands: Option<CommandScope>,
 }
 
 impl Runner {
+    /// Share these limits in a fresh scope where identical commands run once.
+    ///
+    /// Within the returned runner, a command whose argv, cwd, and environment
+    /// match an earlier call waits for and shares that call's outcome instead of
+    /// spawning again. Use one scope per acquisition generation so that later
+    /// generations observe fresh output.
+    #[must_use]
+    pub fn deduplicating(&self) -> Self {
+        Self {
+            commands: Some(CommandScope::default()),
+            ..self.clone()
+        }
+    }
+
     /// Capture bounded stdout using exactly the supplied cwd and environment.
     ///
     /// Stdin reads EOF and stderr is discarded. Each command owns a process
     /// group. Cancellation, timeout, excessive output, and normal completion all
     /// terminate remaining members before releasing the command's capacity.
+    /// A [`deduplicating`](Self::deduplicating) runner shares identical calls.
     ///
     /// # Errors
     /// Returns cancellation, deadline, byte-limit, exit-status or OS failures.
@@ -84,8 +118,46 @@ impl Runner {
         snapshot: &Snapshot,
         cancel: &CancellationToken,
     ) -> Result<Vec<u8>, AcquireError> {
-        let (executable, arguments) = argv.split_first().ok_or(AcquireError::InvalidCommand)?;
+        // Fix the deadline per caller, so taking over a shared call cannot extend it.
         let deadline = Instant::now() + ACQUISITION_TIMEOUT;
+        let Some(commands) = &self.commands else {
+            return self.spawn_command(argv, snapshot, cancel, deadline).await;
+        };
+        let shared = {
+            let mut commands = commands
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some((_, _, shared)) = commands
+                .iter()
+                .find(|(known, input, _)| known == argv && input == snapshot)
+            {
+                shared.clone()
+            } else {
+                let shared = SharedCommand::default();
+                commands.push((argv.to_vec(), snapshot.clone(), shared.clone()));
+                shared
+            }
+        };
+        // A dropped initializer leaves the cell empty, so another waiter runs it.
+        let outcome = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(AcquireError::Cancelled),
+            outcome = shared.get_or_init(|| self.spawn_command(argv, snapshot, cancel, deadline)) => outcome,
+        };
+        match outcome {
+            Ok(output) => Ok(output.clone()),
+            Err(error) => Err(error.duplicate()),
+        }
+    }
+
+    async fn spawn_command(
+        &self,
+        argv: &[String],
+        snapshot: &Snapshot,
+        cancel: &CancellationToken,
+        deadline: Instant,
+    ) -> Result<Vec<u8>, AcquireError> {
+        let (executable, arguments) = argv.split_first().ok_or(AcquireError::InvalidCommand)?;
         let permit = acquire_permit(self.processes.clone(), cancel, deadline).await?;
         // Register before spawning so even an immediate exit cannot lose its wakeup.
         let child_signals = signal(SignalKind::child())?;
@@ -213,6 +285,7 @@ impl Default for Runner {
             processes: Arc::new(Semaphore::new(4)),
             files: Arc::new(Semaphore::new(2)),
             reapers: Arc::new(Mutex::new(JoinSet::new())),
+            commands: None,
         }
     }
 }
