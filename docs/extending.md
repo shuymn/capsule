@@ -48,6 +48,6 @@ Styles accept `fg`, `bold`, and `dimmed`; omitted fields inherit their defaults.
 
 ## Reload and verification
 
-After a command or cwd change, the worker reads configuration and the exported environment. Width/keymap changes and empty Enter reuse observations. Invalid reloads report a diagnostic and retain the last valid plan; invalid startup configuration uses defaults.
+Before each prompt, including after empty Enter, the worker reads configuration and the exported environment. Width/keymap changes reuse observations. Invalid reloads report a diagnostic and retain the last valid plan; invalid startup configuration uses defaults.
 
 Validate generated TOML with `ConfigPlan::parse`. Unknown fields, duplicate names, invalid sources/regex/formats, undefined values, and exceeded limits reject the document. Verify changed behavior in an isolated zsh home/config, including fallback order, empty versus unset values, optional sections, or arbitration as applicable. Use [migration.md](migration.md) for daemon-based installations.

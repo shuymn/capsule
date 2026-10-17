@@ -20,13 +20,14 @@ Use generic configuration for tool-specific values; see [extending.md](extending
 ## Behavioral contract
 
 - WHILE acquisition is pending, Capsule SHALL accept input and preserve the typed buffer/cursor during redraw.
-- WHEN a command executes or cwd changes, Capsule SHALL start a generation and reload configuration asynchronously. Capture cwd and the full exported environment as OS bytes after preserved `precmd_functions` hooks complete or abort, then send the request; retain status/duration capture in the first Capsule hook.
+- WHEN zsh prepares a prompt, including after empty Enter, Capsule SHALL start a generation and reload configuration asynchronously. Capture cwd and the full exported environment as OS bytes after preserved `precmd_functions` hooks complete or abort, then send the request; retain status/duration capture in the first Capsule hook.
 - WHILE revalidating an identical cwd/environment snapshot, Capsule SHALL retain the last settled external display, including directory metadata, Git, and custom modules; new partial results SHALL remain hidden.
 - WHEN cwd or any exported variable's presence or bytes change, Capsule SHALL discard retained external display immediately. Environment ordering SHALL NOT affect snapshot identity.
 - WHEN reload accepts different configuration source text (including removal), Capsule SHALL discard retained display before using the new plan. Until reload settles, same-input retention SHALL be provisional; a rejected configuration SHALL retain the last valid plan.
 - WHEN a generation settles, including failure or timeout, Capsule SHALL atomically replace the external display with that generation's observations, removing results whose conditions are false or whose required values are Missing or Failed.
-- WHEN exit status, duration, width, or keymap changes, Capsule SHALL render these local inputs without waiting for external acquisition. Width, keymap, and empty Enter SHALL NOT trigger reacquisition.
-- WHEN transport fails or the worker stops, Capsule SHALL select fallback and discard worker-owned retained display; the next command SHALL start a replacement worker.
+- WHEN exit status, duration, width, or keymap changes, Capsule SHALL render these local inputs without waiting for external acquisition. Width and keymap SHALL NOT trigger reacquisition.
+- WHEN the user presses Enter on an empty command line, Capsule SHALL retain the last command's exit status and duration.
+- WHEN transport fails or the worker stops, Capsule SHALL select fallback and discard worker-owned retained display; the next prompt SHALL start a replacement worker.
 - WHEN spawning a command, Capsule SHALL use direct argv and replace its environment with the snapshot, preserving absent versus empty variables and non-UTF-8 bytes. Non-exported parameters, aliases, and functions are excluded.
 - WHEN a snapshot exceeds its bound, Capsule SHALL omit acquisition rather than truncate the snapshot. Diagnostics SHALL exclude environment contents.
 - WHEN configuration validation fails, Capsule SHALL reject the entire new plan, report the reason, and retain the last valid plan; a fresh worker uses defaults.

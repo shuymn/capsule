@@ -162,12 +162,11 @@ payload='$(touch "$HOME/dollar") `touch "$HOME/backtick"`'
 expected=$payload$'\ncharacter '
 _capsule_frame $'R\t2\t'"$payload"$'\tcharacter\t1'
 [[ $PROMPT == "$expected" ]] || exit 11
-_CAPSULE_CWD=$PWD _CAPSULE_CMD_START=''
+_CAPSULE_CMD_START=''
 _capsule_snapshot
 
 # No response is available until both post-Capsule option transitions expand.
 next_subst=on
-_CAPSULE_NEED_GENERATION=1
 for hook in "${precmd_functions[@]}"; do "$hook" >/dev/null || exit 20; done
 [[ ${options[promptsubst]} == on && $_CAPSULE_PROMPT_SUBST == on ]] || exit 12
 expanded=$(print -P -r -- "$PROMPT")
@@ -175,7 +174,6 @@ expanded=$(print -P -r -- "$PROMPT")
 [[ $PROMPT == '${_CAPSULE_RENDERED}' && $expanded == "$expected" ]] || exit 14
 
 next_subst=off
-_CAPSULE_NEED_GENERATION=1
 for hook in "${precmd_functions[@]}"; do "$hook" >/dev/null || exit 21; done
 [[ ${options[promptsubst]} == off && $_CAPSULE_PROMPT_SUBST == off ]] || exit 15
 expanded=$(print -P -r -- "$PROMPT")
@@ -183,6 +181,7 @@ expanded=$(print -P -r -- "$PROMPT")
 [[ $PROMPT == "$expected" && $expanded == "$expected" ]] || exit 17
 
 # The final hook must not seize fallback or a prompt assigned by a user hook.
+# Each finalization starts a generation, so the response below targets 8.
 for preserved in "$_CAPSULE_FALLBACK" 'user-owned'; do
     PROMPT=$preserved
     setopt promptsubst
@@ -210,7 +209,7 @@ print -r -- COMPLETE
             .as_deref(),
         Some("SAFE")
     );
-    input.write_all(b"R\t4\tupdated\tcharacter\t1\n").await?;
+    input.write_all(b"R\t8\tupdated\tcharacter\t1\n").await?;
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(4), output.next_line())
             .await??
@@ -242,20 +241,18 @@ async fn user_hooks_finish_before_snapshot_and_first_revalidation_retains_displa
 cd -- "$HOME"
 export CAP_LATE=before
 _capsule_snapshot
-_CAPSULE_CWD=$PWD
 exec {_CAPSULE_FD_OUT}<&0 {_CAPSULE_FD_IN}>&1
 command "$CAPSULE_TEST_BIN" fd-config <&$_CAPSULE_FD_OUT >&$_CAPSULE_FD_IN || exit 10
 next_cwd=$HOME/other
 _CAPSULE_CMD_START=$((EPOCHREALTIME-3))
 (exit 7)
 for hook in "${precmd_functions[@]}"; do "$hook" >/dev/null || exit 11; done
-[[ $_CAPSULE_CWD == "$PWD" ]] || exit 12
 print -r -- READY
 zselect -r $_CAPSULE_FD_OUT -t 300 || exit 13
 _capsule_async_callback
 [[ $PROMPT == $'settled\ncharacter ' ]] || exit 14
 
-_CAPSULE_NEED_GENERATION=1
+_CAPSULE_NEED_STATUS=1
 true
 for hook in "${precmd_functions[@]}"; do "$hook" >/dev/null || exit 15; done
 [[ $PROMPT == $'settled\ncharacter ' ]] || exit 16
@@ -303,6 +300,59 @@ print -r -- RETAINED
 }
 
 #[tokio::test]
+async fn empty_enter_keeps_command_status_when_a_hook_changes_cwd() -> Result {
+    let home = tempfile::tempdir()?;
+    let cwd = home.path().join("other");
+    std::fs::create_dir(&cwd)?;
+    let script = format!(
+        "zle() {{ :; }}\n\
+        precmd_functions=(user_precmd)\n\
+        user_precmd() {{ if [[ -n $next_cwd ]]; then cd -- \"$next_cwd\"; next_cwd=''; fi; }}\n\
+        {INIT}\n{}",
+        r#"
+cd -- "$HOME"
+exec {_CAPSULE_FD_OUT}<&0 {_CAPSULE_FD_IN}>&1
+command "$CAPSULE_TEST_BIN" fd-config <&$_CAPSULE_FD_OUT >&$_CAPSULE_FD_IN || exit 10
+_capsule_preexec
+_CAPSULE_CMD_START=$((EPOCHREALTIME-3))
+(exit 7)
+for hook in "${precmd_functions[@]}"; do "$hook" >/dev/null || exit 11; done
+# Empty Enter: no preexec, a different status, and a hook-driven cwd change.
+next_cwd=$HOME/other
+(exit 3)
+for hook in "${precmd_functions[@]}"; do "$hook" >/dev/null || exit 12; done
+"#
+    );
+    let mut child = spawn_zsh(&script, home.path())?;
+    let mut output = BufReader::new(child.stdout.take().ok_or("missing stdout")?).lines();
+    let mut requests = Vec::new();
+    for _ in 0..2 {
+        let line = tokio::time::timeout(Duration::from_secs(4), output.next_line())
+            .await??
+            .ok_or("missing request")?;
+        requests.push(Request::decode(line.as_bytes())?);
+    }
+    let [command, empty] = requests.as_slice() else {
+        return Err("expected two requests".into());
+    };
+    assert_eq!((command.generation, empty.generation), (1, 2));
+    assert_eq!(empty.snapshot.cwd, cwd);
+    assert_eq!(empty.last_exit_code, 7);
+    assert!(
+        command
+            .duration_ms
+            .is_some_and(|duration| duration >= 3_000)
+    );
+    assert_eq!(empty.duration_ms, command.duration_ms);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(4), child.wait())
+            .await??
+            .success()
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn user_owned_prompt_survives_snapshot_invalidation_and_ready_responses() -> Result {
     let home = tempfile::tempdir()?;
     std::fs::create_dir(home.path().join("other"))?;
@@ -322,7 +372,6 @@ print -r -- PRESERVED
 # Consume a ready response synchronously during another snapshot change.
 zselect -r $_CAPSULE_FD_OUT -t 300 || exit 13
 cd -- "$HOME"
-_CAPSULE_NEED_GENERATION=1
 for hook in "${precmd_functions[@]}"; do "$hook" >/dev/null || exit 14; done
 [[ $PROMPT == user-owned && $_CAPSULE_RENDERED == $'updated\ncharacter ' ]] || exit 15
 
@@ -377,7 +426,7 @@ fn failed_redraw_write_selects_fallback_after_transport_cleanup() -> Result {
         _CAPSULE_FD_IN=999\n\
         _capsule_redraw\n\
         [[ $PROMPT == fallback ]] || exit 11\n\
-        (( !_CAPSULE_FD_IN && !_CAPSULE_FD_OUT && _CAPSULE_NEED_GENERATION )) || exit 12\n\
+        (( !_CAPSULE_FD_IN && !_CAPSULE_FD_OUT )) || exit 12\n\
         (( redraw == 1 )) || exit 13",
         functions()
     );

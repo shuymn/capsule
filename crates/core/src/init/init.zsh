@@ -9,7 +9,6 @@ _capsule_cleanup_fds() {
     if (( _CAPSULE_FD_IN )); then exec {_CAPSULE_FD_IN}>&-; fi
     _CAPSULE_FD_IN=0 _CAPSULE_FD_OUT=0 _CAPSULE_COPROC_PID=0
     _CAPSULE_RX='' _CAPSULE_TX='' _CAPSULE_PENDING=''
-    _CAPSULE_NEED_GENERATION=1
 }
 
 _capsule_start_coproc() {
@@ -178,7 +177,7 @@ _capsule_async_callback() {
 }
 
 _capsule_preexec() {
-    _CAPSULE_NEED_GENERATION=1
+    _CAPSULE_NEED_STATUS=1
     _CAPSULE_CMD_START=$EPOCHREALTIME
 }
 
@@ -188,8 +187,9 @@ _capsule_precmd() {
     emulate -L zsh
     # Make a command-level option transition safe before any user hook can fail.
     _capsule_refresh_retained_prompt
-    if (( _CAPSULE_NEED_GENERATION )) || [[ $_CAPSULE_CWD != "$PWD" ]]; then
-        _CAPSULE_NEED_GENERATION=1
+    # Empty Enter keeps the last command's status and duration.
+    if (( _CAPSULE_NEED_STATUS )); then
+        _CAPSULE_NEED_STATUS=0
         _CAPSULE_LAST_EXIT=$_capsule_exit
         _CAPSULE_DURATION_MS=''
         if [[ -n $_CAPSULE_CMD_START ]]; then
@@ -256,21 +256,19 @@ _capsule_finalize_prompt() {
     _CAPSULE_PROMPT_SUBST=${options[promptsubst]}
     emulate -L zsh
     # Capture acquisition inputs after user hooks have updated cwd/environment.
-    if (( _CAPSULE_NEED_GENERATION )) || [[ $_CAPSULE_CWD != "$PWD" ]]; then
-        (( _CAPSULE_GENERATION++ ))
-        _CAPSULE_CWD=$PWD
-        local _capsule_previous_snapshot=$_CAPSULE_SNAPSHOT
-        if (( !_CAPSULE_FD_IN )); then
-            _capsule_use_fallback
-            _capsule_start_coproc
-        fi
-        if ! _capsule_snapshot; then
-            _capsule_cleanup_fds
-            _capsule_use_fallback
-        elif [[ $_CAPSULE_SNAPSHOT != "$_capsule_previous_snapshot" ]]; then
-            _capsule_use_fallback
-        fi
-        _CAPSULE_NEED_GENERATION=0
+    # Every prompt, including empty Enter, revalidates; an identical snapshot
+    # keeps the settled display until the new generation settles.
+    (( _CAPSULE_GENERATION++ ))
+    local _capsule_previous_snapshot=$_CAPSULE_SNAPSHOT
+    if (( !_CAPSULE_FD_IN )); then
+        _capsule_use_fallback
+        _capsule_start_coproc
+    fi
+    if ! _capsule_snapshot; then
+        _capsule_cleanup_fds
+        _capsule_use_fallback
+    elif [[ $_CAPSULE_SNAPSHOT != "$_capsule_previous_snapshot" ]]; then
+        _capsule_use_fallback
     fi
     _capsule_send
     if (( _CAPSULE_FD_OUT )); then
@@ -302,9 +300,9 @@ _capsule_init() {
     zmodload zsh/datetime || return
     typeset -gi ERRNO=0 _CAPSULE_GENERATION=0 _CAPSULE_LAST_EXIT=0
     typeset -gi _CAPSULE_FD_IN=0 _CAPSULE_FD_OUT=0 _CAPSULE_COPROC_PID=0
-    typeset -gi _CAPSULE_NEED_GENERATION=1 _CAPSULE_CHANGED=0
+    typeset -gi _CAPSULE_NEED_STATUS=1 _CAPSULE_CHANGED=0
     typeset -g _CAPSULE_RX='' _CAPSULE_TX='' _CAPSULE_PENDING='' _CAPSULE_ESCAPED=''
-    typeset -g _CAPSULE_SNAPSHOT='' _CAPSULE_CWD='' _CAPSULE_CMD_START='' _CAPSULE_DURATION_MS=''
+    typeset -g _CAPSULE_SNAPSHOT='' _CAPSULE_CMD_START='' _CAPSULE_DURATION_MS=''
     typeset -g _CAPSULE_LAST_COLS='' _CAPSULE_LAST_KEYMAP='' _CAPSULE_RENDERED=''
     typeset -g _CAPSULE_FALLBACK=$'%~\n%# '
     PROMPT=$_CAPSULE_FALLBACK

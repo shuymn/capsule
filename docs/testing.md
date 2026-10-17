@@ -68,7 +68,8 @@ Require successful exit and all contract records:
 |---|---|
 | Binary selection | A renamed selected executable supplies init, worker, and fd-config even beside a different executable named capsule |
 | Cleanup safety | Confirmed-dead worker identities are retired; historical PIDs never become signal targets after reuse |
-| One shell | One worker; empty Enter preserves displayed information; resize/keymap changes reuse acquisition |
+| One shell | One worker; resize/keymap changes reuse acquisition |
+| Empty Enter | Empty Enter shows Git changes made outside the shell and keeps the last command's status and duration; repeated empty Enter settles on the newest generation with the same worker |
 | Initialization | With `add-zsh-hook` already loaded by another integration, ordinary commands advance generations and update real Git state and file-backed modules using the same worker |
 | Revalidation | With file-controlled slow acquisition and unchanged cwd/environment/config, ordinary commands preserve Git/tool information in every intermediate frame and actual shell prompt assignment, including finalized precmd; the first command after a directory-aware precmd hook updates exports also preserves the settled display |
 | Replacement | Changed results replace retained display at completion; Missing, Failed, and false conditions remove obsolete information |
