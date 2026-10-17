@@ -975,6 +975,75 @@ def run_empty_enter(shell, record):
     record("repeated_empty_enter_settles_on_the_newest_generation_with_one_worker", enters=5)
 
 
+MATRIX_PAYLOAD = "$(print -n x > ~/dollar) `print -n x > ~/backtick`"
+MATRIX_SETUP = (
+    f"export CAP_VALUE={shlex.quote(MATRIX_PAYLOAD)}\n"
+    "typeset -gi _capsule_test_count=0\n"
+    "_capsule_test_matrix() {\n"
+    "  local action\n"
+    '  [[ -s $HOME/matrix-action ]] || return 0\n'
+    '  read -r action < $HOME/matrix-action\n'
+    "  [[ $action == $1:* ]] || return 0\n"
+    '  : > $HOME/matrix-action\n'
+    "  case ${action#*:} in\n"
+    '    cd) if [[ $PWD == $HOME/work ]]; then cd -- $HOME/work/matrix; else cd -- $HOME/work; fi ;;\n'
+    f'    export) export CAP_VALUE={shlex.quote(MATRIX_PAYLOAD)}" $((++_capsule_test_count))" ;;\n'
+    "    setopt) if [[ -o promptsubst ]]; then unsetopt promptsubst; else setopt promptsubst; fi ;;\n"
+    "    error) : $((1/0)) ;;\n"
+    "  esac\n"
+    "}\n"
+    "precmd() { _capsule_test_matrix named; }\n"
+    "_capsule_test_matrix_hook() { _capsule_test_matrix hook; }\n"
+    "precmd_functions=(_capsule_test_matrix_hook)\n"
+)
+
+
+def run_hook_matrix(shell, record):
+    """Combine user-hook state changes with command and empty-Enter prompts."""
+    shell.complete(1)
+    worker = shell.state()["worker"]
+    (shell.home / "work/matrix").mkdir()
+    markers = (shell.home / "dollar", shell.home / "backtick")
+    cwd, value, subst, count = shell.home / "work", MATRIX_PAYLOAD.encode(), True, 0
+    status, duration = None, None
+    actions = ["none", "hook:cd", "hook:export", "hook:setopt", "hook:error", "named:cd", "named:export", "named:setopt"]
+    for index, (action, trigger) in enumerate((a, t) for a in actions for t in ("command", "empty")):
+        case = (action, trigger)
+        (shell.home / "matrix-action").write_text(action)
+        exit_code = 10 + index
+        line = f"_CAPSULE_CMD_START=$((EPOCHREALTIME-3)); (exit {exit_code})" if trigger == "command" else ""
+        generation, mark = shell.run_line(line, wait_ready=False)
+        state = shell.state(wait_ready=False)
+        assert state["generation"] == generation and state["worker"] == worker, (case, state)
+
+        kind = action.partition(":")[2]
+        if kind == "cd":
+            cwd = shell.home / "work" if cwd != shell.home / "work" else shell.home / "work/matrix"
+        elif kind == "export":
+            count += 1
+            value = MATRIX_PAYLOAD.encode() + f" {count}".encode()
+        elif kind == "setopt":
+            subst = not subst
+        # Acquisition sees cwd and exports after every hook ran or aborted.
+        assert (shell.home / "cwd").read_bytes() == os.fsencode(cwd.resolve()) + b"\n", case
+        assert (shell.home / "value").read_bytes() == value, case
+
+        finalized = [item for item in shell.transitions(mark, generation) if item["event"] == b"precmd"][-1]
+        if trigger == "command":
+            assert finalized["status"] == exit_code and int(finalized["duration"]) >= 3000, (case, finalized)
+            status, duration = finalized["status"], finalized["duration"]
+        else:
+            assert (finalized["status"], finalized["duration"]) == (status, duration), (case, finalized)
+
+        rendered = (shell.home / "rendered").read_bytes()
+        # Serialization escapes `$` and backticks; the command text must still be displayed.
+        assert b"print -n x > ~/dollar" in rendered, (case, rendered)
+        expected_prompt = b"${_CAPSULE_RENDERED}" if subst else rendered
+        assert (shell.home / "prompt").read_bytes() == expected_prompt, case
+        assert not any(marker.exists() for marker in markers), case
+    record("user_hook_changes_keep_snapshot_status_and_literal_prompt_for_commands_and_empty_enter", cases=len(actions) * 2)
+
+
 def run(binary: Path, output: Path):
     results = []
     shells = []
@@ -1141,6 +1210,11 @@ def run(binary: Path, output: Path):
 
         shell = start("empty-enter")
         run_empty_enter(shell, record)
+        shell.close()
+        shell.assert_workers_gone()
+
+        shell = start("hook-matrix", precmd_setup=MATRIX_SETUP)
+        run_hook_matrix(shell, record)
         shell.close()
         shell.assert_workers_gone()
 

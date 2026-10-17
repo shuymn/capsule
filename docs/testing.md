@@ -70,6 +70,7 @@ Require successful exit and all contract records:
 | Cleanup safety | Confirmed-dead worker identities are retired; historical PIDs never become signal targets after reuse |
 | One shell | One worker; resize/keymap changes reuse acquisition |
 | Empty Enter | Empty Enter shows Git changes made outside the shell and keeps the last command's status and duration; repeated empty Enter settles on the newest generation with the same worker |
+| Hook matrix | For commands and empty Enter combined with named or preserved hooks that change cwd, exports, or `PROMPT_SUBST`, or raise a preserved-hook shell error: each prompt advances one generation on the same worker, acquisition sees post-hook cwd/exports, status/duration follow the last command, and the prompt stays literal for the current option |
 | Initialization | With `add-zsh-hook` already loaded by another integration, ordinary commands advance generations and update real Git state and file-backed modules using the same worker |
 | Revalidation | With file-controlled slow acquisition and unchanged cwd/environment/config, ordinary commands preserve Git/tool information in every intermediate frame and actual shell prompt assignment, including finalized precmd; the first command after a directory-aware precmd hook updates exports also preserves the settled display |
 | Replacement | Changed results replace retained display at completion; Missing, Failed, and false conditions remove obsolete information |
