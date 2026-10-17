@@ -181,6 +181,17 @@ tasks:
       - task: build:release
       - cargo run -p capsule-prompt-bench --bin prompt-bench --release -- --capsule-bin target/release/capsule
 
+  bench:latency:
+    desc: Compare user-visible prompt latency with Starship and a plain prompt
+    summary: |
+      Builds the release binary and measures input blocking and fresh Git display
+      in real PTYs. Requires zsh, git, uv, and starship. Prefer the Prompt latency
+      workflow for published numbers (see docs/benchmarking.md).
+    deps:
+      - build:release
+    cmds:
+      - uv run --no-project scripts/prompt_latency.py --capsule-bin target/release/capsule --output "$(mktemp -d)/latency"
+
   docker:linux:build:
     desc: Build the Linux CI Docker image
     summary: |

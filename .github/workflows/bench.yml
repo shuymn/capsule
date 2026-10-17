@@ -1,0 +1,89 @@
+name: Prompt latency
+
+on:
+  workflow_dispatch:
+    inputs:
+      rounds:
+        description: Interleaved samples per tool and workload
+        required: true
+        default: "50"
+      files:
+        description: Tracked files in the large repository
+        required: true
+        default: "50000"
+
+env:
+  STARSHIP_VERSION: v1.26.0
+
+jobs:
+  latency:
+    name: Latency (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            starship_target: x86_64-unknown-linux-musl
+            starship_sha256: b7c232b0e8249d8e55a40beb79c5c43a7d370f3f9408bd215deb0170daeaadf3
+          - os: macos-latest
+            starship_target: aarch64-apple-darwin
+            starship_sha256: c40b27b11f580411e068f2fa6c1be7830a387c0bc47a94d1d37f32b054c5361d
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          cache: true
+
+      - name: Install zsh
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install --yes zsh
+
+      - name: Install uv
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: uv@0.13
+
+      - name: Install Starship
+        env:
+          TARGET: ${{ matrix.starship_target }}
+          SHA256: ${{ matrix.starship_sha256 }}
+        run: |
+          archive="starship-${TARGET}.tar.gz"
+          curl --fail --location --silent --show-error --output "$archive" \
+            "https://github.com/starship/starship/releases/download/${STARSHIP_VERSION}/${archive}"
+          echo "${SHA256}  ${archive}" | shasum -a 256 -c -
+          mkdir -p "$RUNNER_TEMP/starship"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/starship"
+
+      - name: Build release binary
+        run: cargo build --release --locked --bin capsule
+
+      - name: Measure
+        env:
+          ROUNDS: ${{ inputs.rounds }}
+          FILES: ${{ inputs.files }}
+        run: |
+          uv run --no-project scripts/prompt_latency.py \
+            --capsule-bin target/release/capsule \
+            --starship-bin "$RUNNER_TEMP/starship/starship" \
+            --rounds "$ROUNDS" --files "$FILES" \
+            --output "$RUNNER_TEMP/latency"
+          cat "$RUNNER_TEMP/latency/results.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload results
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: prompt-latency-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/latency/results.json
+            ${{ runner.temp }}/latency/results.md
