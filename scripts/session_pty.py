@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Exercise the real zsh/worker boundary in disposable homes (no benchmarks).
 
-Run after `task build`: uv run --no-project scripts/session_pty.py
+Run with `task test:pty` (builds, then uses uv with the pinned .python-version).
 Use --output <new-directory> to create a private artifact directory.
-The standard-library-only driver also runs with python3 on Linux CI images.
 """
 
 from __future__ import annotations

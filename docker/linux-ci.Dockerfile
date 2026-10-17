@@ -7,10 +7,15 @@ COPY rust-toolchain.toml /tmp/rust-toolchain.toml
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates curl jq zsh \
+    && apt-get install --yes --no-install-recommends ca-certificates curl git jq procps zsh \
     && rm -rf /var/lib/apt/lists/*
 
 RUN sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin
+
+COPY --from=ghcr.io/astral-sh/uv:0.13.1@sha256:4a1f3666816dafadd20ceb71eac9a7d56d7ef30279f7d64048519ab901ada336 /uv /usr/local/bin/uv
+
+# Containers run as the caller's UID; keep uv's cache and managed Python writable.
+ENV UV_CACHE_DIR=/tmp/uv-cache UV_PYTHON_INSTALL_DIR=/tmp/uv-python
 
 RUN rustup toolchain install stable --profile minimal --component clippy --component rustfmt
 

@@ -74,9 +74,19 @@ tasks:
     summary: |
       Runs PTY-driver CLI regressions plus unit, integration, and documentation tests.
     cmds:
-      - python3 -m unittest discover -s scripts -p test_session_pty.py
+      - uv run --no-project python -m unittest discover -s scripts -p test_session_pty.py
       - cargo test --workspace --all-targets --all-features --locked
       - cargo test --workspace --doc --all-features --locked
+
+  test:pty:
+    desc: Run the interactive shell contract
+    summary: |
+      Builds the workspace and runs the real-PTY zsh/worker contract with the pinned Python.
+      Requires zsh, uv, git, and ps.
+    deps:
+      - build
+    cmds:
+      - uv run --no-project scripts/session_pty.py
 
   doc:
     desc: Build documentation
@@ -201,4 +211,4 @@ tasks:
       - task: docker:linux:build
         silent: true
     cmds:
-      - docker run --rm -it --user $(id -u):$(id -g) --env CARGO_HOME=/tmp/cargo --env RUSTUP_HOME=/tmp/rustup --volume ${PWD}:/workspace --workdir /workspace ${CAPSULE_LINUX_CI_IMAGE:-capsule-linux-ci} sh -c 'task fmt:check && task lint && task release:test && task test && task doc && task build'
+      - docker run --rm -it --user $(id -u):$(id -g) --env CARGO_HOME=/tmp/cargo --env RUSTUP_HOME=/tmp/rustup --volume ${PWD}:/workspace --workdir /workspace ${CAPSULE_LINUX_CI_IMAGE:-capsule-linux-ci} sh -c 'task fmt:check && task lint && task release:test && task test && task test:pty && task doc && task build'
