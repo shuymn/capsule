@@ -10,15 +10,6 @@
       "depNameTemplate": "git-cliff",
       "datasourceTemplate": "crate",
       "versioningTemplate": "semver"
-    },
-    {
-      "customType": "regex",
-      "description": "Update uv installed by CI",
-      "managerFilePatterns": ["/^\\.github/workflows/ci\\.yml$/"],
-      "matchStrings": ["tool: uv@(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
-      "depNameTemplate": "uv",
-      "datasourceTemplate": "pypi",
-      "versioningTemplate": "pep440"
     }
   ]
 }

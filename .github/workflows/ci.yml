@@ -78,7 +78,9 @@ jobs:
       - name: Install uv
         uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
-          tool: uv@0.13.1
+          # A minor pin resolves from install-action's checksummed manifest; an exact
+          # version newer than the manifest falls back to crates.io via cargo-binstall.
+          tool: uv@0.13
 
       - name: Run tests
         run: task test
