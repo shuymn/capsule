@@ -33,10 +33,14 @@ pub struct Pipe {
 impl Pipe {
     pub(crate) fn new(fd: OwnedFd, credit: Option<Arc<Notify>>) -> io::Result<Self> {
         nonblocking(&fd)?;
-        Ok(Self {
-            fd: AsyncFd::new(fd)?,
-            credit,
-        })
+        // `AsyncFd::register` is the replacement but is `unsafe`, which this workspace forbids.
+        // `OwnedFd` keeps the descriptor open and stable for the lifetime of the `AsyncFd`.
+        #[expect(
+            deprecated,
+            reason = "tokio's replacement `AsyncFd::register` is unsafe"
+        )]
+        let fd = AsyncFd::new(fd)?;
+        Ok(Self { fd, credit })
     }
 }
 
