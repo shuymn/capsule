@@ -32,7 +32,7 @@ jobs:
           cache: true
 
       - name: Set up Task
-        uses: shuymn/github-actions/.github/actions/setup-task@7fdaa03204cf2912854e3b30edf1de0cb2eaddc4 # main
+        uses: shuymn/github-actions/.github/actions/setup-task@424c0953bfceb6e885eb6d9a7243836c83ea4bb7 # main
 
       - name: Test release contract
         if: matrix.os == 'ubuntu-latest'
@@ -69,7 +69,7 @@ jobs:
           cache: true
 
       - name: Set up Task
-        uses: shuymn/github-actions/.github/actions/setup-task@7fdaa03204cf2912854e3b30edf1de0cb2eaddc4 # main
+        uses: shuymn/github-actions/.github/actions/setup-task@424c0953bfceb6e885eb6d9a7243836c83ea4bb7 # main
 
       - name: Install zsh
         if: matrix.os == 'ubuntu-latest'
@@ -112,7 +112,7 @@ jobs:
           cache: true
 
       - name: Set up Task
-        uses: shuymn/github-actions/.github/actions/setup-task@7fdaa03204cf2912854e3b30edf1de0cb2eaddc4 # main
+        uses: shuymn/github-actions/.github/actions/setup-task@424c0953bfceb6e885eb6d9a7243836c83ea4bb7 # main
 
       - name: Build workspace
         run: task build
