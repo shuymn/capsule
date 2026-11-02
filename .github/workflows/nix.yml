@@ -8,6 +8,9 @@ on:
     branches:
       - main
 
+env:
+  CI_MISE_VERSION: 2026.10.17
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -36,7 +39,7 @@ jobs:
       - name: Set up mise
         uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
         with:
-          version: 2026.10.17
+          version: ${{ env.CI_MISE_VERSION }}
 
       - name: Check Nix flake
         run: mise run nix:check

@@ -15,20 +15,17 @@ Read this file when changing build, CI, hooks, or tool dependencies.
 - Install zsh, Git, and `ps` from the system, not mise: macOS ships them, and Linux
   uses the distribution package (`apt-get install zsh`). Rust stays on rustup.
 - `mise run check` and `mise run check:fast` install lefthook hooks. To preserve
-  existing hooks, run the needed components directly: `mise run fmt:check`,
-  `mise run lint`, `mise run release:test`, `mise run test`, `mise run doc`, and
-  `mise run build`.
+  existing hooks, run `mise run verify` (the same steps as `check`) or individual
+  tasks such as `mise run lint`.
 - [lefthook.yml](../lefthook.yml) owns hook behavior, including formatter auto-staging
   and merge/rebase skips. Keep hook logic in mise tasks rather than duplicating scripts.
 - [CI](../.github/workflows/ci.yml) sets up tools with jdx/mise-action and uses the
-  same mise tasks on macOS and Linux. The workflows' `version:` inputs and the helper
-  image's `MISE_VERSION` pin one mise release; a Renovate regex manager updates them
-  together. `min_version` in mise.toml is a contributor floor; raise it by hand only
-  when mise.toml needs a newer mise. The Rust setup action treats rustc warnings as errors through
+  same mise tasks on macOS and Linux. Each workflow pins mise in `CI_MISE_VERSION`
+  (a Renovate regex manager updates it); the helper image copies mise from a
+  digest-pinned `ghcr.io/jdx/mise` image. `min_version` in mise.toml is a contributor
+  floor; raise it by hand only when mise.toml needs a newer mise. The Rust setup action treats rustc warnings as errors through
   `RUSTFLAGS=-D warnings`.
 - Run Python scripts through uv with the version in [.python-version](../.python-version).
-  The [benchmark workflow](../.github/workflows/bench.yml) still installs uv 0.13.x
-  from taiki-e/install-action's manifest.
 - Use `mise run docker:linux:lint` or `mise run docker:linux:check` for Linux checks
   from another OS. They build [the helper image](../docker/linux-ci.Dockerfile), which
   preinstalls the mise tools, mount the repository, and run with the host

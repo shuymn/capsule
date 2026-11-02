@@ -3,6 +3,10 @@
 # zsh, Git, and ps come from the system (see docs/tooling.md).
 min_version = "2026.10.17"
 
+[vars]
+# Shared by the docker:linux:* tasks; the image name can be overridden.
+docker_run = "docker run --rm -it --user $(id -u):$(id -g) --env CARGO_HOME=/tmp/cargo --env RUSTUP_HOME=/tmp/rustup --volume ${PWD}:/workspace --workdir /workspace ${CAPSULE_LINUX_CI_IMAGE:-capsule-linux-ci}"
+
 [tools]
 lefthook = "2.2.2"
 uv = "0.13.6"
@@ -78,13 +82,10 @@ description = "Remove build artifacts"
 run = "cargo clean"
 
 [tasks."install:lefthook"]
-description = "Install git hooks if needed"
+description = "Install or refresh git hooks"
 hide = true
 quiet = true
-run = '''
-hook="$(git rev-parse --git-path hooks/pre-commit)"
-grep -qs lefthook "$hook" || lefthook install
-'''
+run = "lefthook install"
 
 [tasks."check:fast"]
 description = "Run formatting checks, linting, release tests, and a normal build"
@@ -96,10 +97,8 @@ run = [
   { task = "build" },
 ]
 
-[tasks."check:full"]
-description = "Run formatting checks, linting, tests, documentation build, and build"
-alias = "check"
-depends = ["install:lefthook"]
+[tasks.verify]
+description = "Run formatting checks, linting, tests, documentation build, and build without git hooks"
 run = [
   { task = "fmt:check" },
   { task = "lint" },
@@ -108,6 +107,12 @@ run = [
   { task = "doc" },
   { task = "build" },
 ]
+
+[tasks."check:full"]
+description = "Install git hooks, then run verify"
+alias = "check"
+depends = ["install:lefthook"]
+run = [{ task = "verify" }]
 
 [tasks."bench:prompt"]
 description = "Benchmark capsule against starship (requires starship and git)"
@@ -126,9 +131,9 @@ run = "docker buildx build --load --file docker/linux-ci.Dockerfile --tag ${CAPS
 [tasks."docker:linux:lint"]
 description = "Run Linux lint checks in Docker"
 depends = ["docker:linux:build"]
-run = "docker run --rm -it --user $(id -u):$(id -g) --env CARGO_HOME=/tmp/cargo --env RUSTUP_HOME=/tmp/rustup --volume ${PWD}:/workspace --workdir /workspace ${CAPSULE_LINUX_CI_IMAGE:-capsule-linux-ci} mise run lint"
+run = "{{vars.docker_run}} mise run lint"
 
 [tasks."docker:linux:check"]
 description = "Run full Linux verification in Docker without installing git hooks"
 depends = ["docker:linux:build"]
-run = "docker run --rm -it --user $(id -u):$(id -g) --env CARGO_HOME=/tmp/cargo --env RUSTUP_HOME=/tmp/rustup --volume ${PWD}:/workspace --workdir /workspace ${CAPSULE_LINUX_CI_IMAGE:-capsule-linux-ci} sh -c 'mise run fmt:check && mise run lint && mise run release:test && mise run test && mise run test:pty && mise run doc && mise run build'"
+run = "{{vars.docker_run}} sh -c 'mise run verify && mise run test:pty'"

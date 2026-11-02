@@ -18,6 +18,9 @@ on:
         description: Private key for the maintain GitHub App
         required: true
 
+env:
+  CI_MISE_VERSION: 2026.10.17
+
 concurrency:
   group: release-promote
   cancel-in-progress: false
@@ -87,7 +90,7 @@ jobs:
       - name: Set up mise
         uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
         with:
-          version: 2026.10.17
+          version: ${{ env.CI_MISE_VERSION }}
           cache: false
 
       - name: Verify release contract
