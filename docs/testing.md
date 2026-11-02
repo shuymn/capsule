@@ -4,7 +4,7 @@ Read this file before writing or modifying tests.
 
 ## Suite and conventions
 
-- Use `task test` for PTY-driver CLI regressions, unit/integration targets, and
+- Use `mise run test` for PTY-driver CLI regressions, unit/integration targets, and
   doctests. The CLI regressions require uv but no built Capsule binary or PTY.
   uv runs every Python script with the version pinned in
   [.python-version](../.python-version), so local, CI, and Docker runs match. Cargo's `--all-targets` does not include doctests; the task runs them
@@ -26,10 +26,10 @@ Run [scripts/session_pty.py](../scripts/session_pty.py) on both macOS and Linux 
 changing shell integration, worker transport, or acquisition lifecycle. It requires
 zsh, uv, Git, and `ps`, uses real PTYs and disposable homes, and leaves user shell
 configuration untouched. CI runs it on macOS and Linux; run it locally on the
-target OS from the repository root, or in the Linux image with `task docker:linux:check`:
+target OS from the repository root, or in the Linux image with `mise run docker:linux:check`:
 
 ```sh
-task test:pty
+mise run test:pty
 ```
 
 The default binary is `target/debug/capsule`; use `--binary <path>` for another
@@ -87,7 +87,7 @@ Record each platform separately. A filesystem that rejects non-UTF-8 names produ
 `non_utf8_fixture_supported = false`; require the Linux record with `true` for that
 cwd boundary. Partial `results.json` output from a failed run is not a pass.
 
-Also run `task test` on each platform for fragmented/cancelled frames, partial shell
+Also run `mise run test` on each platform for fragmented/cancelled frames, partial shell
 reads, frame bounds, command/file limits, and process cleanup regressions. Require
 the shell regression with real initialization and installed precmd order to keep
 retained dollar/backtick payloads literal when a preserved user hook toggles

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compare user-visible prompt latency of Capsule, Starship, and a plain zsh prompt.
 
-Run with `task bench:latency` or directly:
+Run with `mise run bench:latency` or directly:
     uv run --no-project scripts/prompt_latency.py --capsule-bin target/release/capsule \
         --starship-bin "$(command -v starship)" --output <new-directory>
 

@@ -8,6 +8,9 @@ on:
     branches:
       - main
 
+env:
+  CI_MISE_VERSION: 2026.10.17
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -33,8 +36,10 @@ jobs:
       - name: Set up Nix
         uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # 31.11.3
 
-      - name: Set up Task
-        uses: shuymn/github-actions/.github/actions/setup-task@7fdaa03204cf2912854e3b30edf1de0cb2eaddc4 # main
+      - name: Set up mise
+        uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+        with:
+          version: ${{ env.CI_MISE_VERSION }}
 
       - name: Check Nix flake
-        run: task nix:check
+        run: mise run nix:check

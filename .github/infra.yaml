@@ -142,8 +142,8 @@ spec:
         - actions-rust-lang/setup-rust-toolchain@*
         - cachix/cachix-action@*
         - cachix/install-nix-action@*
+        - jdx/mise-action@*
         - oven-sh/setup-bun@*
-        - shuymn/github-actions/.github/actions/setup-task@*
         - shuymn/github-actions/.github/workflows/gha.yml@*
         - shuymn/github-actions/.github/workflows/renovate.yml@*
         - shuymn/github-actions/.github/workflows/security.yml@*

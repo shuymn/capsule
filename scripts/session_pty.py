@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the real zsh/worker boundary in disposable homes (no benchmarks).
 
-Run with `task test:pty` (builds, then uses uv with the pinned .python-version).
+Run with `mise run test:pty` (builds, then uses uv with the pinned .python-version).
 Use --output <new-directory> to create a private artifact directory.
 """
 

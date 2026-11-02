@@ -21,3 +21,6 @@ target
 #.idea/
 
 __pycache__/
+
+# mise local overrides
+mise.local.toml

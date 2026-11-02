@@ -10,6 +10,23 @@
       "depNameTemplate": "git-cliff",
       "datasourceTemplate": "crate",
       "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "description": "Update the mise version that workflows pass to jdx/mise-action",
+      "managerFilePatterns": ["/^\\.github/workflows/[^/]+\\.ya?ml$/"],
+      "matchStrings": ["CI_MISE_VERSION: (?<currentValue>\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "jdx/mise",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.+)$",
+      "versioningTemplate": "semver"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Move CI and the Linux helper image to the same mise release",
+      "matchDepNames": ["jdx/mise", "ghcr.io/jdx/mise"],
+      "groupName": "mise"
     }
   ]
 }
