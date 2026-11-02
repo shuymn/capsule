@@ -15,18 +15,18 @@ pre-commit:
     fmt:
       tags: [format]
       glob: "**/*.rs"
-      run: task fmt
+      run: mise run fmt
       stage_fixed: true
 
     lint:
       tags: [lint]
       glob: "**/*.rs"
-      run: task lint
+      run: mise run lint
 
     build:
       tags: [build]
       glob: "**/*.rs,Cargo.toml,Cargo.lock"
-      run: task build
+      run: mise run build
 
   skip:
     - merge: true
@@ -37,4 +37,4 @@ pre-push:
   commands:
     checks:
       tags: [build, test]
-      run: task check
+      run: mise run check

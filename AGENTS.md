@@ -3,11 +3,11 @@
 
 ## Build, Test, and Development Commands
 
-- Use Task ([Taskfile.yml](Taskfile.yml)) as the default interface
-- `task build` / `task test` / `task lint` / `task fmt` / `task check` — primary workflow; `task check` runs formatting check, Clippy, tests, `cargo doc`, and build; `task check:fast` skips tests and docs (see [docs/tooling.md](docs/tooling.md))
-- `task release:check` validates a checked-out release candidate without side effects; `task release:test` exercises the release contract (see [docs/releasing.md](docs/releasing.md))
-- Rust-native equivalents work without Task: `cargo build`, `cargo test`, `cargo fmt --all`, `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` (same as `task lint`; see [docs/tooling.md](docs/tooling.md) for Clippy policy details)
-- Prefer `cargo add` / editing `Cargo.toml` for dependencies; run `cargo build` or `task build` after manifest changes
+- Use mise tasks ([mise.toml](mise.toml)) as the default interface; mise also pins lefthook and uv
+- `mise run build` / `mise run test` / `mise run lint` / `mise run fmt` / `mise run check` — primary workflow; `mise run check` runs formatting check, Clippy, tests, `cargo doc`, and build; `mise run check:fast` skips tests and docs (see [docs/tooling.md](docs/tooling.md))
+- `mise run release:check` validates a checked-out release candidate without side effects; `mise run release:test` exercises the release contract (see [docs/releasing.md](docs/releasing.md))
+- Rust-native equivalents work without mise: `cargo build`, `cargo test`, `cargo fmt --all`, `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` (same as `mise run lint`; see [docs/tooling.md](docs/tooling.md) for Clippy policy details)
+- Prefer `cargo add` / editing `Cargo.toml` for dependencies; run `cargo build` or `mise run build` after manifest changes
 - `unsafe_code` is **forbidden** and `unwrap`/`expect`/`todo`/`dbg!` are **denied** via `Cargo.toml` `[lints]` — applies to all code including tests
 
 ## Git Conventions

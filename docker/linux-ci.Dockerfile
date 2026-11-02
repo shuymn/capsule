@@ -10,9 +10,18 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && apt-get install --yes --no-install-recommends ca-certificates curl git jq procps zsh \
     && rm -rf /var/lib/apt/lists/*
 
-RUN sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin
-
-COPY --from=ghcr.io/astral-sh/uv:0.13.1@sha256:4a1f3666816dafadd20ceb71eac9a7d56d7ef30279f7d64048519ab901ada336 /uv /usr/local/bin/uv
+# The installer verifies the release checksum. Tools come from mise.toml and are
+# preinstalled read-only; containers run as the caller's UID, so mutable mise
+# state lives in /tmp, and only the mounted repository and the baked config are trusted.
+ENV MISE_DATA_DIR=/opt/mise MISE_CACHE_DIR=/tmp/mise-cache MISE_STATE_DIR=/tmp/mise-state \
+    MISE_TRUSTED_CONFIG_PATHS=/workspace:/opt/mise-config PATH=/opt/mise/shims:$PATH
+RUN curl --fail --silent --show-error --location --output /tmp/mise-install.sh https://mise.run \
+    && MISE_VERSION=v2026.10.25 MISE_INSTALL_PATH=/usr/local/bin/mise sh /tmp/mise-install.sh \
+    && rm /tmp/mise-install.sh \
+    && mise --version
+COPY mise.toml /opt/mise-config/
+RUN cd /opt/mise-config && mise install && chmod -R a+rX /opt/mise \
+    && rm -rf /tmp/mise-cache /tmp/mise-state
 
 # Containers run as the caller's UID; keep uv's cache and managed Python writable.
 ENV UV_CACHE_DIR=/tmp/uv-cache UV_PYTHON_INSTALL_DIR=/tmp/uv-python

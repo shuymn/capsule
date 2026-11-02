@@ -4,23 +4,33 @@ Read this file when changing build, CI, hooks, or tool dependencies.
 
 ## Commands and configuration
 
-- Use [Taskfile.yml](../Taskfile.yml) as the command source of truth. Use the stable
-  toolchain in [rust-toolchain.toml](../rust-toolchain.toml) and formatting settings
-  in [rustfmt.toml](../rustfmt.toml).
-- `task check` and `task check:fast` install lefthook hooks. To preserve existing
-  hooks, run the needed components directly: `task fmt:check`, `task lint`,
-  `task release:test`, `task test`, `task doc`, and `task build`.
+- Use the tasks in [mise.toml](../mise.toml) as the command source of truth; list them
+  with `mise tasks` (`mise tasks --json` for machines). Run `mise trust` and
+  `mise install` once per checkout. Use the stable toolchain in
+  [rust-toolchain.toml](../rust-toolchain.toml) and formatting settings in
+  [rustfmt.toml](../rustfmt.toml).
+- mise pins exact lefthook and uv versions in `[tools]`; Renovate updates them. Their
+  aqua backend verifies release checksums and attestations at install time, so no
+  `mise.lock` is committed (it would make Renovate bumps fail `--locked` installs).
+- Install zsh, Git, and `ps` from the system, not mise: macOS ships them, and Linux
+  uses the distribution package (`apt-get install zsh`). Rust stays on rustup.
+- `mise run check` and `mise run check:fast` install lefthook hooks. To preserve
+  existing hooks, run the needed components directly: `mise run fmt:check`,
+  `mise run lint`, `mise run release:test`, `mise run test`, `mise run doc`, and
+  `mise run build`.
 - [lefthook.yml](../lefthook.yml) owns hook behavior, including formatter auto-staging
-  and merge/rebase skips. Keep hook logic in Task rather than duplicating scripts.
-- [CI](../.github/workflows/ci.yml) uses the same Task commands on macOS and Linux.
-  The Rust setup action treats rustc warnings as errors through `RUSTFLAGS=-D warnings`.
+  and merge/rebase skips. Keep hook logic in mise tasks rather than duplicating scripts.
+- [CI](../.github/workflows/ci.yml) sets up tools with jdx/mise-action (mise version
+  pinned in the workflow, matching `min_version`) and uses the same mise tasks on macOS
+  and Linux. The Rust setup action treats rustc warnings as errors through
+  `RUSTFLAGS=-D warnings`.
 - Run Python scripts through uv with the version in [.python-version](../.python-version).
-  CI installs uv 0.13.x from taiki-e/install-action's manifest; the Linux helper image
-  copies a digest-pinned uv. Renovate updates install-action, `.python-version`, and the
-  image digest.
-- Use `task docker:linux:lint` or `task docker:linux:check` for Linux checks from
-  another OS. They build [the helper image](../docker/linux-ci.Dockerfile), mount the
-  repository, and run with the host UID/GID. The check task skips hook installation.
+  The [benchmark workflow](../.github/workflows/bench.yml) still installs uv 0.13.x
+  from taiki-e/install-action's manifest.
+- Use `mise run docker:linux:lint` or `mise run docker:linux:check` for Linux checks
+  from another OS. They build [the helper image](../docker/linux-ci.Dockerfile), which
+  preinstalls the mise tools, mount the repository, and run with the host
+  UID/GID. The check task skips hook installation.
 - Follow [testing.md](testing.md) for suite and PTY checks,
   [benchmarking.md](benchmarking.md) for latency comparisons and acquisition diagnostics, and
   [releasing.md](releasing.md) for version, candidate, and promotion rules.
@@ -31,7 +41,7 @@ Read this file when changing build, CI, hooks, or tool dependencies.
   unsafe code and denied `unwrap`/`expect`/`todo`/`dbg!` use in all code and tests.
 - [clippy.toml](../clippy.toml) defines complexity/size thresholds. Enable
   `#![warn(clippy::pedantic, clippy::nursery, clippy::cargo)]` in each crate root;
-  `task lint` promotes these warnings to errors.
+  `mise run lint` promotes these warnings to errors.
 - Keep duplicate-crate checks enabled. The named exceptions cover incompatible
   proc-macro `syn` versions and WASI binding/parser `wit-bindgen`/`hashbrown` versions.
   After dependency updates, inspect both commands below; metadata may retain
@@ -45,5 +55,6 @@ cargo metadata --all-features --locked
 
 ## Adding tools
 
-Prefer Cargo tools or rustup components. Document new binary dependencies in the
-README and wire optional automation through Task `preconditions`/`status` checks.
+Prefer Cargo tools or rustup components; otherwise pin an exact version in mise.toml
+`[tools]`. Document new binary dependencies in the README and guard optional
+automation with checks inside the mise task, as `install:lefthook` does.

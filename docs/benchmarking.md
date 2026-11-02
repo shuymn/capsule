@@ -36,7 +36,7 @@ or an equally recorded run, under these rules:
 - Regenerate the README chart from the same run's artifacts:
   `uv run --no-project scripts/latency_chart.py <linux>/results.json <macos>/results.json assets/benchmarks/prompt-latency.svg`.
 
-Run locally with `task bench:latency` (requires zsh, Git, uv, and Starship).
+Run locally with `mise run bench:latency` (requires zsh, Git, uv, and Starship).
 
 ## Acquisition diagnostics
 
@@ -86,9 +86,9 @@ exclusion rule was fixed before the run.
 Run fixture, count, completion, and deadline checks with
 `cargo test -p capsule-prompt-bench --locked`.
 
-For a diagnostic run, use `task bench:prompt`; it builds release
+For a diagnostic run, use `mise run bench:prompt`; it builds release
 artifacts and requires Starship, Git, and rustc on PATH. To select binaries, sample
-count, or report files, run the harness directly after `task build:release`:
+count, or report files, run the harness directly after `mise run build:release`:
 
 ```sh
 cargo run -p capsule-prompt-bench --bin prompt-bench --release --locked -- \

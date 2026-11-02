@@ -84,14 +84,17 @@ jobs:
       - name: Set up Rust
         uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
 
-      - name: Set up Task
-        uses: shuymn/github-actions/.github/actions/setup-task@7fdaa03204cf2912854e3b30edf1de0cb2eaddc4 # main
+      - name: Set up mise
+        uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+        with:
+          version: 2026.10.25
+          cache: false
 
       - name: Verify release contract
         id: contract
         run: |
           set -euo pipefail
-          tag="$(task --silent release:check)"
+          tag="$(mise run release:check)"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           if git show-ref --verify --quiet "refs/tags/${tag}"; then
             echo "tag_exists=true" >> "$GITHUB_OUTPUT"

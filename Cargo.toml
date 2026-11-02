@@ -28,7 +28,7 @@ todo = "deny"
 unimplemented = "deny"
 unwrap_used = "deny"
 
-# Stricter API / docs hygiene (warnings promoted to errors via -D warnings in task lint)
+# Stricter API / docs hygiene (warnings promoted to errors via -D warnings in mise run lint)
 missing_errors_doc = "warn"
 missing_panics_doc = "warn"
 

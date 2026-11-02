@@ -103,4 +103,4 @@ capsule は1人で保守できる規模を保ちます。特定ツールの表�
 
 ## 開発
 
-stable Rust と Task を使います。テストには uv、zsh、Git も必要です。実行時の契約は[アーキテクチャ](docs/architecture.md)、検証は[開発ツール](docs/tooling.md)、計測は[ベンチマーク](docs/benchmarking.md)、公開は[リリース手順](docs/releasing.md)を参照してください。
+stable Rust と mise を使います（`mise install` で lefthook と uv が入ります）。テストには zsh と Git も必要です。実行時の契約は[アーキテクチャ](docs/architecture.md)、検証は[開発ツール](docs/tooling.md)、計測は[ベンチマーク](docs/benchmarking.md)、公開は[リリース手順](docs/releasing.md)を参照してください。

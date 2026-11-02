@@ -31,19 +31,21 @@ jobs:
         with:
           cache: true
 
-      - name: Set up Task
-        uses: shuymn/github-actions/.github/actions/setup-task@7fdaa03204cf2912854e3b30edf1de0cb2eaddc4 # main
+      - name: Set up mise
+        uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+        with:
+          version: 2026.10.25
 
       - name: Test release contract
         if: matrix.os == 'ubuntu-latest'
-        run: task release:test
+        run: mise run release:test
 
       - name: Check formatting
         if: matrix.os == 'ubuntu-latest'
-        run: task fmt:check
+        run: mise run fmt:check
 
       - name: Run Clippy
-        run: task lint
+        run: mise run lint
 
   test:
     name: Test (${{ matrix.os }})
@@ -68,25 +70,20 @@ jobs:
         with:
           cache: true
 
-      - name: Set up Task
-        uses: shuymn/github-actions/.github/actions/setup-task@7fdaa03204cf2912854e3b30edf1de0cb2eaddc4 # main
+      - name: Set up mise
+        uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+        with:
+          version: 2026.10.25
 
       - name: Install zsh
         if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get update && sudo apt-get install --yes zsh
 
-      - name: Install uv
-        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
-        with:
-          # A minor pin resolves from install-action's checksummed manifest; an exact
-          # version newer than the manifest falls back to crates.io via cargo-binstall.
-          tool: uv@0.13
-
       - name: Run tests
-        run: task test
+        run: mise run test
 
       - name: Run interactive shell contract
-        run: task test:pty
+        run: mise run test:pty
 
   build:
     name: Build (${{ matrix.os }})
@@ -111,8 +108,10 @@ jobs:
         with:
           cache: true
 
-      - name: Set up Task
-        uses: shuymn/github-actions/.github/actions/setup-task@7fdaa03204cf2912854e3b30edf1de0cb2eaddc4 # main
+      - name: Set up mise
+        uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+        with:
+          version: 2026.10.25
 
       - name: Build workspace
-        run: task build
+        run: mise run build

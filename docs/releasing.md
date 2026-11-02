@@ -20,13 +20,13 @@ Use this workflow to prepare, approve, promote, and distribute a release.
 
 Candidate generation uses [candidate.sh](../scripts/release/candidate.sh). [propose.sh](../scripts/release/propose.sh) verifies the GitHub-signed candidate commit before updating `release/vX.Y.Z` and compares the previous branch SHA to prevent overwriting concurrent updates. Candidate generation creates neither tags nor GitHub Releases.
 
-Promotion requires a merged PR targeting `main`, checks out its head, verifies reachability from `main`, and runs `task release:check` before creating write credentials. Use GitHub App credentials for candidate-branch updates and tag pushes so downstream workflows run.
+Promotion requires a merged PR targeting `main`, checks out its head, verifies reachability from `main`, and runs `mise run release:check` before creating write credentials. Use GitHub App credentials for candidate-branch updates and tag pushes so downstream workflows run.
 
 ## Local validation
 
-- Run `task release:check` at the candidate checkout. It validates version inheritance, resolved package versions, `Cargo.lock`, changelog sections, and existing-tag identity, then prints the tag without repository writes. Set `RELEASE_SHA` to require an exact `HEAD`.
-- Run `task release:test` when changing release validation; it exercises valid, idempotent, and rejected states in temporary repositories.
-- To prepare locally, run `task release:prepare BUMP=patch` with the selected increment and the git-cliff version pinned in `Release PR`. This updates release files; review the resulting diff.
+- Run `mise run release:check` at the candidate checkout. It validates version inheritance, resolved package versions, `Cargo.lock`, changelog sections, and existing-tag identity, then prints the tag without repository writes. Set `RELEASE_SHA` to require an exact `HEAD`.
+- Run `mise run release:test` when changing release validation; it exercises valid, idempotent, and rejected states in temporary repositories.
+- To prepare locally, run `mise run release:prepare patch` with the selected increment and the git-cliff version pinned in `Release PR`. This updates release files; review the resulting diff.
 
 ## Distribution
 
