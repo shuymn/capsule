@@ -16,7 +16,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 ENV MISE_DATA_DIR=/opt/mise MISE_CACHE_DIR=/tmp/mise-cache MISE_STATE_DIR=/tmp/mise-state \
     MISE_TRUSTED_CONFIG_PATHS=/workspace:/opt/mise-config PATH=/opt/mise/shims:$PATH
 RUN curl --fail --silent --show-error --location --output /tmp/mise-install.sh https://mise.run \
-    && MISE_VERSION=v2026.10.25 MISE_INSTALL_PATH=/usr/local/bin/mise sh /tmp/mise-install.sh \
+    && MISE_VERSION=v2026.10.17 MISE_INSTALL_PATH=/usr/local/bin/mise sh /tmp/mise-install.sh \
     && rm /tmp/mise-install.sh \
     && mise --version
 COPY mise.toml /opt/mise-config/

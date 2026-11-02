@@ -34,7 +34,7 @@ jobs:
       - name: Set up mise
         uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
         with:
-          version: 2026.10.25
+          version: 2026.10.17
 
       - name: Test release contract
         if: matrix.os == 'ubuntu-latest'
@@ -73,7 +73,7 @@ jobs:
       - name: Set up mise
         uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
         with:
-          version: 2026.10.25
+          version: 2026.10.17
 
       - name: Install zsh
         if: matrix.os == 'ubuntu-latest'
@@ -111,7 +111,7 @@ jobs:
       - name: Set up mise
         uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
         with:
-          version: 2026.10.25
+          version: 2026.10.17
 
       - name: Build workspace
         run: mise run build
