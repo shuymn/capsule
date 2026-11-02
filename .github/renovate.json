@@ -10,6 +10,19 @@
       "depNameTemplate": "git-cliff",
       "datasourceTemplate": "crate",
       "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "description": "Update the mise version pinned for CI and the Linux helper image",
+      "managerFilePatterns": ["/^\\.github/workflows/[^/]+\\.ya?ml$/", "/^docker/linux-ci\\.Dockerfile$/"],
+      "matchStrings": [
+        "uses: jdx/mise-action@\\S+[^\\n]*\\n\\s+with:\\n\\s+version: (?<currentValue>\\d+\\.\\d+\\.\\d+)",
+        "MISE_VERSION=v(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "jdx/mise",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.+)$",
+      "versioningTemplate": "semver"
     }
   ]
 }

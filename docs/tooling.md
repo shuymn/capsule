@@ -20,9 +20,11 @@ Read this file when changing build, CI, hooks, or tool dependencies.
   `mise run build`.
 - [lefthook.yml](../lefthook.yml) owns hook behavior, including formatter auto-staging
   and merge/rebase skips. Keep hook logic in mise tasks rather than duplicating scripts.
-- [CI](../.github/workflows/ci.yml) sets up tools with jdx/mise-action (mise version
-  pinned in the workflow, matching `min_version`) and uses the same mise tasks on macOS
-  and Linux. The Rust setup action treats rustc warnings as errors through
+- [CI](../.github/workflows/ci.yml) sets up tools with jdx/mise-action and uses the
+  same mise tasks on macOS and Linux. The workflows' `version:` inputs and the helper
+  image's `MISE_VERSION` pin one mise release; a Renovate regex manager updates them
+  together. `min_version` in mise.toml is a contributor floor; raise it by hand only
+  when mise.toml needs a newer mise. The Rust setup action treats rustc warnings as errors through
   `RUSTFLAGS=-D warnings`.
 - Run Python scripts through uv with the version in [.python-version](../.python-version).
   The [benchmark workflow](../.github/workflows/bench.yml) still installs uv 0.13.x
