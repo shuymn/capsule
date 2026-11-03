@@ -24,14 +24,16 @@ Read this file before writing or modifying tests.
 - [docs.rs](../crates/cli/tests/docs.rs) keeps documentation that restates code
   facts in sync: relative links and heading anchors, backticked identifiers
   (snake case, screaming case, or `::` paths; a cited method path must be
-  defined in its type's `impl`), the limits table, the lint policy, and lint
-  inheritance in every workspace member. Fix the document or the code when it
+  defined in its type's `impl`), the limits table, the lint policy, lint
+  inheritance in every workspace member, and that each Behavioral contract
+  clause cites a test, clause check, or PTY record. Fix the document or the code when it
   fails; list a name that is intentionally not defined here in the test's
   external-identifier list with its reason.
 - Check worker state decisions in [worker/machine/tests.rs](../crates/cli/src/worker/machine/tests.rs):
-  a reference model written from the behavioral contract runs against random
-  interleavings of requests, events, and task completion. Change the model
-  with the contract, not to match the implementation.
+  a reference model written from the behavioral contract, plus the clause
+  checks that architecture.md cites, runs against random interleavings of
+  requests, events, and task completion. Change the model with the contract,
+  not to match the implementation.
 - Tag a test that verifies a threat in [threat-model.md](threat-model.md) with
   a `Covers: T07, T08` comment directly above its attributes, or in a shell
   script's leading comments to cover the whole file. A Rust tag needs a
@@ -119,7 +121,6 @@ Record each platform separately. A filesystem that rejects non-UTF-8 names produ
 `non_utf8_fixture_supported = false`; require the Linux record with `true` for that
 cwd boundary. Partial `results.json` output from a failed run is not a pass.
 
-Also run `mise run test` on each platform: the contract, shell, and property tests that
-[architecture.md](architecture.md#behavioral-contract) cites must pass there too.
+Also run `mise run test` on each platform.
 Suite results and acquisition timings do not replace interactive PTY evidence. Follow
 [benchmarking.md](benchmarking.md) for timing definitions and host requirements.

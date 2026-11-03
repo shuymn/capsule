@@ -20,7 +20,7 @@ Use generic configuration for tool-specific values; see [extending.md](extending
 
 ## Behavioral contract
 
-Each clause ends with the tests that specify it; a clause and its tests change together. The docs regressions fail when a clause cites no test or a cited name is no longer a declared test or PTY record. State machine and pure clauses cite named properties; process, OS, and shell clauses cite contract or PTY tests.
+Each clause's `Spec:` lists the tests that specify it; change them together.
 
 - WHILE acquisition is pending, Capsule SHALL accept input and preserve the typed buffer/cursor during redraw. Spec: `asynchronous_prompt_update_preserves_typed_buffer_and_cursor`.
 - WHEN zsh prepares a prompt, including after empty Enter, Capsule SHALL start a generation and reload configuration asynchronously, capturing cwd and the full exported environment as OS bytes after preserved `precmd_functions` hooks complete or abort. Spec: `user_hooks_finish_before_snapshot_and_first_revalidation_retains_display`, `full_export_snapshot_preserves_bytes_and_removes_absent_variables`, `cwd_bytes_reach_acquisition`, `repeated_empty_enter_settles_on_the_newest_generation_with_one_worker`.
