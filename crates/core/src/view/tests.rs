@@ -433,3 +433,248 @@ fn quoted_backslashes_on_both_lines_fit_the_response_byte_limit()
     assert!(frame.len() <= capsule_protocol::session::MAX_RESPONSE + 1);
     Ok(())
 }
+
+mod properties {
+    use std::collections::BTreeSet;
+
+    use proptest::{prelude::*, strategy::LazyJust};
+    use unicode_width::UnicodeWidthStr as _;
+
+    use super::*;
+    use crate::{
+        acquire::AcquireError,
+        plan::{Arbitration, ModuleAppearance, ModuleWhen, Template, ValuePlan},
+        test_utils::{bulky_text, cols, displayed_prompt, format_parts, hostile_text},
+    };
+
+    fn module() -> impl Strategy<Value = ModulePlan> {
+        (0..3usize)
+            .prop_flat_map(|values| {
+                (
+                    Just(values),
+                    format_parts(values, 3),
+                    prop::option::of((prop::sample::select(vec!["a", "b"]), 0..3u32)),
+                    prop::bool::ANY,
+                    prop::option::of(hostile_text(4)),
+                    prop::option::of(hostile_text(2)),
+                    prop::sample::select(vec![Style::new(), Style::new().fg(Color::Green).bold()]),
+                )
+            })
+            .prop_map(
+                |(values, parts, arbitration, line2, connector, icon, style)| ModulePlan {
+                    name: String::new(),
+                    when: ModuleWhen::default(),
+                    values: (0..values)
+                        .map(|index| ValuePlan {
+                            name: format!("v{index}"),
+                            candidates: Vec::new(),
+                        })
+                        .collect(),
+                    format: Template(parts),
+                    appearance: ModuleAppearance {
+                        icon,
+                        style,
+                        connector,
+                    },
+                    arbitration: arbitration.map(|(group, priority)| Arbitration {
+                        group: group.to_owned(),
+                        priority,
+                    }),
+                    slot: if line2 {
+                        ModuleSlot::Line2
+                    } else {
+                        ModuleSlot::Line1
+                    },
+                },
+            )
+    }
+
+    fn observation<T: std::fmt::Debug>(
+        ready: impl Strategy<Value = T>,
+    ) -> impl Strategy<Value = Observation<T>> {
+        prop_oneof![
+            4 => ready.prop_map(Observation::Ready),
+            1 => LazyJust::new(|| Observation::Pending),
+            1 => LazyJust::new(|| Observation::Missing),
+            1 => LazyJust::new(|| Observation::Failed(AcquireError::TimedOut)),
+        ]
+    }
+
+    /// Up to six modules, named by declaration index, with one observation
+    /// snapshot each.
+    fn modules() -> impl Strategy<Value = (ConfigPlan, Vec<ModuleObservation>)> {
+        prop::collection::vec(module(), 0..6)
+            .prop_flat_map(|modules| {
+                let observed = modules
+                    .iter()
+                    .map(|module| {
+                        (
+                            observation(prop::bool::weighted(0.9)),
+                            prop::collection::vec(observation(bulky_text()), module.values.len()),
+                        )
+                            .prop_map(|(condition, values)| ModuleObservation { condition, values })
+                    })
+                    .collect::<Vec<_>>();
+                (Just(modules), observed)
+            })
+            .prop_map(|(mut modules, observed)| {
+                for (index, module) in modules.iter_mut().enumerate() {
+                    module.name = format!("m{index}");
+                }
+                let plan = ConfigPlan {
+                    modules,
+                    ..ConfigPlan::default()
+                };
+                (plan, observed)
+            })
+    }
+
+    /// A copy of an observation; `Observation` is not `Clone` because a failure
+    /// can hold an I/O error.
+    fn duplicate(observed: &ModuleObservation) -> ModuleObservation {
+        fn copy<T: Clone>(observation: &Observation<T>) -> Observation<T> {
+            match observation {
+                Observation::Ready(value) => Observation::Ready(value.clone()),
+                Observation::Pending => Observation::Pending,
+                Observation::Missing => Observation::Missing,
+                Observation::Failed(_) => Observation::Failed(AcquireError::TimedOut),
+            }
+        }
+        ModuleObservation {
+            condition: copy(&observed.condition),
+            values: observed.values.iter().map(copy).collect(),
+        }
+    }
+
+    fn visible_names(plan: &ConfigPlan, observed: &[ModuleObservation]) -> Vec<String> {
+        visible_modules(plan, observed)
+            .into_iter()
+            .map(|(module, _)| module.name.clone())
+            .collect()
+    }
+
+    /// The format evaluation rule restated: a required value that is not ready
+    /// hides the format, an optional section that cannot be shown is omitted,
+    /// and text beyond the module bound is not shown.
+    fn reference_format(parts: &[FormatPart], values: &[Observation<String>]) -> Option<String> {
+        let mut text = String::new();
+        for part in parts {
+            match part {
+                FormatPart::Literal(literal) => text.push_str(literal),
+                FormatPart::Value(index) => match values.get(*index)? {
+                    Observation::Ready(value) => text.push_str(value),
+                    _ => return None,
+                },
+                FormatPart::Optional(parts) => {
+                    text.push_str(&reference_format(parts, values).unwrap_or_default());
+                }
+            }
+        }
+        (text.len() <= MAX_MODULE_TEXT_BYTES).then_some(text)
+    }
+
+    /// The arbitration rule restated: among displayable modules, each group
+    /// keeps its lowest priority, and the earliest declaration on a tie.
+    fn reference_visible(plan: &ConfigPlan, observed: &[ModuleObservation]) -> Vec<String> {
+        let displayable = plan
+            .modules
+            .iter()
+            .zip(observed)
+            .enumerate()
+            .filter(|(_, (module, observed))| {
+                matches!(observed.condition, Observation::Ready(true))
+                    && reference_format(&module.format.0, &observed.values)
+                        .is_some_and(|text| !text.is_empty())
+            })
+            .map(|(index, (module, _))| (index, module))
+            .collect::<Vec<_>>();
+        displayable
+            .iter()
+            .filter(|(index, module)| {
+                module.arbitration.as_ref().is_none_or(|rule| {
+                    displayable
+                        .iter()
+                        .filter_map(|(other, module)| {
+                            let other_rule = module.arbitration.as_ref()?;
+                            (other_rule.group == rule.group)
+                                .then_some((other_rule.priority, *other))
+                        })
+                        .min()
+                        == Some((rule.priority, *index))
+                })
+            })
+            .map(|(_, module)| module.name.clone())
+            .collect()
+    }
+
+    proptest! {
+        /// Covers: T01, T07
+        #[test]
+        fn rendered_lines_fit_the_columns_and_the_response_frame(
+            (mut plan, observed) in modules(),
+            directory in bulky_text(),
+            cols in cols(120),
+            keymap in prop_oneof![Just("main".to_owned()), Just("vicmd".to_owned()), hostile_text(8)],
+            branch in prop::option::of(bulky_text()),
+            glyph in bulky_text(),
+        ) {
+            plan.view.character.glyph = glyph;
+            let git = branch.map(|branch| GitStatus { branch: Some(branch), ..GitStatus::default() });
+            let output = render(&plan, &ViewInput {
+                directory: &directory,
+                git: git.as_ref(),
+                modules: &observed,
+                cols,
+                keymap: &keymap,
+                duration_ms: Some(u64::MAX),
+                time: Some((23, 59, 59)),
+                ..input()
+            });
+            for line in [&output.left1, &output.left2] {
+                prop_assert!(
+                    displayed_prompt(line).is_some_and(|displayed| displayed.width() <= cols),
+                    "{line:?} is not literal data within {cols} columns"
+                );
+                prop_assert!(cols != 0 || line.is_empty());
+            }
+            let frame = capsule_protocol::session::response(u64::MAX, &output.left1, &output.left2, true);
+            prop_assert!(frame.is_ok(), "{frame:?}");
+        }
+
+        #[test]
+        fn format_evaluation_matches_the_reference_rule((plan, observed) in modules()) {
+            for (module, observed) in plan.modules.iter().zip(&observed) {
+                prop_assert_eq!(
+                    evaluate_format(&module.format.0, &observed.values),
+                    reference_format(&module.format.0, &observed.values)
+                );
+            }
+        }
+
+        #[test]
+        fn arbitration_selects_the_lowest_priority_per_group((plan, observed) in modules()) {
+            prop_assert_eq!(visible_names(&plan, &observed), reference_visible(&plan, &observed));
+        }
+
+        /// Without priority ties, the winners do not depend on declaration order.
+        #[test]
+        fn arbitration_without_ties_ignores_declaration_order(
+            (plan, observed) in modules(),
+            shuffled in Just((0..6).collect::<Vec<usize>>()).prop_shuffle(),
+        ) {
+            // `modules()` declares at most six modules; keep the indices in range.
+            let order = shuffled.into_iter().filter(|index| *index < plan.modules.len()).collect::<Vec<_>>();
+            let rules = plan.modules.iter().filter_map(|module| module.arbitration.as_ref());
+            let distinct = rules.clone().map(|rule| (&rule.group, rule.priority)).collect::<BTreeSet<_>>();
+            prop_assume!(distinct.len() == rules.count());
+            let reordered = ConfigPlan {
+                modules: order.iter().map(|index| plan.modules[*index].clone()).collect(),
+                ..ConfigPlan::default()
+            };
+            let reordered_observed = order.iter().map(|index| duplicate(&observed[*index])).collect::<Vec<_>>();
+            let before = visible_names(&plan, &observed).into_iter().collect::<BTreeSet<_>>();
+            let after = visible_names(&reordered, &reordered_observed).into_iter().collect::<BTreeSet<_>>();
+            prop_assert_eq!(before, after);
+        }
+    }
+}

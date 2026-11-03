@@ -529,3 +529,101 @@ async fn environment_size_limit_applies_before_copying_and_allows_fallback() -> 
     );
     Ok(())
 }
+
+mod template_properties {
+    use proptest::prelude::*;
+
+    use super::*;
+    use crate::test_utils::{format_parts, hostile_text};
+
+    const NAMES: [&str; 2] = ["a", "b"];
+
+    fn values() -> Vec<ValuePlan> {
+        NAMES
+            .iter()
+            .map(|name| ValuePlan {
+                name: (*name).to_owned(),
+                candidates: Vec::new(),
+            })
+            .collect()
+    }
+
+    /// A format tree the syntax can express: inside an optional section, a
+    /// literal has no `]` and the section does not start with `[`
+    /// (shuymn/capsule#305).
+    fn tree(depth: u32) -> impl Strategy<Value = Vec<FormatPart>> {
+        format_parts(NAMES.len(), depth).prop_map(|parts| normalize(parts, false))
+    }
+
+    fn normalize(parts: Vec<FormatPart>, nested: bool) -> Vec<FormatPart> {
+        let mut normalized = Vec::<FormatPart>::new();
+        for part in parts {
+            let part = match part {
+                FormatPart::Literal(text) if nested => FormatPart::Literal(text.replace(']', "")),
+                FormatPart::Optional(parts) => FormatPart::Optional(normalize(parts, true)),
+                part => part,
+            };
+            match (normalized.last_mut(), part) {
+                // Merge and drop empty literals, so the first part decides how a
+                // section starts.
+                (_, FormatPart::Literal(text)) if text.is_empty() => {}
+                (Some(FormatPart::Literal(last)), FormatPart::Literal(text)) => {
+                    last.push_str(&text);
+                }
+                (_, part) => normalized.push(part),
+            }
+        }
+        if nested {
+            match normalized.first_mut() {
+                Some(FormatPart::Literal(text)) if text.starts_with('[') => text.insert(0, ' '),
+                Some(FormatPart::Optional(_)) => {
+                    normalized.insert(0, FormatPart::Literal(" ".into()));
+                }
+                _ => {}
+            }
+        }
+        normalized
+    }
+
+    fn print(parts: &[FormatPart], source: &mut String) {
+        for part in parts {
+            match part {
+                FormatPart::Literal(text) => {
+                    source.push_str(&text.replace('{', "{{").replace('[', "[["));
+                }
+                FormatPart::Value(index) => {
+                    source.push('{');
+                    source.push_str(NAMES[*index]);
+                    source.push('}');
+                }
+                FormatPart::Optional(parts) => {
+                    source.push('[');
+                    print(parts, source);
+                    source.push(']');
+                }
+            }
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn compiling_arbitrary_source_never_panics(source in hostile_text(128)) {
+            let _ = template::compile(&source, &values(), "test");
+        }
+
+        #[test]
+        fn printed_trees_compile_back_to_themselves(parts in tree(3)) {
+            let mut source = String::new();
+            print(&parts, &mut source);
+            let compiled = template::compile(&source, &values(), "test");
+            let Ok(Template(compiled)) = compiled else {
+                return Err(TestCaseError::fail(format!("{source:?}: {compiled:?}")));
+            };
+            // Compare printed forms, so how literals are split is not part of
+            // the property.
+            let mut reprinted = String::new();
+            print(&compiled, &mut reprinted);
+            prop_assert_eq!(reprinted, source);
+        }
+    }
+}

@@ -118,7 +118,7 @@ fn sanitize(text: &str) -> String {
     let mut sanitized = String::with_capacity(text.len());
     for character in text.chars() {
         if character.is_control()
-            || matches!(character, '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+            || matches!(character, '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
         {
             sanitized.extend(character.escape_default());
         } else {
@@ -175,15 +175,97 @@ mod tests {
     /// Covers: T01
     #[test]
     fn controls_are_display_data_before_width_calculation() {
-        let text = StyledText::new("\x1b[31m\n\t\x7f\u{202e}%B$HOME`echo no`", Style::new());
+        let text = StyledText::new(
+            "\x1b[31m\n\t\x7f\u{202e}\u{61c}%B$HOME`echo no`",
+            Style::new(),
+        );
         let plain = text.plain_text();
         assert!(!plain.chars().any(char::is_control));
         assert!(plain.contains("\\n\\t"));
-        assert!(plain.contains("\\u{202e}"));
+        assert!(plain.contains("\\u{202e}\\u{61c}"));
         assert_eq!(text.width(), plain.width());
         assert!(plain.contains("%B$HOME`echo no`"));
         let serialized = text.to_zsh(ColorMap::default());
         assert!(serialized.contains("%%B"));
         assert!(!serialized.contains('\x1b'));
+    }
+}
+
+#[cfg(test)]
+mod properties {
+    use proptest::prelude::*;
+
+    use super::*;
+    use crate::{
+        render::style::Color,
+        test_utils::{bulky_text, cols, displayed_prompt, hostile_text},
+    };
+
+    fn style() -> impl Strategy<Value = Style> {
+        prop::sample::select(vec![
+            Style::new(),
+            Style::new().fg(Color::Red),
+            Style::new().bold(),
+            Style::new().fg(Color::Blue).dimmed(),
+        ])
+    }
+
+    fn styled() -> impl Strategy<Value = StyledText> {
+        prop::collection::vec((bulky_text(), style()), 0..4).prop_map(|spans| {
+            let mut text = StyledText::default();
+            for (span, style) in spans {
+                text.push(&span, style);
+            }
+            text
+        })
+    }
+
+    /// Unicode's `Bidi_Control` characters, which reorder the display.
+    fn is_bidi_control(character: char) -> bool {
+        matches!(character, '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+    }
+
+    proptest! {
+        /// Truncation fits the width and the line byte bound, and keeps either
+        /// the whole text or a grapheme-boundary prefix followed by `…`.
+        ///
+        /// Covers: T07
+        #[test]
+        fn truncation_fits_and_keeps_a_grapheme_prefix(text in styled(), cols in cols(40)) {
+            let truncated = text.truncate(cols);
+            prop_assert!(truncated.width() <= cols);
+            let (original, kept) = (text.plain_text(), truncated.plain_text());
+            prop_assert!(kept.len() <= MAX_LINE_TEXT_BYTES);
+            if kept == original || (cols == 0 && kept.is_empty()) {
+                return Ok(());
+            }
+            let Some(prefix) = kept.strip_suffix('…') else {
+                return Err(TestCaseError::fail(format!("{kept:?} lacks an ellipsis")));
+            };
+            prop_assert!(original.starts_with(prefix));
+            prop_assert!(
+                prefix.is_empty() || original.grapheme_indices(true).any(|(index, _)| index == prefix.len()),
+                "{prefix:?} ends inside a grapheme of {original:?}"
+            );
+        }
+
+        /// Covers: T01
+        #[test]
+        fn sanitizing_is_idempotent_and_removes_controls(text in hostile_text(64)) {
+            let sanitized = sanitize(&text);
+            prop_assert_eq!(sanitize(&sanitized), sanitized.as_str());
+            prop_assert!(!sanitized.chars().any(|character| character.is_control() || is_bidi_control(character)));
+        }
+
+        /// Covers: T01
+        #[test]
+        fn serialization_displays_the_plain_text_and_hides_escapes_in_style_sequences(
+            text in styled(),
+        ) {
+            let serialized = text.to_zsh(ColorMap::default());
+            let plain = text.plain_text();
+            prop_assert_eq!(displayed_prompt(&serialized), Some(plain.clone()), "{:?}", serialized);
+            prop_assert!(!plain.contains('\x1b'));
+        }
     }
 }

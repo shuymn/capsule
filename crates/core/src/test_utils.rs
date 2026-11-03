@@ -55,3 +55,94 @@ pub fn contains_style_sequence(text: &str, codes: &[u8]) -> bool {
     }
     text.contains(&combined) || text.contains(&split)
 }
+
+/// Characters that stress display width, grapheme segmentation, sanitizing,
+/// and prompt quoting: ASCII, CJK, combining marks, ZWJ emoji parts, regional
+/// indicators, variation selectors, a lam-alef pair, controls, bidi controls,
+/// and zsh prompt metacharacters.
+const HOSTILE: &[char] = &[
+    'a', 'Z', '0', ' ', '-', '日', '本', '\u{301}', '\u{200d}', '\u{200b}', '👩', '🏽', '💻', '🇯',
+    '🇵', '\u{fe0f}', '\u{fe0e}', 'ل', 'ا', '\x1b', '\n', '\t', '\x7f', '\u{85}', '\u{202e}',
+    '\u{61c}', '\u{2066}', '\u{200f}', '%', '$', '`', '\\', '{', '}', '[', ']', '…',
+];
+
+/// One character, usually from [`HOSTILE`], sometimes any scalar value.
+fn hostile_char() -> impl proptest::strategy::Strategy<Value = char> {
+    use proptest::prelude::*;
+
+    prop_oneof![9 => proptest::sample::select(HOSTILE), 1 => any::<char>()]
+}
+
+/// Up to `max` hostile characters.
+pub fn hostile_text(max: usize) -> impl proptest::strategy::Strategy<Value = String> {
+    use proptest::prelude::*;
+
+    proptest::collection::vec(hostile_char(), 0..=max).prop_map(String::from_iter)
+}
+
+/// Hostile text, sometimes repeated past the per-line and per-module byte bounds.
+pub fn bulky_text() -> impl proptest::strategy::Strategy<Value = String> {
+    use proptest::prelude::*;
+
+    prop_oneof![
+        4 => hostile_text(16),
+        1 => (hostile_text(4), 0..20_000usize).prop_map(|(text, count)| text.repeat(count)),
+    ]
+}
+
+/// What zsh displays for a serialized prompt line, with `PROMPT_SUBST` on or
+/// off: `%{…%}` sequences removed, `%%` and Capsule's `%1<<\X%<<` quoting
+/// undone. `None` for any other `%` escape or an unquoted `$`, backtick, or
+/// backslash, which Capsule never emits for data.
+pub fn displayed_prompt(line: &str) -> Option<String> {
+    let mut displayed = String::new();
+    let mut rest = line;
+    while let Some(character) = rest.chars().next() {
+        if let Some(after) = rest.strip_prefix("%{") {
+            rest = &after[after.find("%}")? + 2..];
+        } else if let Some(after) = rest.strip_prefix("%%") {
+            displayed.push('%');
+            rest = after;
+        } else if let Some(after) = rest.strip_prefix("%1<<\\") {
+            let quoted = after.chars().next()?;
+            displayed.push(quoted);
+            rest = after[quoted.len_utf8()..].strip_prefix("%<<")?;
+        } else if matches!(character, '%' | '$' | '`' | '\\') {
+            // Unquoted, these would be prompt escapes or, with `PROMPT_SUBST`,
+            // substitutions.
+            return None;
+        } else {
+            displayed.push(character);
+            rest = &rest[character.len_utf8()..];
+        }
+    }
+    Some(displayed)
+}
+
+/// Format trees over `values` named values, nested at most `depth` levels.
+pub fn format_parts(
+    values: usize,
+    depth: u32,
+) -> proptest::strategy::BoxedStrategy<Vec<crate::plan::FormatPart>> {
+    use proptest::prelude::*;
+
+    use crate::plan::FormatPart;
+
+    let literal = hostile_text(6).prop_map(FormatPart::Literal);
+    let leaf = if values == 0 {
+        literal.boxed()
+    } else {
+        prop_oneof![literal, (0..values).prop_map(FormatPart::Value)].boxed()
+    };
+    let part = leaf.prop_recursive(depth, 16, 4, |inner| {
+        proptest::collection::vec(inner, 0..4).prop_map(FormatPart::Optional)
+    });
+    proptest::collection::vec(part, 0..6).boxed()
+}
+
+/// Terminal widths: narrow ones, including zero, and the widest zsh reports.
+pub fn cols(narrow: usize) -> impl proptest::strategy::Strategy<Value = usize> {
+    use proptest::prelude::*;
+
+    prop_oneof![0..narrow, Just(usize::from(u16::MAX))]
+}
