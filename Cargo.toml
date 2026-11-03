@@ -52,6 +52,7 @@ regex-lite = "0.1"
 tempfile = "3"
 proptest = { version = "1", default-features = false, features = ["std"] }
 pulldown-cmark = { version = "0.13", default-features = false }
+unicode-properties = { version = "0.1", default-features = false, features = ["general-category"] }
 bolero = "0.13"
 anstyle = "1"
 serde_json = "1"

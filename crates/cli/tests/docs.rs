@@ -172,37 +172,75 @@ fn impl_functions(source: &str) -> BTreeSet<String> {
     functions
 }
 
-/// The Rust crate name of the workspace member whose directory holds `path`.
-fn crate_name(path: &Path) -> Result<Option<String>, Box<dyn std::error::Error>> {
-    let crates = root().join("crates");
-    let Some(member) = path
-        .strip_prefix(&crates)
-        .ok()
-        .and_then(|relative| relative.components().next())
-    else {
-        return Ok(None);
-    };
-    let manifest = fs::read_to_string(crates.join(member).join("Cargo.toml"))?;
-    let name = manifest.parse::<toml::Table>()?["package"]["name"]
-        .as_str()
-        .map(|name| name.replace('-', "_"));
-    Ok(name)
+/// The module a `mod name;` line declares, with any visibility.
+fn declared_module(line: &str) -> Option<&str> {
+    let item = line.trim_start();
+    let item = item
+        .strip_prefix("pub")
+        .map_or(item, |rest| match rest.strip_prefix('(') {
+            Some(rest) => rest.split_once(')').map_or(rest, |(_, rest)| rest),
+            None => rest,
+        })
+        .trim_start();
+    item.strip_prefix("mod ")?.strip_suffix(';')
 }
 
-/// Names that cited identifiers may resolve to: every word, and every
-/// `Type::function` defined in an `impl` block, also qualified by the name of
-/// the crate that defines it.
+/// Every source file compiled into a workspace library, keyed by canonical
+/// path, with the library's crate name. Files are found by following `mod`
+/// declarations from each `src/lib.rs`, so binaries, integration tests, and
+/// their modules are excluded.
+fn library_files() -> Result<BTreeMap<PathBuf, String>, Box<dyn std::error::Error>> {
+    let mut files = BTreeMap::new();
+    for member in fs::read_dir(root().join("crates"))? {
+        let member = member?.path();
+        let lib = member.join("src/lib.rs");
+        if !lib.is_file() {
+            continue;
+        }
+        let manifest = fs::read_to_string(member.join("Cargo.toml"))?.parse::<toml::Table>()?;
+        let name = manifest
+            .get("lib")
+            .and_then(|lib| lib.get("name"))
+            .or_else(|| {
+                manifest
+                    .get("package")
+                    .and_then(|package| package.get("name"))
+            })
+            .and_then(toml::Value::as_str)
+            .ok_or("library without a name")?
+            .replace('-', "_");
+        // Each file with the directory that holds its child modules.
+        let mut pending = vec![(lib, member.join("src"))];
+        while let Some((file, directory)) = pending.pop() {
+            for module in fs::read_to_string(&file)?
+                .lines()
+                .filter_map(declared_module)
+            {
+                let flat = directory.join(format!("{module}.rs"));
+                let nested = directory.join(module).join("mod.rs");
+                let child = if flat.is_file() { flat } else { nested };
+                pending.push((child, directory.join(module)));
+            }
+            files.insert(file.canonicalize()?, name.clone());
+        }
+    }
+    Ok(files)
+}
+
+/// Names that cited identifiers may resolve to: every word, every library
+/// crate name, and every `Type::function` defined in an `impl` block, also
+/// qualified by the library crate that compiles it.
 fn source_names() -> Result<(BTreeSet<String>, BTreeSet<String>), Box<dyn std::error::Error>> {
-    let mut all_words = BTreeSet::new();
+    let libraries = library_files()?;
+    let mut all_words = libraries.values().cloned().collect::<BTreeSet<_>>();
     let mut functions = BTreeSet::new();
     for (path, text) in source_texts()? {
         all_words.extend(words(&text).map(str::to_owned));
         if path.extension().is_some_and(|extension| extension == "rs") {
-            let crate_name = crate_name(&path)?;
-            all_words.extend(crate_name.clone());
+            let library = libraries.get(&path.canonicalize()?);
             for function in impl_functions(&text) {
-                if let Some(crate_name) = &crate_name {
-                    functions.insert(format!("{crate_name}::{function}"));
+                if let Some(library) = library {
+                    functions.insert(format!("{library}::{function}"));
                 }
                 functions.insert(function);
             }
@@ -253,26 +291,13 @@ fn cited_identifier(span: &str) -> Option<&str> {
     resolvable.then_some(span)
 }
 
-/// Whether `character` is in a combining-mark block, which GitHub keeps in
-/// heading anchors; std has no general-category lookup.
-fn is_combining_mark(character: char) -> bool {
-    matches!(
-        character,
-        '\u{0300}'..='\u{036F}'
-            | '\u{1AB0}'..='\u{1AFF}'
-            | '\u{1DC0}'..='\u{1DFF}'
-            | '\u{20D0}'..='\u{20FF}'
-            | '\u{3099}'..='\u{309A}'
-            | '\u{FE20}'..='\u{FE2F}'
-    )
-}
-
 /// GitHub heading anchors of a Markdown document, including duplicate
 /// suffixes: each heading's rendered text, lowercased, without punctuation,
 /// and with whitespace as `-`. Headings with HTML or images are rejected,
 /// because GitHub sanitizes them before slugging.
 fn anchors(document: &str) -> Result<BTreeSet<String>, String> {
     use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+    use unicode_properties::{GeneralCategory, GeneralCategoryGroup, UnicodeGeneralCategory};
 
     // Suffix counts per base slug, as github-slugger keeps them.
     let mut occurrences = BTreeMap::<String, usize>::new();
@@ -296,8 +321,12 @@ fn anchors(document: &str) -> Result<BTreeSet<String>, String> {
                     .filter(|character| {
                         character.is_alphanumeric()
                             || character.is_whitespace()
-                            || is_combining_mark(*character)
-                            || matches!(character, '-' | '_')
+                            || matches!(
+                                character.general_category_group(),
+                                GeneralCategoryGroup::Mark
+                            )
+                            || character.general_category() == GeneralCategory::ConnectorPunctuation
+                            || *character == '-'
                     })
                     .map(|character| {
                         if character.is_whitespace() {
@@ -333,7 +362,7 @@ fn anchors_slug_rendered_heading_text() -> TestResult {
         ## Type \\[T\\] \\*literal\\*\n## A &amp; B\n## **Unmatched\n\
         Setext title\n============\n\
         Intro\n```\n# not a heading\n```\n---\nIntro\n\t---\n\
-        # Foo\n# Foo\n# Foo-1\n## Cafe\u{301}\n";
+        # Foo\n# Foo\n# Foo-1\n## Cafe\u{301}\n## \u{5e9}\u{5b0}\n";
     assert_eq!(
         anchors(document)?,
         [
@@ -350,6 +379,7 @@ fn anchors_slug_rendered_heading_text() -> TestResult {
             "foo-1",
             "foo-1-1",
             "cafe\u{301}",
+            "\u{5e9}\u{5b0}",
         ]
         .map(str::to_owned)
         .into()
@@ -519,10 +549,29 @@ fn resolves(identifier: &str, words: &BTreeSet<String>, functions: &BTreeSet<Str
 }
 
 #[test]
-fn crate_names_come_from_member_manifests() -> TestResult {
-    let cli = crate_name(&root().join("crates/cli/tests/docs.rs"))?;
-    assert_eq!(cli.as_deref(), Some("capsule_cli"));
-    assert_eq!(crate_name(&root().join("scripts/x"))?, None);
+fn library_files_follow_module_declarations() -> TestResult {
+    let libraries = library_files()?;
+    let library = |path: &str| -> Result<Option<String>, std::io::Error> {
+        Ok(libraries.get(&root().join(path).canonicalize()?).cloned())
+    };
+    assert_eq!(
+        library("crates/core/src/plan/template.rs")?.as_deref(),
+        Some("capsule_core")
+    );
+    assert_eq!(
+        library("crates/prompt-bench/src/lib.rs")?.as_deref(),
+        Some("capsule_prompt_bench")
+    );
+    // A module of the prompt-bench binary, an integration test, and a binary.
+    for outside in [
+        "crates/prompt-bench/src/worker.rs",
+        "crates/cli/tests/docs.rs",
+        "crates/cli/src/main.rs",
+    ] {
+        assert_eq!(library(outside)?, None, "{outside}");
+    }
+    assert_eq!(declared_module("pub(crate) mod plan;"), Some("plan"));
+    assert_eq!(declared_module("mod tests {"), None);
     Ok(())
 }
 
@@ -530,24 +579,24 @@ fn crate_names_come_from_member_manifests() -> TestResult {
 fn method_paths_resolve_by_their_final_type_and_function() {
     let words = [
         "capsule_core",
+        "capsule_protocol",
         "plan",
+        "session",
         "ConfigPlan",
+        "Request",
         "parse",
+        "encode",
         "render",
         "Limit",
         "Count",
-        "capsule_prompt_bench",
-        "worker",
-        "Worker",
-        "measure",
     ]
     .map(str::to_owned)
     .into();
     let functions = [
         "ConfigPlan::parse",
         "capsule_core::ConfigPlan::parse",
-        "Worker::measure",
-        "capsule_prompt_bench::Worker::measure",
+        "Request::encode",
+        "capsule_protocol::Request::encode",
     ]
     .map(str::to_owned)
     .into();
@@ -555,9 +604,9 @@ fn method_paths_resolve_by_their_final_type_and_function() {
         "ConfigPlan::parse",
         "capsule_core::ConfigPlan::parse",
         "capsule_core::plan::ConfigPlan::parse",
+        "capsule_protocol::session::Request::encode",
         "Limit::Count",
         "capsule_core::Limit::Count",
-        "capsule_prompt_bench::worker::Worker::measure",
     ] {
         assert!(resolves(cited, &words, &functions), "{cited}");
     }
@@ -567,7 +616,7 @@ fn method_paths_resolve_by_their_final_type_and_function() {
         "missing::ConfigPlan::parse",
         "capsule_core::Limit::Bytes",
         // Defined in another crate.
-        "capsule_core::worker::Worker::measure",
+        "capsule_core::session::Request::encode",
     ] {
         assert!(!resolves(cited, &words, &functions), "{cited}");
     }
