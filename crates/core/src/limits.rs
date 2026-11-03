@@ -119,11 +119,10 @@ limits! {
     Count MAX_REPOSITORY_DEPTH: usize = 128;
 
     /// Maximum write attempts per `_capsule_flush` in `init.zsh`, so a slow
-    /// worker cannot hold the line editor; unsent bytes wait for the worker's
-    /// next `K` frame or the next request.
+    /// worker cannot hold the line editor.
     Count MAX_FLUSH_WRITES: usize = 2;
     /// Maximum reads per `_capsule_async_callback` in `init.zsh`, so a fast
-    /// worker cannot hold the line editor; unread bytes wake the next callback.
+    /// worker cannot hold the line editor.
     Count MAX_CALLBACK_READS: usize = 8;
     /// Bytes requested by each of those reads.
     Bytes CALLBACK_READ_BYTES: usize = 4096;

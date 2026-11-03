@@ -22,8 +22,8 @@ Read this file before writing or modifying tests.
   and commit any `proptest-regressions/` file a failure writes so the shrunk case
   stays in the suite.
 - [docs.rs](../crates/cli/tests/docs.rs) keeps documentation that restates code
-  facts in sync: relative links and heading anchors (ATX headings only;
-  emphasis and HTML in headings fail), backticked identifiers (snake case,
+  facts in sync: relative links and heading anchors (plain ATX headings only;
+  Setext headings and headings with code, links, emphasis, or HTML fail), backticked identifiers (snake case,
   screaming case, or `::` paths; a method path, even a fully qualified one
   such as `capsule_core::plan::ConfigPlan::parse`, must be defined in its type's
   `impl`), the limits table, the lint policy, lint

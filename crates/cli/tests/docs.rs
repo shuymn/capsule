@@ -228,52 +228,25 @@ fn cited_identifier(span: &str) -> Option<&str> {
     resolvable.then_some(span)
 }
 
-/// The text of an ATX heading line as GitHub renders it: links and images
-/// keep their text, and code spans keep their content. Emphasis and HTML are
-/// rejected, so headings this check cannot slug fail loudly.
-fn atx_heading(line: &str) -> Result<Option<String>, String> {
-    let indented = line.trim_start_matches(' ');
-    let level = indented.len() - indented.trim_start_matches('#').len();
-    let rest = &indented[level..];
-    if line.len() - indented.len() > 3
-        || !(1..=6).contains(&level)
-        || !(rest.is_empty() || rest.starts_with([' ', '\t']))
-    {
+/// The text of an ATX heading line. Headings with markup that GitHub renders
+/// before slugging (code, links, emphasis, HTML) are rejected, so a heading
+/// this check would slug differently fails loudly.
+fn atx_heading(line: &str) -> Result<Option<&str>, String> {
+    let text = line.trim_start_matches('#');
+    let level = line.len() - text.len();
+    if !(1..=6).contains(&level) || !(text.is_empty() || text.starts_with(' ')) {
         return Ok(None);
     }
-    let rest = rest.trim();
-    // An optional closing sequence of `#` follows a space.
-    let unclosed = rest.trim_end_matches('#');
-    let text = if unclosed.is_empty() || unclosed.ends_with([' ', '\t']) {
-        unclosed.trim_end()
-    } else {
-        rest
-    };
-    let mut rendered = String::new();
-    for (index, part) in text.split('`').enumerate() {
-        if index % 2 == 1 {
-            rendered.push_str(part);
-            continue;
-        }
-        if part.contains(['*', '_', '<']) {
-            return Err(format!("unsupported inline markup in heading: {line}"));
-        }
-        let mut rest = part;
-        while let Some(open) = rest.find('[') {
-            let (before, link) = rest.split_at(open);
-            let Some((label, after)) = link[1..].split_once("](") else {
-                return Err(format!("unsupported brackets in heading: {line}"));
-            };
-            let Some((_, after)) = after.split_once(')') else {
-                return Err(format!("unclosed link in heading: {line}"));
-            };
-            rendered.push_str(before.strip_suffix('!').unwrap_or(before));
-            rendered.push_str(label);
-            rest = after;
-        }
-        rendered.push_str(rest);
+    let emphasis = text.char_indices().any(|(index, character)| {
+        let intraword = |neighbor: Option<char>| neighbor.is_some_and(char::is_alphanumeric);
+        character == '_'
+            && !(intraword(text[..index].chars().next_back())
+                && intraword(text[index + 1..].chars().next()))
+    });
+    if emphasis || text.contains(['`', '[', '*', '<']) {
+        return Err(format!("unsupported markup in heading: {line}"));
     }
-    Ok(Some(rendered))
+    Ok(Some(text.trim()))
 }
 
 /// Whether `line` underlines the previous prose line as a Setext heading,
@@ -333,27 +306,33 @@ fn anchors(document: &str) -> Result<BTreeSet<String>, String> {
 }
 
 #[test]
-fn anchors_slug_rendered_atx_headings_and_reject_other_forms() -> TestResult {
+fn anchors_slug_plain_atx_headings_and_reject_other_forms() -> TestResult {
     let document = "---\nstatus: accepted\n---\n\
-        # Setup\n## [Install](setup.md) `cargo_add`\n### Setup ###\n\
-        #NotAHeading\n    # Indented code\nText\n\n---\n";
+        # Setup\n## MAX_REQUEST bound\n### Setup\n#NotAHeading\nText\n\n---\n";
     assert_eq!(
         anchors(document)?,
-        ["setup", "install-cargo_add", "setup-1"]
+        ["setup", "max_request-bound", "setup-1"]
             .map(str::to_owned)
             .into()
     );
     for unsupported in [
         "Title\n=====\n",
         "Intro\nTitle\n---\n",
+        "## [Setup](setup.md)\n",
+        "## `code`\n",
         "## *Emphasis*\n",
-        "## snake_case\n",
+        "## _Emphasis_\n",
         "## <em>HTML</em>\n",
-        "## [Unclosed](link\n",
     ] {
         assert!(anchors(unsupported).is_err(), "{unsupported}");
     }
     Ok(())
+}
+
+/// Anchors of the Markdown file at `path`, with the path in any error.
+fn anchors_at(path: &Path) -> Result<BTreeSet<String>, Box<dyn std::error::Error>> {
+    let document = fs::read_to_string(path)?;
+    Ok(anchors(&document).map_err(|error| format!("{}: {error}", path.display()))?)
 }
 
 /// Link targets on one line: Markdown `](target)` and HTML `src="target"` or
@@ -434,17 +413,15 @@ fn threat_model_limits_table_matches_the_limits_module() -> TestResult {
 #[test]
 fn relative_links_in_docs_resolve() -> TestResult {
     let documents = documents()?;
-    // Headings of every Markdown document and target, loaded once; other
-    // files may name lines.
+    // Slug every document first, so an unsupported heading fails even when no
+    // link targets it; other Markdown targets are slugged when first linked.
     let mut anchors_by_path = BTreeMap::<PathBuf, BTreeSet<String>>::new();
+    for path in &documents {
+        anchors_by_path.insert(path.canonicalize()?, anchors_at(path)?);
+    }
     let mut broken = Vec::new();
     for path in &documents {
         let document = fs::read_to_string(path)?;
-        // Slug every document, so an unsupported heading fails even before a
-        // link targets it.
-        let headings =
-            anchors(&document).map_err(|error| format!("{}: {error}", path.display()))?;
-        anchors_by_path.insert(path.canonicalize()?, headings);
         let directory = path.parent().ok_or("document without a parent")?;
         for (number, line) in prose_lines(&document) {
             let local = link_targets(line)
@@ -461,8 +438,7 @@ fn relative_links_in_docs_resolve() -> TestResult {
                     Some(_) if anchor.is_empty() => true,
                     Some(resolved) if is_markdown(&resolved) => {
                         if !anchors_by_path.contains_key(&resolved) {
-                            let headings = anchors(&fs::read_to_string(&resolved)?)
-                                .map_err(|error| format!("{}: {error}", resolved.display()))?;
+                            let headings = anchors_at(&resolved)?;
                             anchors_by_path.insert(resolved.clone(), headings);
                         }
                         anchors_by_path
@@ -482,10 +458,8 @@ fn relative_links_in_docs_resolve() -> TestResult {
 }
 
 /// Whether a cited identifier names something defined in the sources: every
-/// segment must occur, and a path ending in `Type::function`, such as
-/// `capsule_core::plan::ConfigPlan::parse`, must define that function in the type's
-/// `impl` block. Other paths, such as enum variants and associated constants,
-/// need only their segments.
+/// segment must occur, and a trailing `Type::function` must be defined in that
+/// type's `impl` block.
 fn resolves(identifier: &str, words: &BTreeSet<String>, functions: &BTreeSet<String>) -> bool {
     let segments = identifier.split("::").collect::<Vec<_>>();
     let defined = segments.iter().all(|segment| words.contains(*segment));
