@@ -1,35 +1,17 @@
 use super::*;
 
-// -- GitState Display tests --
-
 #[test]
-fn test_git_state_display_rebase() {
-    assert_eq!(GitState::Rebase.to_string(), "REBASING");
-}
-
-#[test]
-fn test_git_state_display_am() {
-    assert_eq!(GitState::Am.to_string(), "AM");
-}
-
-#[test]
-fn test_git_state_display_merge() {
-    assert_eq!(GitState::Merge.to_string(), "MERGING");
-}
-
-#[test]
-fn test_git_state_display_cherry_pick() {
-    assert_eq!(GitState::CherryPick.to_string(), "CHERRY-PICKING");
-}
-
-#[test]
-fn test_git_state_display_revert() {
-    assert_eq!(GitState::Revert.to_string(), "REVERTING");
-}
-
-#[test]
-fn test_git_state_display_bisect() {
-    assert_eq!(GitState::Bisect.to_string(), "BISECTING");
+fn git_states_display_their_prompt_labels() {
+    for (state, label) in [
+        (GitState::Rebase, "REBASING"),
+        (GitState::Am, "AM"),
+        (GitState::Merge, "MERGING"),
+        (GitState::CherryPick, "CHERRY-PICKING"),
+        (GitState::Revert, "REVERTING"),
+        (GitState::Bisect, "BISECTING"),
+    ] {
+        assert_eq!(state.to_string(), label);
+    }
 }
 
 // -- find_git_dir tests --
@@ -270,109 +252,44 @@ async fn test_detect_priority_rebase_over_merge() -> Result<(), Box<dyn std::err
     Ok(())
 }
 
-// -- Parsing tests --
-
 #[test]
-fn test_parse_porcelain_v2_branch_and_counts() {
+fn porcelain_v2_counts_every_entry_kind() {
     let output = "\
 # branch.oid abc123def456
 # branch.head main
 # branch.ab +1 -2
-1 M. N... 000000 000000 abc123 def456 modified.rs
-1 .M N... 000000 000000 abc123 def456 worktree.rs
-? untracked.txt
-";
-    let status = parse_porcelain_v2(output);
-    assert_eq!(status.branch, Some("main".to_owned()));
-    assert_eq!(status.ahead, 1);
-    assert_eq!(status.behind, 2);
-    assert_eq!(status.staged, 1);
-    assert_eq!(status.modified, 1);
-    assert_eq!(status.untracked, 1);
-    assert_eq!(status.conflicted, 0);
-    assert_eq!(
-        status.head_oid,
-        Some("abc123def456".to_owned()),
-        "full oid from porcelain"
-    );
-}
-
-#[test]
-fn test_parse_porcelain_v2_detached_head() {
-    let output = "# branch.oid abc123\n# branch.head (detached)\n";
-    let status = parse_porcelain_v2(output);
-    assert_eq!(status.branch, None);
-    assert_eq!(status.head_oid, Some("abc123".to_owned()));
-}
-
-#[test]
-fn test_parse_porcelain_v2_staged_and_modified() {
-    let output = "# branch.head feature\n1 MM N... 000000 000000 abc123 def456 both.rs\n";
-    let status = parse_porcelain_v2(output);
-    assert_eq!(status.staged, 1);
-    assert_eq!(status.modified, 1);
-}
-
-#[test]
-fn test_parse_porcelain_v2_conflicted() {
-    let output =
-        "# branch.head main\nu UU N... 000000 000000 000000 abc123 def456 ghi789 conflict.rs\n";
-    let status = parse_porcelain_v2(output);
-    assert_eq!(status.conflicted, 1);
-}
-
-#[test]
-fn test_parse_porcelain_v2_rename_entry() {
-    let output = "# branch.head main\n2 R. N... 000000 000000 abc123 def456 R100 new.rs\told.rs\n";
-    let status = parse_porcelain_v2(output);
-    assert_eq!(status.staged, 1);
-    assert_eq!(status.modified, 0);
-}
-
-#[test]
-fn test_parse_porcelain_v2_empty_output() {
-    let status = parse_porcelain_v2("");
-    assert_eq!(status, GitStatus::default());
-}
-
-#[test]
-fn test_parse_stash_count() {
-    let output = "\
-# branch.head main
 # stash 5
-";
-    let status = parse_porcelain_v2(output);
-    assert_eq!(status.stashed, 5);
-}
-
-#[test]
-fn test_parse_deleted_file() {
-    let output = "\
-# branch.head main
+1 M. N... 000000 000000 abc123 def456 staged.rs
+1 .M N... 000000 000000 abc123 def456 modified.rs
+1 MM N... 000000 000000 abc123 def456 both.rs
 1 D. N... 100644 000000 000000 abc123 000000 deleted.rs
-";
-    let status = parse_porcelain_v2(output);
-    assert_eq!(status.deleted, 1, "index delete should be tracked");
-}
-
-#[test]
-fn test_parse_worktree_deleted_file() {
-    let output = "\
-# branch.head main
-1 .D N... 100644 100644 000000 abc123 def456 deleted.rs
-";
-    let status = parse_porcelain_v2(output);
-    assert_eq!(status.deleted, 1, "worktree delete should be tracked");
-}
-
-#[test]
-fn test_parse_renamed_file() {
-    let output = "\
-# branch.head main
+1 .D N... 100644 100644 000000 abc123 def456 removed.rs
 2 R. N... 100644 100644 100644 abc123 def456 R100 new.rs\told.rs
+u UU N... 000000 000000 000000 abc123 def456 ghi789 conflict.rs
+? untracked.txt
+? other.txt
 ";
-    let status = parse_porcelain_v2(output);
-    assert_eq!(status.renamed, 1, "rename should be tracked");
+    assert_eq!(
+        parse_porcelain_v2(output),
+        GitStatus {
+            branch: Some("main".to_owned()),
+            head_oid: Some("abc123def456".to_owned()),
+            staged: 4,
+            modified: 3,
+            untracked: 2,
+            conflicted: 1,
+            stashed: 5,
+            deleted: 2,
+            renamed: 1,
+            ahead: 1,
+            behind: 2,
+            state: None,
+        }
+    );
+    let detached = parse_porcelain_v2("# branch.oid abc123\n# branch.head (detached)\n");
+    assert_eq!(detached.branch, None);
+    assert_eq!(detached.head_oid, Some("abc123".to_owned()));
+    assert_eq!(parse_porcelain_v2(""), GitStatus::default());
 }
 
 // -- acquire_context tests --
