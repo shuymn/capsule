@@ -270,6 +270,38 @@ fn duplicate_names_and_undefined_or_unclosed_formats_are_rejected() -> TestResul
     Ok(())
 }
 
+#[test]
+fn brackets_follow_the_documented_escape_limits() -> TestResult {
+    let literal = |text: &str| FormatPart::Literal(text.to_owned());
+    for (format, expected) in [
+        // `[[` stays an escape right after `[`, so a section cannot start with
+        // a literal `[`.
+        (
+            "[[[x]]",
+            vec![
+                literal("["),
+                FormatPart::Optional(vec![literal("x")]),
+                literal("]"),
+            ],
+        ),
+        // The documented workaround: start the section with other text.
+        ("[ [[x]", vec![FormatPart::Optional(vec![literal(" [x")])]),
+        // `]` always closes a section and is literal only outside every section.
+        (
+            "[x]]",
+            vec![FormatPart::Optional(vec![literal("x")]), literal("]")],
+        ),
+        ("x]", vec![literal("x]")]),
+    ] {
+        assert_eq!(
+            one_module(format, "")?.modules[0].format,
+            Template(expected),
+            "{format}"
+        );
+    }
+    Ok(())
+}
+
 /// Covers: T03, T07
 #[test]
 fn configuration_bytes_and_format_depth_are_bounded() -> TestResult {
@@ -554,8 +586,8 @@ mod template_properties {
     }
 
     /// A format tree the syntax can express: inside an optional section, a
-    /// literal has no `]` and the section does not start with `[`
-    /// (shuymn/capsule#305).
+    /// literal has no `]` and the section does not start with `[`, as
+    /// docs/extending.md states.
     fn tree(depth: u32) -> impl Strategy<Value = Vec<FormatPart>> {
         format_parts(NAMES.len(), depth).prop_map(|parts| normalize(parts, false))
     }
