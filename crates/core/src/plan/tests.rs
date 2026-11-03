@@ -106,6 +106,7 @@ value = [{ env = "VALUE" }]
     Ok(())
 }
 
+/// Covers: T03
 #[test]
 fn schema_and_unknown_fields_are_rejected_at_every_boundary() {
     for source in [
@@ -134,6 +135,7 @@ fn schema_and_unknown_fields_are_rejected_at_every_boundary() {
     assert!(one_module("{value}", "value = [{ env = 'X', extra = 1 }]").is_err());
 }
 
+/// Covers: T03
 #[test]
 fn source_and_regex_validation_happens_before_acquisition() {
     for candidate_text in [
@@ -193,6 +195,7 @@ value = [{ env = "OTHER" }]
     Ok(())
 }
 
+/// Covers: T03
 #[test]
 fn duplicate_names_and_undefined_or_unclosed_formats_are_rejected() -> TestResult {
     let source = "schema_version=2\n[[module]]\nname='x'\nvalues={value=[{env='A'}]}\n[[module]]\nname='x'\nvalues={value=[{env='B'}]}";
@@ -224,6 +227,7 @@ fn duplicate_names_and_undefined_or_unclosed_formats_are_rejected() -> TestResul
     Ok(())
 }
 
+/// Covers: T03, T07
 #[test]
 fn configuration_bytes_and_format_depth_are_bounded() -> TestResult {
     let mut source = "schema_version=2\n#".to_owned();
@@ -264,6 +268,7 @@ fn sized_plan(modules: usize, values: usize, candidates: usize) -> Result<String
     Ok(source)
 }
 
+/// Covers: T03, T07
 #[test]
 fn module_value_and_candidate_counts_are_bounded() -> TestResult {
     ConfigPlan::parse(&sized_plan(MAX_MODULES, 1, 1)?)?;
@@ -282,6 +287,7 @@ fn module_value_and_candidate_counts_are_bounded() -> TestResult {
     Ok(())
 }
 
+/// Covers: T02
 #[tokio::test]
 async fn ready_empty_env_stops_fallback_but_unset_env_does_not() -> TestResult {
     let dir = tempfile::tempdir()?;
@@ -335,6 +341,7 @@ async fn empty_file_and_command_are_ready_and_file_text_may_contain_slashes() ->
     Ok(())
 }
 
+/// Covers: T02
 #[tokio::test]
 async fn missing_failed_and_timed_out_candidates_fall_back_in_order() -> TestResult {
     let dir = tempfile::tempdir()?;
@@ -460,6 +467,7 @@ async fn cancellation_does_not_fall_back_to_a_ready_value() -> TestResult {
     Ok(())
 }
 
+/// Covers: T07
 #[tokio::test]
 async fn environment_size_limit_applies_before_copying_and_allows_fallback() -> TestResult {
     let dir = tempfile::tempdir()?;

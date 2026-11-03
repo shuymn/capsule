@@ -482,3 +482,212 @@ fn every_workspace_member_inherits_the_workspace_lints() -> TestResult {
     assert!(members > 0, "no workspace members found");
     Ok(())
 }
+
+/// A `Covers:` comment naming the threats a test, or a whole test file, verifies.
+#[derive(Debug, PartialEq, Eq)]
+struct Coverage {
+    path: String,
+    /// `None` when the tag sits in the file's leading comments.
+    test: Option<String>,
+    threats: Vec<String>,
+}
+
+/// The body of a Rust, Python, or shell comment line, or of an attribute.
+fn comment_body(line: &str) -> Option<&str> {
+    let line = line.trim_start();
+    ["///", "//!", "//", "#"]
+        .iter()
+        .find_map(|prefix| line.strip_prefix(prefix))
+        .map(str::trim)
+}
+
+/// The name of a Rust `fn` or Python `def` declared on `line`.
+fn declared_function(line: &str) -> Option<&str> {
+    let mut words = line.split_whitespace();
+    loop {
+        match words.next()? {
+            "pub" | "async" => {}
+            "fn" | "def" => break,
+            _ => return None,
+        }
+    }
+    words
+        .next()?
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+        .next()
+        .filter(|name| !name.is_empty())
+}
+
+/// `Covers:` tags in one source file. A tag binds to the function declared
+/// after its run of comments, attributes, and decorators, or to the file when
+/// it appears before any code; any other placement is an error.
+fn coverage_tags(path: &str, source: &str) -> Result<Vec<Coverage>, String> {
+    let lines = source.lines().collect::<Vec<_>>();
+    let mut tags = Vec::new();
+    let mut header = true;
+    for (index, line) in lines.iter().enumerate() {
+        let body = comment_body(line);
+        if body.is_none() && !line.trim().is_empty() {
+            header = false;
+        }
+        let Some(list) = body.and_then(|body| body.strip_prefix("Covers:")) else {
+            continue;
+        };
+        let location = format!("{path}:{}", index + 1);
+        let threats = list
+            .split(',')
+            .map(|threat| threat.trim().to_owned())
+            .collect::<Vec<_>>();
+        if threats.iter().any(String::is_empty) {
+            return Err(format!("{location}: empty threat in `Covers:` tag"));
+        }
+        let declaration = lines[index + 1..]
+            .iter()
+            .find(|line| comment_body(line).is_none() && !line.trim_start().starts_with('@'));
+        let test = match declaration.and_then(|line| declared_function(line)) {
+            Some(name) => Some(name.to_owned()),
+            None if header => None,
+            None => return Err(format!("{location}: `Covers:` tag precedes no test")),
+        };
+        tags.push(Coverage {
+            path: path.to_owned(),
+            test,
+            threats,
+        });
+    }
+    Ok(tags)
+}
+
+/// Threat IDs defined by the `### Txx — …` headings of the threat model.
+fn defined_threats(document: &str) -> BTreeSet<String> {
+    document
+        .lines()
+        .filter_map(|line| line.strip_prefix("### "))
+        .filter_map(|heading| heading.split_whitespace().next())
+        .filter(|id| id.starts_with('T'))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The generated "Existing verification" cell for tests covering `threats`.
+fn verification_cell(tags: &[Coverage], threats: &BTreeSet<&str>) -> String {
+    let mut files = BTreeMap::<&str, Vec<&str>>::new();
+    for tag in tags.iter().filter(|tag| {
+        tag.threats
+            .iter()
+            .any(|threat| threats.contains(threat.as_str()))
+    }) {
+        let tests = files.entry(&tag.path).or_default();
+        tests.extend(tag.test.as_deref());
+    }
+    if files.is_empty() {
+        return "Source review only".to_owned();
+    }
+    files
+        .into_iter()
+        .map(|(path, tests)| {
+            let link = format!("[{path}](../{path})");
+            if tests.is_empty() {
+                link
+            } else {
+                let names = tests.iter().map(|test| format!("`{test}`"));
+                format!("{link}: {}", names.collect::<Vec<_>>().join(", "))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+#[test]
+fn coverage_tags_bind_to_the_next_test_or_the_file_header() -> TestResult {
+    let source = "#!/bin/sh\n# Covers: T10\nset -eu\n\n\
+        /// Covers: T01, T07\n#[test]\n/// Docs.\nfn first() {}\n\
+        # Covers: T08\n@decorator\ndef second(suite):\n";
+    assert_eq!(
+        coverage_tags("a", source)?,
+        [
+            Coverage {
+                path: "a".into(),
+                test: None,
+                threats: vec!["T10".into()]
+            },
+            Coverage {
+                path: "a".into(),
+                test: Some("first".into()),
+                threats: vec!["T01".into(), "T07".into()]
+            },
+            Coverage {
+                path: "a".into(),
+                test: Some("second".into()),
+                threats: vec!["T08".into()]
+            },
+        ]
+    );
+    assert!(coverage_tags("a", "use x;\n// Covers: T01\nconst X: u8 = 0;\n").is_err());
+    assert!(coverage_tags("a", "// Covers: T01,\nfn f() {}\n").is_err());
+    Ok(())
+}
+
+#[test]
+fn threat_model_verification_column_matches_coverage_tags() -> TestResult {
+    let document = read("docs/threat-model.md")?;
+    let defined = defined_threats(&document);
+    let mut tags = Vec::new();
+    for (path, source) in source_texts()? {
+        if path
+            .extension()
+            .is_some_and(|extension| ["rs", "py", "sh"].iter().any(|known| extension == *known))
+        {
+            let relative = path.strip_prefix(root())?.to_string_lossy().into_owned();
+            tags.extend(coverage_tags(&relative, &source)?);
+        }
+    }
+    for tag in &tags {
+        for threat in &tag.threats {
+            assert!(
+                defined.contains(threat),
+                "{}: unknown threat {threat}",
+                tag.path
+            );
+        }
+    }
+
+    let rows = document
+        .lines()
+        .skip_while(|line| {
+            *line
+                != "| Threat / condition | Existing verification | Additional checks and evidence |"
+        })
+        .skip(2)
+        .take_while(|line| line.starts_with('|'))
+        .collect::<Vec<_>>();
+    let mut listed = BTreeSet::new();
+    let mut drift = Vec::new();
+    for row in rows {
+        let cells = row
+            .strip_prefix("| ")
+            .and_then(|row| row.strip_suffix(" |"))
+            .map(|row| row.splitn(3, " | ").collect::<Vec<_>>());
+        let Some([condition, verification, additional]) = cells.as_deref() else {
+            return Err(format!("malformed verification row: {row}").into());
+        };
+        let threats = words(condition)
+            .filter(|word| defined.contains(*word))
+            .collect::<BTreeSet<_>>();
+        for threat in &threats {
+            assert!(listed.insert(*threat), "{threat} has more than one row");
+        }
+        let expected = verification_cell(&tags, &threats);
+        if *verification != expected {
+            drift.push(format!("| {condition} | {expected} | {additional} |"));
+        }
+    }
+    let defined = defined.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    assert_eq!(listed, defined, "every threat needs exactly one row");
+    assert!(
+        drift.is_empty(),
+        "update these docs/threat-model.md §8 rows from the `Covers:` tags:\n{}",
+        drift.join("\n")
+    );
+    Ok(())
+}

@@ -157,6 +157,7 @@ def submit_withheld_hook_error(shell, worker, command):
     return prompt
 
 
+# Covers: T01
 def run_hook_errors(suite):
     with suite.session("hook-errors", precmd_setup=fixtures.HOOK_ERROR_SETUP) as shell:
         shell.complete(1)
@@ -197,6 +198,7 @@ def run_hook_errors(suite):
         assert shell.exists("late-hook")
 
 
+# Covers: T01
 def run_named_hook_error(suite):
     # zsh runs a named precmd() before precmd_functions, so its genuine shell
     # error skips every Capsule hook before the worker-rendered prompt expands.

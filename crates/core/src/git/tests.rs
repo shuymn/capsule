@@ -34,6 +34,7 @@ fn test_git_state_display_bisect() {
 
 // -- find_git_dir tests --
 
+/// Covers: T04
 #[tokio::test]
 async fn test_find_git_dir_normal_repo() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
@@ -45,6 +46,7 @@ async fn test_find_git_dir_normal_repo() -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
+/// Covers: T04
 #[tokio::test]
 async fn test_find_git_dir_subdirectory() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
@@ -58,6 +60,7 @@ async fn test_find_git_dir_subdirectory() -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
+/// Covers: T04
 #[tokio::test]
 async fn test_find_git_dir_worktree() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
@@ -76,6 +79,7 @@ async fn test_find_git_dir_worktree() -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
+/// Covers: T04
 #[tokio::test]
 async fn test_find_git_dir_worktree_relative() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
@@ -97,6 +101,7 @@ async fn test_find_git_dir_worktree_relative() -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
+/// Covers: T04
 #[tokio::test]
 async fn test_find_git_dir_not_a_repo() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;

@@ -331,6 +331,7 @@ async fn identical_commands_run_once_per_generation_across_values_and_modules() 
     worker.close().await
 }
 
+/// Covers: T03
 #[tokio::test]
 async fn failed_reload_preserves_last_valid_plan_then_accepts_fixed_configuration() -> Result {
     let home = tempfile::tempdir()?;
@@ -360,6 +361,7 @@ async fn failed_reload_preserves_last_valid_plan_then_accepts_fixed_configuratio
     worker.close().await
 }
 
+/// Covers: T09
 #[tokio::test]
 async fn same_snapshot_retains_all_pending_frames_and_commits_external_changes_together() -> Result
 {
@@ -443,6 +445,7 @@ async fn same_snapshot_retains_all_pending_frames_and_commits_external_changes_t
     worker.close().await
 }
 
+/// Covers: T09
 #[tokio::test]
 async fn cancellation_and_failed_reload_retain_the_last_settled_generation() -> Result {
     let home = tempfile::tempdir()?;
@@ -521,6 +524,7 @@ async fn cancellation_and_failed_reload_retain_the_last_settled_generation() -> 
     worker.close().await
 }
 
+/// Covers: T09
 #[tokio::test]
 async fn changed_environment_cwd_and_valid_config_clear_retained_information() -> Result {
     let home = tempfile::tempdir()?;
@@ -626,6 +630,7 @@ async fn changed_environment_cwd_and_valid_config_clear_retained_information() -
     worker.close().await
 }
 
+/// Covers: T07
 #[tokio::test]
 async fn oversized_snapshot_is_rejected_without_running_a_command() -> Result {
     let home = tempfile::tempdir()?;
@@ -680,6 +685,7 @@ async fn real_git_directory_and_optional_time_survive_acquisition_completion() -
     worker.close().await
 }
 
+/// Covers: T03
 #[tokio::test]
 async fn relative_config_paths_follow_the_request_cwd() -> Result {
     let home = tempfile::tempdir()?;
