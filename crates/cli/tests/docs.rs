@@ -253,6 +253,20 @@ fn cited_identifier(span: &str) -> Option<&str> {
     resolvable.then_some(span)
 }
 
+/// Whether `character` is in a combining-mark block, which GitHub keeps in
+/// heading anchors; std has no general-category lookup.
+fn is_combining_mark(character: char) -> bool {
+    matches!(
+        character,
+        '\u{0300}'..='\u{036F}'
+            | '\u{1AB0}'..='\u{1AFF}'
+            | '\u{1DC0}'..='\u{1DFF}'
+            | '\u{20D0}'..='\u{20FF}'
+            | '\u{3099}'..='\u{309A}'
+            | '\u{FE20}'..='\u{FE2F}'
+    )
+}
+
 /// GitHub heading anchors of a Markdown document, including duplicate
 /// suffixes: each heading's rendered text, lowercased, without punctuation,
 /// and with whitespace as `-`. Headings with HTML or images are rejected,
@@ -260,7 +274,8 @@ fn cited_identifier(span: &str) -> Option<&str> {
 fn anchors(document: &str) -> Result<BTreeSet<String>, String> {
     use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
-    let mut seen = BTreeMap::<String, usize>::new();
+    // Suffix counts per base slug, as github-slugger keeps them.
+    let mut occurrences = BTreeMap::<String, usize>::new();
     let mut anchors = BTreeSet::new();
     let mut heading = None::<String>;
     let parser = Parser::new_ext(document, Options::ENABLE_YAML_STYLE_METADATA_BLOCKS);
@@ -275,12 +290,13 @@ fn anchors(document: &str) -> Result<BTreeSet<String>, String> {
                 return Err(format!("unsupported image in heading: {text}"));
             }
             (Some(text), Event::End(TagEnd::Heading(_))) => {
-                let slug = text
+                let base = text
                     .to_lowercase()
                     .chars()
                     .filter(|character| {
                         character.is_alphanumeric()
                             || character.is_whitespace()
+                            || is_combining_mark(*character)
                             || matches!(character, '-' | '_')
                     })
                     .map(|character| {
@@ -291,13 +307,16 @@ fn anchors(document: &str) -> Result<BTreeSet<String>, String> {
                         }
                     })
                     .collect::<String>();
-                let count = seen.entry(slug.clone()).or_default();
-                anchors.insert(if *count == 0 {
-                    slug
-                } else {
-                    format!("{slug}-{count}")
-                });
-                *count += 1;
+                // A suffixed slug may collide with an earlier heading's own
+                // text, as `Foo`, `Foo`, `Foo-1` does; skip issued slugs.
+                let mut slug = base.clone();
+                while occurrences.contains_key(&slug) {
+                    let count = occurrences.entry(base.clone()).or_default();
+                    *count += 1;
+                    slug = format!("{base}-{count}");
+                }
+                occurrences.insert(slug.clone(), 0);
+                anchors.insert(slug);
                 heading = None;
             }
             _ => {}
@@ -313,7 +332,8 @@ fn anchors_slug_rendered_heading_text() -> TestResult {
         ## [Install](setup.md) `cargo_add`\n## *Emphasis* and **strong**\n\
         ## Type \\[T\\] \\*literal\\*\n## A &amp; B\n## **Unmatched\n\
         Setext title\n============\n\
-        Intro\n```\n# not a heading\n```\n---\nIntro\n\t---\n";
+        Intro\n```\n# not a heading\n```\n---\nIntro\n\t---\n\
+        # Foo\n# Foo\n# Foo-1\n## Cafe\u{301}\n";
     assert_eq!(
         anchors(document)?,
         [
@@ -326,6 +346,10 @@ fn anchors_slug_rendered_heading_text() -> TestResult {
             "a--b",
             "unmatched",
             "setext-title",
+            "foo",
+            "foo-1",
+            "foo-1-1",
+            "cafe\u{301}",
         ]
         .map(str::to_owned)
         .into()
