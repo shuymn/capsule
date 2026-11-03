@@ -9,7 +9,8 @@ Run one worker per interactive zsh session on Tokio's current-thread runtime. Th
 | Owner | Responsibility |
 | --- | --- |
 | [init.zsh](../crates/core/src/init/init.zsh) | Shell generation, full exported snapshot, nonblocking pipe buffers, fallback, zle hooks |
-| [worker.rs](../crates/cli/src/worker.rs) | One active acquisition generation, newest pending replacement, reload, fresh observations, settled display snapshot, response writer |
+| [worker/machine.rs](../crates/cli/src/worker/machine.rs) | Sans-IO state machine: one active acquisition generation, newest pending replacement, reload acceptance, fresh observations, settled display snapshot |
+| [worker.rs](../crates/cli/src/worker.rs) | I/O shell: pipes, signals, generation tasks, acquisition, response writer |
 | [plan.rs](../crates/core/src/plan.rs) | Immutable schema-v2 ConfigPlan: validated sources, conditions, indexed formats, display settings |
 | [acquire.rs](../crates/core/src/acquire.rs), [plan/acquire.rs](../crates/core/src/plan/acquire.rs), [git.rs](../crates/core/src/git.rs) | Bounded env/file/argv acquisition, sequential fallback, Git CLI and directory facts |
 | [view.rs](../crates/core/src/view.rs), [render/style.rs](../crates/core/src/render/style.rs) | Pure evaluation, arbitration, structured text/style, grapheme layout, final zsh serialization and prompt-escape quoting |

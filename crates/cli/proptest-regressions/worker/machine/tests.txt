@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 2020e360159d7228e5877c6ece1ddc71ca3f0ff450ba12413876d3356d4f2be0 # shrinks to ops = [Request { generation: 4, cwd: 0, cols: 0, keymap: false }, Joined { failed: true }, Plan { generation: 4, plan: 1, diagnostic: None }]
