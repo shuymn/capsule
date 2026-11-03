@@ -1,6 +1,9 @@
 //! Git observations and bounded repository metadata acquisition.
 
-use crate::acquire::{AcquireError, Runner};
+use crate::{
+    acquire::{AcquireError, Runner},
+    limits::MAX_REPOSITORY_DEPTH,
+};
 use capsule_protocol::session::Snapshot;
 use std::{
     ffi::OsString,
@@ -241,7 +244,7 @@ async fn find_repository(
     runner: &Runner,
     cancel: &CancellationToken,
 ) -> Result<Option<Repository>, AcquireError> {
-    for dir in cwd.ancestors().take(128) {
+    for dir in cwd.ancestors().take(MAX_REPOSITORY_DEPTH) {
         let dot_git = dir.join(".git");
         let Some(metadata) = runner.metadata(&dot_git, cancel).await? else {
             continue;

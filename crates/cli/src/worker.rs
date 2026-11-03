@@ -1,10 +1,14 @@
 //! One shell owns one worker, one current generation and one pending replacement.
 
-use std::{io, os::fd::AsFd, path::PathBuf, sync::Arc, time::Duration};
+use std::{io, os::fd::AsFd, path::PathBuf, sync::Arc};
 
 use capsule_core::{
     acquire::{AcquireError, Runner},
     git::{ContextInfo, acquire_context, local_directory},
+    limits::{
+        EVENT_QUEUE_CAPACITY, GENERATION_DRAIN_TIMEOUT, GENERATION_TIMEOUT, MAX_FILE_JOBS,
+        RUNTIME_SHUTDOWN_TIMEOUT,
+    },
     plan::{ConfigPlan, ModuleObservation, Observation, acquire_condition, acquire_value},
     view::{self, ViewInput},
 };
@@ -18,18 +22,16 @@ use tokio_util::sync::CancellationToken;
 
 use crate::pipe::Pipe;
 
-const GENERATION_TIMEOUT: Duration = Duration::from_secs(2);
-
 pub fn run() -> anyhow::Result<()> {
     // Avoid the terminal's foreground process group: shell exit must reach EOF
     // cleanup instead of terminating the worker before it reaps its commands.
     rustix::process::setpgid(None, None)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        .max_blocking_threads(2)
+        .max_blocking_threads(MAX_FILE_JOBS)
         .build()?;
     let result = runtime.block_on(serve());
-    runtime.shutdown_timeout(Duration::from_millis(500));
+    runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
     result
 }
 
@@ -171,7 +173,7 @@ async fn serve() -> anyhow::Result<()> {
     let stop = CancellationToken::new();
     let (render_tx, render_rx) = watch::channel(None);
     let mut writer = tokio::spawn(write_frames(output, render_rx, credit, stop.clone()));
-    let (events_tx, mut events_rx) = mpsc::channel(16);
+    let (events_tx, mut events_rx) = mpsc::channel(EVENT_QUEUE_CAPACITY);
     let runner = Runner::default();
     let mut generations = JoinSet::new();
     let mut active_cancel = CancellationToken::new();
@@ -235,7 +237,7 @@ async fn serve() -> anyhow::Result<()> {
     }.await;
     active_cancel.cancel();
     stop.cancel();
-    if tokio::time::timeout(Duration::from_secs(1), async {
+    if tokio::time::timeout(GENERATION_DRAIN_TIMEOUT, async {
         while generations.join_next().await.is_some() {}
     })
     .await

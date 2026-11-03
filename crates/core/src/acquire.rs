@@ -6,7 +6,6 @@ use std::{
     path::Path,
     process::{ExitStatus, Stdio},
     sync::{Arc, Mutex},
-    time::Duration,
 };
 
 use capsule_protocol::session::Snapshot;
@@ -24,10 +23,9 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-const ACQUISITION_TIMEOUT: Duration = Duration::from_millis(500);
-const CLEANUP_TIMEOUT: Duration = Duration::from_millis(100);
-/// Maximum bytes retained for one command, file, or exported environment value.
-pub const MAX_OUTPUT_BYTES: usize = 64 * 1024;
+use crate::limits::{
+    ACQUISITION_TIMEOUT, CLEANUP_TIMEOUT, MAX_FILE_JOBS, MAX_OUTPUT_BYTES, MAX_PROCESSES,
+};
 
 /// An acquisition failure. Errors do not contain captured environment values.
 #[derive(Debug, thiserror::Error)]
@@ -282,8 +280,8 @@ impl Runner {
 impl Default for Runner {
     fn default() -> Self {
         Self {
-            processes: Arc::new(Semaphore::new(4)),
-            files: Arc::new(Semaphore::new(2)),
+            processes: Arc::new(Semaphore::new(MAX_PROCESSES)),
+            files: Arc::new(Semaphore::new(MAX_FILE_JOBS)),
             reapers: Arc::new(Mutex::new(JoinSet::new())),
             commands: None,
         }

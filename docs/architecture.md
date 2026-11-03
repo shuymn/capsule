@@ -47,17 +47,7 @@ Keep at most one settled display snapshot in the worker; do not retain displays 
 
 ## Resources and shutdown
 
-| Boundary | Limit |
-| --- | --- |
-| Escaped request / response frame, excluding LF | 256 KiB / 64 KiB |
-| Config file / one source value | 64 KiB / 64 KiB |
-| Concurrent subprocesses / blocking file jobs | 4 / 2 per worker |
-| One I/O operation, including capacity wait | 500 ms |
-| Acquisition generation / process cleanup grace | 2 s / 100 ms |
-| Modules / total values / total candidates | 64 / 256 / 1024 |
-| Values per module / candidates per value | 16 / 8 |
-| Format source / optional nesting depth | 4 KiB / 8 |
-| Compiled regex size / nesting | 64 KiB / 32 |
+Bound every frame, snapshot, source value, plan size, concurrency level, and deadline. [limits.rs](../crates/core/src/limits.rs) defines each limit once, and [threat-model.md](threat-model.md#6-current-resource-limits) lists them. Change a constant and its row together; the docs test fails otherwise.
 
 Keep permit ownership with blocking tasks and delayed reapers until they finish. New generations must not accumulate replacement work behind abandoned operations.
 

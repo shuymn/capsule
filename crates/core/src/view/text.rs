@@ -3,11 +3,10 @@
 use unicode_segmentation::UnicodeSegmentation as _;
 use unicode_width::UnicodeWidthStr as _;
 
-use crate::render::style::{ColorMap, Style};
-
-// Prompt quoting and wire escaping expand a backslash to 11 bytes. Leave room
-// for both lines and styles within the session protocol's 64 KiB response limit.
-const MAX_LINE_TEXT_BYTES: usize = 2 * 1024;
+use crate::{
+    limits::MAX_LINE_TEXT_BYTES,
+    render::style::{ColorMap, Style},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Span {
