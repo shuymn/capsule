@@ -204,13 +204,23 @@ impl Request {
             return Err(Error::TooLarge(MAX_REQUEST));
         }
         let fields = frame.split(|byte| *byte == b'\t').collect::<Vec<_>>();
-        if fields.len() < 7 || fields[0] != b"Q" || (fields.len() - 7) % 2 != 0 {
+        let [
+            b"Q",
+            generation,
+            exit,
+            duration,
+            cols,
+            keymap,
+            cwd,
+            env @ ..,
+        ] = fields.as_slice()
+        else {
             return Err(Error::Invalid("request fields"));
-        }
-        let cwd = unescape(fields[6])?;
-        let env = fields[7..]
-            .as_chunks::<2>()
-            .0
+        };
+        let (env, []) = env.as_chunks::<2>() else {
+            return Err(Error::Invalid("request fields"));
+        };
+        let env = env
             .iter()
             .map(|[key, value]| {
                 Ok((
@@ -220,17 +230,17 @@ impl Request {
             })
             .collect::<Result<Vec<_>, Error>>()?;
         let request = Self {
-            generation: number(fields[1])?,
-            last_exit_code: number(fields[2])?,
-            duration_ms: if fields[3].is_empty() {
+            generation: number(generation)?,
+            last_exit_code: number(exit)?,
+            duration_ms: if duration.is_empty() {
                 None
             } else {
-                Some(number(fields[3])?)
+                Some(number(duration)?)
             },
-            cols: number(fields[4])?,
-            keymap: std::str::from_utf8(&unescape(fields[5])?)?.to_owned(),
+            cols: number(cols)?,
+            keymap: std::str::from_utf8(&unescape(keymap)?)?.to_owned(),
             snapshot: Snapshot {
-                cwd: PathBuf::from(OsString::from_vec(cwd)),
+                cwd: PathBuf::from(OsString::from_vec(unescape(cwd)?)),
                 env,
             },
         };
@@ -404,6 +414,14 @@ mod tests {
             b"Q\t1\t0\t\t80\tmain\t/tmp\tA\tsecret\tA\tx".as_slice(),
             b"Q\t1\t0\t\t80\tmain\t/tmp\tA\tsecret\0",
             b"Q\t1\t0\t\t80\tmain\t/tmp\tA\tsecret\\q",
+            b"Q\t1\t0\t\t80\tmain\t/tmp\tA",
+            b"Q\t1\t0\t\t80\tmain",
+            b"R\t1\t0\t\t80\tmain\t/tmp",
+            b"Q\t1\t0\t\t80\tmain\t",
+            b"Q\t1\t0\t\t80\tmain\t/t\0p",
+            b"Q\t1\t0\t\t80\tmain\t/tmp\t\tsecret",
+            b"Q\t1\t0\t\t80\tmain\t/tmp\tA\0\tsecret",
+            b"Q\t1\t0\t\t80\tmain\t/tmp\tA=B\tsecret",
         ] {
             let result = Request::decode(frame);
             assert!(result.is_err());
@@ -413,6 +431,30 @@ mod tests {
                     .is_some_and(|error| error.to_string().contains("secret"))
             );
         }
+    }
+
+    /// Covers: T08
+    #[test]
+    fn size_limits_include_the_bound() -> Result<(), Error> {
+        let mut request = b"Q\t1\t0\t\t80\tmain\t/".to_vec();
+        request.resize(MAX_REQUEST, b'x');
+        let encoded = Request::decode(&request)?.encode()?;
+        assert_eq!(&encoded[..MAX_REQUEST], request.as_slice());
+        request.push(b'x');
+        assert!(matches!(Request::decode(&request), Err(Error::TooLarge(_))));
+
+        let overhead = response(0, "", "", false)?.len() - 1;
+        let line = "x".repeat(MAX_RESPONSE - overhead);
+        let mut encoded = response(0, &line, "", false)?;
+        encoded.pop();
+        assert_eq!(Response::decode(&encoded)?.left1, line);
+        assert!(response(0, &line, "x", false).is_err());
+        encoded.push(b'x');
+        assert!(matches!(
+            Response::decode(&encoded),
+            Err(Error::TooLarge(_))
+        ));
+        Ok(())
     }
 
     mod properties {

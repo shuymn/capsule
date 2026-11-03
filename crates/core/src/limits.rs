@@ -35,8 +35,11 @@ macro_rules! limits {
     (@value $kind:ident $name:ident) => { Limit::$kind($name as usize) };
 }
 
+/// Escaped keymap name the request header allows for.
+const KEYMAP_ALLOWANCE_BYTES: usize = 1024;
+
 /// Escaped request header before the snapshot: the tag, the four numbers at
-/// their widest, separators, and up to 1 KiB of escaped keymap name.
+/// their widest, separators, and up to [`KEYMAP_ALLOWANCE_BYTES`] of keymap name.
 ///
 /// This sizes [`MAX_SNAPSHOT_BYTES`] so that ordinary keymaps never push a
 /// snapshot over [`MAX_REQUEST`]; it does not bound user-defined keymap names.
@@ -47,7 +50,7 @@ const MAX_REQUEST_HEADER_BYTES: usize = "Q\t".len()
     + "-2147483648\t".len()
     + "18446744073709551615\t".len()
     + "65535\t".len()
-    + 1024
+    + KEYMAP_ALLOWANCE_BYTES
     + "\t".len();
 
 limits! {
@@ -139,5 +142,28 @@ mod tests {
                 "{bound}"
             );
         }
+    }
+
+    #[test]
+    fn request_header_estimate_is_the_widest_header() -> Result<(), capsule_protocol::session::Error>
+    {
+        use capsule_protocol::session::{Request, Snapshot};
+
+        let widest = Request {
+            generation: u64::MAX,
+            snapshot: Snapshot {
+                cwd: "/".into(),
+                env: Vec::new(),
+            },
+            cols: u16::MAX,
+            last_exit_code: i32::MIN,
+            duration_ms: Some(u64::MAX),
+            keymap: "k".repeat(KEYMAP_ALLOWANCE_BYTES),
+        };
+        assert_eq!(
+            widest.encode()?.len() - "/\n".len(),
+            MAX_REQUEST_HEADER_BYTES
+        );
+        Ok(())
     }
 }

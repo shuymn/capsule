@@ -55,5 +55,6 @@ cargo metadata --all-features --locked
 ## Adding tools
 
 Prefer Cargo tools or rustup components; otherwise pin an exact version in mise.toml
-`[tools]`. Document new binary dependencies in the README and guard optional
+`[tools]`. Pin a tool used only by an opt-in task in that task's `tools`, with a
+Renovate regex manager, so `mise install` stays minimal. Document new binary dependencies in the README and guard optional
 automation with checks inside the mise task, as `install:lefthook` does.

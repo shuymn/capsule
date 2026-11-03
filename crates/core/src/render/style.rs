@@ -200,15 +200,14 @@ where
     D: serde::Deserializer<'de>,
 {
     let code = <u16 as serde::Deserialize>::deserialize(deserializer)?;
-    if is_valid_foreground_code(code) {
-        u8::try_from(code).map_err(|error| {
-            serde::de::Error::custom(format!("invalid ANSI foreground code `{code}`: {error}"))
+    u8::try_from(code)
+        .ok()
+        .filter(|code| matches!(code, 30..=37 | 90..=97))
+        .ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "invalid ANSI foreground code `{code}`, expected one of 30..=37 or 90..=97"
+            ))
         })
-    } else {
-        Err(serde::de::Error::custom(format!(
-            "invalid ANSI foreground code `{code}`, expected one of 30..=37 or 90..=97"
-        )))
-    }
 }
 
 fn quote_prompt_text(text: &str) -> String {
@@ -225,10 +224,6 @@ fn quote_prompt_text(text: &str) -> String {
         }
     }
     quoted
-}
-
-const fn is_valid_foreground_code(code: u16) -> bool {
-    (code >= 30 && code <= 37) || (code >= 90 && code <= 97)
 }
 
 #[cfg(test)]
@@ -303,17 +298,22 @@ mod tests {
     }
 
     #[test]
-    fn test_render_style_uses_custom_color_map() {
+    fn color_map_accepts_exactly_the_classic_and_bright_foreground_codes() {
         let style = Style::new().fg(Color::Blue).bold();
-        let color_map = ColorMap {
-            blue: 94,
-            ..ColorMap::default()
-        };
-        let painted = style.paint_with("hello", color_map);
-        assert!(
-            contains_style_sequence(&painted, &[1, 94]),
-            "should contain remapped blue ANSI code: {painted}"
-        );
+        for code in (30..=37).chain(90..=97) {
+            let painted = toml::from_str::<ColorMap>(&format!("blue = {code}"))
+                .map(|color_map| style.paint_with("hello", color_map));
+            assert!(
+                painted.is_ok_and(|painted| contains_style_sequence(&painted, &[1, code])),
+                "code {code} not painted"
+            );
+        }
+        for code in [29, 38, 89, 98, 256] {
+            assert!(
+                toml::from_str::<ColorMap>(&format!("blue = {code}")).is_err(),
+                "accepted {code}"
+            );
+        }
     }
 
     #[test]

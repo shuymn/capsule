@@ -1,8 +1,9 @@
 use super::*;
 use crate::{
-    plan::ViewConfig,
+    git::{GitOperationState, GitState},
+    plan::{StyleConfig, TimeFormat, ViewConfig},
     render::style::{Color, ColorMap},
-    test_utils::contains_style_sequence,
+    test_utils::{contains_style_sequence, style_sequence},
 };
 
 fn input() -> ViewInput<'static> {
@@ -99,6 +100,8 @@ fn line_fitting_truncates_first_segment_then_drops_the_rightmost() {
         20,
     );
     assert_eq!(dropped.to_zsh(ColorMap::default()), "dir segment-aaa");
+    let no_room = fit_line(&[segment("dir"), segment("main")], 5);
+    assert_eq!(no_room.to_zsh(ColorMap::default()), "dir");
     assert!(fit_line(&[segment("abc")], 0).is_empty());
 }
 
@@ -120,7 +123,7 @@ fn character_keymap_and_status_use_current_inputs_only() {
     let output = builtins::character(&config, &input).to_zsh(config.color_map);
     assert!(output.contains("❮"));
     assert!(contains_style_sequence(&output, &[1, 31]));
-    config.character.vicmd.style = Some(crate::plan::StyleConfig::fg(Color::Blue));
+    config.character.vicmd.style = Some(StyleConfig::fg(Color::Blue));
     assert!(
         builtins::character(&config, &input)
             .to_zsh(config.color_map)
@@ -265,10 +268,10 @@ values = { value = [{ env = "AFTER" }] }
 
 #[test]
 fn builtins_keep_two_lines_connectors_and_independent_styles() {
-    use crate::git::{GitOperationState, GitState};
-
     let mut plan = ConfigPlan::default();
     plan.view.time.disabled = false;
+    plan.view.time.format = TimeFormat::WithoutSeconds;
+    plan.view.connectors.style = StyleConfig::fg(Color::Blue);
     let status = GitStatus {
         head_oid: Some("abcdef012345".into()),
         modified: 1,
@@ -289,41 +292,34 @@ fn builtins_keep_two_lines_connectors_and_independent_styles() {
             ..input()
         },
     );
-    for text in [
-        "project",
-        "\u{f023}",
-        "on",
-        "\u{f418}",
-        "HEAD ",
-        "(abcdef0)",
-        "(REBASING 2/5)",
-        "[!]",
-        "took",
-        "1m5s",
-    ] {
-        assert!(
-            prompt.left1.contains(text),
-            "missing {text}: {}",
-            prompt.left1
-        );
-    }
-    assert!(contains_style_sequence(&prompt.left1, &[1, 36]));
-    assert!(contains_style_sequence(&prompt.left1, &[1, 35]));
-    assert!(contains_style_sequence(&prompt.left1, &[1, 32]));
-    assert!(contains_style_sequence(&prompt.left1, &[1, 33]));
-    assert!(contains_style_sequence(&prompt.left1, &[1, 31]));
-    for text in ["at", "14:05:09", "❯"] {
-        assert!(
-            prompt.left2.contains(text),
-            "missing {text}: {}",
-            prompt.left2
-        );
-    }
+    let styled =
+        |codes: &[u8], text: &str| format!("%{{{}%}}{text}%{{\x1b[0m%}}", style_sequence(codes));
+    let left1 = [
+        styled(&[1, 36], "project"),
+        styled(&[31], "\u{f023}"),
+        styled(&[34], "on"),
+        styled(&[1, 35], "\u{f418}"),
+        styled(&[1, 35], "HEAD ") + &styled(&[1, 32], "(abcdef0)"),
+        styled(&[1, 33], "(REBASING 2/5)"),
+        styled(&[1, 31], "[!]"),
+        styled(&[34], "took"),
+        styled(&[1, 33], "1m5s"),
+    ];
+    assert_eq!(prompt.left1, left1.join(" "));
+    let left2 = [
+        styled(&[34], "at"),
+        styled(&[1, 33], "14:05"),
+        styled(&[1, 32], "❯"),
+    ];
+    assert_eq!(prompt.left2, left2.join(" "));
 }
 
 #[test]
 fn builtins_disabled_and_unavailable_values_stay_absent() {
     let mut plan = ConfigPlan::default();
+    let threshold = plan.view.cmd_duration.threshold_ms;
+    assert!(builtins::duration(&plan.view, Some(threshold)).is_some());
+    assert!(builtins::duration(&plan.view, Some(threshold - 1)).is_none());
     plan.view.directory.disabled = true;
     plan.view.character.disabled = true;
     let output = render(&plan, &input());
@@ -340,6 +336,31 @@ fn builtins_disabled_and_unavailable_values_stay_absent() {
             }
         ),
         PromptLines::default()
+    );
+}
+
+#[test]
+fn partial_git_status_has_no_leading_separator() {
+    let config = ViewConfig::default();
+    let git = |status: GitStatus| builtins::git(&config, &status).map(|text| text.plain_text());
+    let state = GitOperationState {
+        state: GitState::Merge,
+        step: None,
+        total: None,
+    };
+    assert_eq!(
+        git(GitStatus {
+            state: Some(state),
+            ..GitStatus::default()
+        }),
+        Some("on \u{f418} (MERGING)".to_owned())
+    );
+    assert_eq!(
+        git(GitStatus {
+            untracked: 1,
+            ..GitStatus::default()
+        }),
+        Some("on \u{f418} [?]".to_owned())
     );
 }
 

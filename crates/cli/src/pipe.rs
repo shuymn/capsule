@@ -94,3 +94,46 @@ impl AsyncWrite for Pipe {
         Poll::Ready(Ok(()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        future::Future,
+        io::Write,
+        task::{Context, Waker},
+    };
+
+    use tokio::io::AsyncReadExt;
+
+    use super::*;
+
+    fn notified(credit: &Notify) -> bool {
+        std::pin::pin!(credit.notified())
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_ready()
+    }
+
+    #[test]
+    fn nonblocking_keeps_an_already_nonblocking_pipe_nonblocking() -> io::Result<()> {
+        let (read, _write) = io::pipe()?;
+        nonblocking(&read)?;
+        nonblocking(&read)?;
+        assert!(fcntl_getfl(&read)?.contains(OFlags::NONBLOCK));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reading_bytes_grants_credit_but_eof_does_not() -> io::Result<()> {
+        let (read, mut write) = io::pipe()?;
+        let credit = Arc::new(Notify::new());
+        let mut pipe = Pipe::new(read.into(), Some(Arc::clone(&credit)))?;
+        write.write_all(b"x")?;
+        let mut buf = [0; 8];
+        assert_eq!(pipe.read(&mut buf).await?, 1);
+        assert!(notified(&credit));
+        drop(write);
+        assert_eq!(pipe.read(&mut buf).await?, 0);
+        assert!(!notified(&credit));
+        Ok(())
+    }
+}

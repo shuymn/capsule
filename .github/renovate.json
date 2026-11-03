@@ -13,6 +13,16 @@
     },
     {
       "customType": "regex",
+      "description": "Update the cargo-mutants pin of the opt-in mise task",
+      "managerFilePatterns": ["/^mise\\.toml$/"],
+      "matchStrings": ["\"github:sourcefrog/cargo-mutants\" = \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""],
+      "depNameTemplate": "sourcefrog/cargo-mutants",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v?(?<version>.+)$",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
       "description": "Update the mise version that workflows pass to jdx/mise-action",
       "managerFilePatterns": ["/^\\.github/workflows/[^/]+\\.ya?ml$/"],
       "matchStrings": ["CI_MISE_VERSION: (?<currentValue>\\d+\\.\\d+\\.\\d+)"],

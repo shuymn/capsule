@@ -58,7 +58,7 @@ impl StyledText {
         self.0.is_empty()
     }
 
-    fn plain_text(&self) -> String {
+    pub(super) fn plain_text(&self) -> String {
         self.0.iter().map(|span| span.text.as_str()).collect()
     }
 
@@ -247,6 +247,12 @@ mod properties {
                 prefix.is_empty() || original.grapheme_indices(true).any(|(index, _)| index == prefix.len()),
                 "{prefix:?} ends inside a grapheme of {original:?}"
             );
+            // The prefix is the longest one: one more grapheme would not fit.
+            if let Some(next) = original[prefix.len()..].graphemes(true).next() {
+                let longer = format!("{prefix}{next}…");
+                let width = longer.graphemes(true).map(unicode_width::UnicodeWidthStr::width).sum::<usize>();
+                prop_assert!(width > cols || longer.len() > MAX_LINE_TEXT_BYTES, "{prefix:?} could keep {next:?}");
+            }
         }
 
         /// Covers: T01
