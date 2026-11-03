@@ -278,6 +278,8 @@ fn apply_change(
         }
         Change::Context(Ok(context)) => state.context = context,
         Change::Context(Err(error)) => tracing::debug!(%error, "context unavailable"),
+        // acquire_generation sends indexed events only after delivering the
+        // generation's Plan, which sized `state.modules` for that plan.
         Change::Condition(index, value) => {
             state.modules[index].condition = match value {
                 Ok(value) => Observation::Ready(value),
@@ -294,13 +296,17 @@ fn apply_change(
     }
 }
 
+/// Deliver an event unless the generation is cancelled first; report delivery.
 async fn send_event(
     tx: &mpsc::Sender<Event>,
     generation: u64,
     change: Change,
     cancel: &CancellationToken,
-) {
-    tokio::select! { () = cancel.cancelled() => {}, _ = tx.send(Event { generation, change }) => {} }
+) -> bool {
+    tokio::select! {
+        () = cancel.cancelled() => false,
+        result = tx.send(Event { generation, change }) => result.is_ok(),
+    }
 }
 
 async fn acquire_generation(
@@ -318,13 +324,17 @@ async fn acquire_generation(
                 Ok(plan) => (plan, None),
                 Err(error) => (previous, Some(error.to_string())),
             };
-        send_event(
+        // Indexed module events require their Plan; without it, acquire nothing.
+        if !send_event(
             &tx,
             request.generation,
             Change::Plan(plan.clone(), diagnostic),
             &cancel,
         )
-        .await;
+        .await
+        {
+            return;
+        }
         let mut jobs = JoinSet::new();
         let (context_request, context_runner, context_cancel, context_tx) =
             (request.clone(), runner.clone(), cancel.clone(), tx.clone());
@@ -490,5 +500,65 @@ async fn write_frames(
         };
         // Do not cancel a partly transmitted response when a newer one arrives.
         tokio::select! { () = stop.cancelled() => return Ok(()), result = output.write_all(&frame) => result? }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Run one generation and return its events in delivery order.
+    async fn generation_events(cancelled: bool) -> anyhow::Result<Vec<Change>> {
+        let request = Request::decode(b"Q\t1\t0\t\t80\tmain\t/")?;
+        let config = ConfigPlan::parse(
+            r#"
+schema_version = 2
+[[module]]
+name = "tool"
+format = "{value}"
+[module.values]
+value = [{ env = "TOOL" }]
+"#,
+        )?;
+        let plan = Arc::new(LoadedPlan {
+            config,
+            source: None,
+        });
+        let cancel = CancellationToken::new();
+        if cancelled {
+            cancel.cancel();
+        }
+        let (tx, mut rx) = mpsc::channel(64);
+        acquire_generation(Arc::new(request), plan, Runner::default(), cancel, tx).await;
+        let mut changes = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            changes.push(event.change);
+        }
+        Ok(changes)
+    }
+
+    #[tokio::test]
+    async fn module_events_follow_a_delivered_plan_even_when_cancelled() -> anyhow::Result<()> {
+        // A cancelled send races delivery at random, so repeat to cover both outcomes.
+        for cancelled in std::iter::once(false).chain([true; 32]) {
+            let changes = generation_events(cancelled).await?;
+            let plan = changes
+                .iter()
+                .position(|change| matches!(change, Change::Plan(..)));
+            for (index, change) in changes.iter().enumerate() {
+                if matches!(change, Change::Condition(..) | Change::Value(..)) {
+                    assert!(plan.is_some_and(|plan| plan < index));
+                }
+            }
+            assert!(matches!(changes.last(), Some(Change::Complete)));
+            if !cancelled {
+                assert!(
+                    changes
+                        .iter()
+                        .any(|change| matches!(change, Change::Condition(..)))
+                );
+            }
+        }
+        Ok(())
     }
 }
