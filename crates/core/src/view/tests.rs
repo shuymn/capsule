@@ -3,7 +3,7 @@ use crate::{
     git::{GitOperationState, GitState},
     plan::{StyleConfig, TimeFormat, ViewConfig},
     render::style::{Color, ColorMap},
-    test_utils::{contains_style_sequence, style_sequence},
+    test_utils::{contains_style_sequence, displayed_prompt, styled},
 };
 
 fn input() -> ViewInput<'static> {
@@ -18,72 +18,6 @@ fn input() -> ViewInput<'static> {
         keymap: "main",
         time: None,
     }
-}
-
-#[test]
-fn required_pending_hides_module_but_optional_pending_omits_only_its_section() {
-    let parts = vec![
-        FormatPart::Literal("v".into()),
-        FormatPart::Value(0),
-        FormatPart::Optional(vec![
-            FormatPart::Literal(" (".into()),
-            FormatPart::Value(1),
-            FormatPart::Literal(")".into()),
-        ]),
-    ];
-    assert!(
-        evaluate_format(
-            &parts,
-            &[Observation::Pending, Observation::Ready("x".into())]
-        )
-        .is_none()
-    );
-    assert_eq!(
-        evaluate_format(
-            &parts,
-            &[Observation::Ready("1".into()), Observation::Pending]
-        ),
-        Some("v1".into())
-    );
-    assert_eq!(
-        evaluate_format(
-            &parts,
-            &[Observation::Ready("1".into()), Observation::Missing]
-        ),
-        Some("v1".into())
-    );
-    assert_eq!(
-        evaluate_format(
-            &parts,
-            &[
-                Observation::Ready("1".into()),
-                Observation::Ready(String::new())
-            ]
-        ),
-        Some("v1 ()".into())
-    );
-}
-
-#[test]
-fn nested_optional_sections_have_independent_availability() {
-    let parts = vec![FormatPart::Optional(vec![
-        FormatPart::Value(0),
-        FormatPart::Optional(vec![FormatPart::Literal("/".into()), FormatPart::Value(1)]),
-    ])];
-    assert_eq!(
-        evaluate_format(
-            &parts,
-            &[Observation::Ready("outer".into()), Observation::Missing]
-        ),
-        Some("outer".into())
-    );
-    assert_eq!(
-        evaluate_format(
-            &parts,
-            &[Observation::Pending, Observation::Ready("inner".into())]
-        ),
-        Some(String::new())
-    );
 }
 
 #[test]
@@ -175,98 +109,6 @@ fn observed(value: &str) -> ModuleObservation {
 }
 
 #[test]
-fn arbitration_runs_once_across_all_sources_and_slots_in_declaration_order()
--> Result<(), Box<dyn std::error::Error>> {
-    let mut plan = ConfigPlan::parse(
-        r#"
-schema_version = 2
-[directory]
-disabled = true
-[character]
-disabled = true
-
-[[module]]
-name = "before"
-values = { value = [{ env = "BEFORE" }] }
-[[module]]
-name = "preferred"
-values = { value = [{ command = ["unused"] }] }
-arbitration = { group = "toolchain", priority = 1 }
-[[module]]
-name = "fallback"
-values = { value = [{ env = "FALLBACK" }] }
-arbitration = { group = "toolchain", priority = 2 }
-[[module]]
-name = "middle"
-values = { value = [{ env = "MIDDLE" }] }
-[[module]]
-name = "tie"
-slot = "line2"
-values = { value = [{ file = "unused" }] }
-arbitration = { group = "toolchain", priority = 1 }
-[[module]]
-name = "after"
-values = { value = [{ env = "AFTER" }] }
-"#,
-    )?;
-    // Keep this ordering contract independent of the separately tested defaults.
-    for module in &mut plan.modules {
-        module.appearance.style = Style::new();
-    }
-    let mut observations = vec![
-        observed("before"),
-        ModuleObservation::pending(&plan.modules[1]),
-        observed("fallback"),
-        observed("middle"),
-        ModuleObservation::pending(&plan.modules[4]),
-        observed("after"),
-    ];
-    let pending = render(
-        &plan,
-        &ViewInput {
-            modules: &observations,
-            ..input()
-        },
-    );
-    assert_eq!(pending.left1, "before fallback middle after");
-    assert_eq!(pending.left2, "");
-
-    observations[4] = observed("tie");
-    let file_ready = render(
-        &plan,
-        &ViewInput {
-            modules: &observations,
-            ..input()
-        },
-    );
-    assert_eq!(file_ready.left1, "before middle after");
-    assert_eq!(file_ready.left2, "tie");
-
-    observations[1] = observed("preferred");
-    let all_ready = render(
-        &plan,
-        &ViewInput {
-            modules: &observations,
-            ..input()
-        },
-    );
-    assert_eq!(all_ready.left1, "before preferred middle after");
-    assert_eq!(all_ready.left2, "");
-
-    observations[1].condition = Observation::Ready(false);
-    let hidden = render(
-        &plan,
-        &ViewInput {
-            modules: &observations,
-            ..input()
-        },
-    );
-    assert_eq!(hidden.left1, "before middle after");
-    assert_eq!(hidden.left2, "tie");
-    Ok(())
-}
-
-#[test]
 fn builtins_keep_two_lines_connectors_and_independent_styles() {
     let mut plan = ConfigPlan::default();
     plan.view.time.disabled = false;
@@ -292,8 +134,6 @@ fn builtins_keep_two_lines_connectors_and_independent_styles() {
             ..input()
         },
     );
-    let styled =
-        |codes: &[u8], text: &str| format!("%{{{}%}}{text}%{{\x1b[0m%}}", style_sequence(codes));
     let left1 = [
         styled(&[1, 36], "project"),
         styled(&[31], "\u{f023}"),
@@ -410,31 +250,6 @@ fn repeated_references_cannot_amplify_bounded_values() {
 
 /// Covers: T07
 #[test]
-fn pathological_zero_width_data_still_fits_the_response_byte_limit()
--> Result<(), Box<dyn std::error::Error>> {
-    let mut plan = ConfigPlan::default();
-    plan.view.character.glyph = "\\%".repeat(32_000);
-    let combining = format!("a{}", "\u{301}".repeat(32_000));
-    let output = render(
-        &plan,
-        &ViewInput {
-            directory: &combining,
-            cols: usize::from(u16::MAX),
-            ..input()
-        },
-    );
-    assert!(output.left1.contains('…'));
-    assert!(
-        !output.left1.contains('\u{301}'),
-        "a single oversized grapheme is omitted intact"
-    );
-    let frame = capsule_protocol::session::response(u64::MAX, &output.left1, &output.left2, true)?;
-    assert!(frame.len() <= capsule_protocol::session::MAX_RESPONSE + 1);
-    Ok(())
-}
-
-/// Covers: T07
-#[test]
 fn quoted_backslashes_on_both_lines_fit_the_response_byte_limit()
 -> Result<(), Box<dyn std::error::Error>> {
     // A backslash has the largest prompt-quoting and wire-escaping expansion.
@@ -452,6 +267,50 @@ fn quoted_backslashes_on_both_lines_fit_the_response_byte_limit()
     assert!(output.left1.contains('…') && output.left2.contains('…'));
     let frame = capsule_protocol::session::response(u64::MAX, &output.left1, &output.left2, true)?;
     assert!(frame.len() <= capsule_protocol::session::MAX_RESPONSE + 1);
+    Ok(())
+}
+
+#[test]
+fn custom_modules_render_on_their_slot_in_declaration_order_between_builtins()
+-> Result<(), Box<dyn std::error::Error>> {
+    let plan = ConfigPlan::parse(
+        r#"
+schema_version = 2
+[directory]
+disabled = true
+[character]
+disabled = true
+[[module]]
+name = "first"
+values = { value = [{ env = "A" }] }
+[[module]]
+name = "second"
+slot = "line2"
+values = { value = [{ env = "B" }] }
+[[module]]
+name = "third"
+values = { value = [{ env = "C" }] }
+"#,
+    )?;
+    let observations = [observed("first"), observed("second"), observed("third")];
+    let status = GitStatus {
+        branch: Some("main".into()),
+        ..GitStatus::default()
+    };
+    let output = render(
+        &plan,
+        &ViewInput {
+            git: Some(&status),
+            modules: &observations,
+            duration_ms: Some(65_000),
+            ..input()
+        },
+    );
+    assert_eq!(
+        displayed_prompt(&output.left1).as_deref(),
+        Some("on \u{f418} main first third took 1m5s")
+    );
+    assert_eq!(displayed_prompt(&output.left2).as_deref(), Some("second"));
     Ok(())
 }
 

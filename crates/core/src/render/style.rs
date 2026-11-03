@@ -229,72 +229,21 @@ fn quote_prompt_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::contains_style_sequence;
+    use crate::test_utils::{contains_style_sequence, styled};
 
     #[test]
-    fn test_render_style_no_style() {
-        let style = Style::new();
-        assert_eq!(style.paint("hello"), "hello");
-    }
-
-    #[test]
-    fn test_render_style_foreground_color() {
-        let style = Style::new().fg(Color::Red);
-        let painted = style.paint("hello");
-        assert!(painted.contains("\x1b[31m"), "should contain red ANSI code");
-        assert!(painted.contains("\x1b[0m"), "should contain reset");
-        assert!(painted.contains("%{"), "should have zsh escape open");
-        assert!(painted.contains("%}"), "should have zsh escape close");
-        assert!(painted.contains("hello"), "text should be present");
-    }
-
-    #[test]
-    fn test_render_style_bold() {
-        let style = Style::new().bold();
-        let painted = style.paint("hello");
-        assert!(painted.contains("\x1b[1m"), "should contain bold ANSI code");
-    }
-
-    #[test]
-    fn test_render_style_bold_and_color() {
-        let style = Style::new().fg(Color::Green).bold();
-        let painted = style.paint("hello");
-        assert!(
-            contains_style_sequence(&painted, &[1, 32]),
-            "should contain bold+green ANSI code"
-        );
-    }
-
-    #[test]
-    fn test_render_style_dimmed() {
-        let style = Style::new().dimmed();
-        let painted = style.paint("hello");
-        assert!(
-            painted.contains("\x1b[2m"),
-            "should contain dimmed ANSI code"
-        );
-        assert!(painted.contains("\x1b[0m"), "should contain reset");
-        assert!(painted.contains("hello"), "text should be present");
-    }
-
-    #[test]
-    fn test_render_style_dimmed_and_color() {
-        let style = Style::new().fg(Color::Cyan).dimmed();
-        let painted = style.paint("hello");
-        assert!(
-            contains_style_sequence(&painted, &[2, 36]),
-            "should contain dimmed+cyan ANSI code: {painted}"
-        );
-    }
-
-    #[test]
-    fn test_render_style_bright_black() {
-        let style = Style::new().fg(Color::BrightBlack);
-        let painted = style.paint("hello");
-        assert!(
-            painted.contains("\x1b[90m"),
-            "should contain bright black ANSI code: {painted}"
-        );
+    fn paint_wraps_styled_text_in_zsh_escapes_and_quotes_percent() {
+        assert_eq!(Style::new().paint("100%B"), "100%%B");
+        for (style, codes) in [
+            (Style::new().fg(Color::Red), &[31][..]),
+            (Style::new().bold(), &[1]),
+            (Style::new().fg(Color::Green).bold(), &[1, 32]),
+            (Style::new().dimmed(), &[2]),
+            (Style::new().fg(Color::Cyan).dimmed(), &[2, 36]),
+            (Style::new().fg(Color::BrightBlack), &[90]),
+        ] {
+            assert_eq!(style.paint("100%B"), styled(codes, "100%%B"));
+        }
     }
 
     #[test]
@@ -314,33 +263,5 @@ mod tests {
                 "accepted {code}"
             );
         }
-    }
-
-    #[test]
-    fn test_paint_no_style_escapes_percent() {
-        let style = Style::new();
-        assert_eq!(style.paint("100%B"), "100%%B");
-    }
-
-    #[test]
-    fn test_paint_no_style_multiple_percents() {
-        let style = Style::new();
-        assert_eq!(style.paint("50%+50%=100%"), "50%%+50%%=100%%");
-    }
-
-    #[test]
-    fn test_paint_styled_escapes_percent() {
-        let style = Style::new().fg(Color::Red);
-        let painted = style.paint("100%B");
-        assert!(
-            painted.contains("100%%B"),
-            "% should be escaped to %%: {painted}"
-        );
-    }
-
-    #[test]
-    fn test_paint_no_percent_unchanged() {
-        let style = Style::new();
-        assert_eq!(style.paint("hello"), "hello");
     }
 }
