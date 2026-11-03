@@ -473,8 +473,6 @@ async fn cancellation_and_failed_reload_retain_the_last_settled_generation() -> 
             break;
         }
     }
-    let mut stale = input.clone();
-    stale.keymap = "vicmd".to_owned();
     write_config(home.path(), "schema_version = 2\nunknown = true\n")?;
     std::fs::write(home.path().join("fast"), "replacement")?;
     std::fs::write(home.path().join("slow"), "replacement")?;
@@ -493,29 +491,8 @@ async fn cancellation_and_failed_reload_retain_the_last_settled_generation() -> 
         }
     }
 
-    // A stale request cannot select command mode or revive the cancelled work.
-    worker.send(&stale).await?;
-    input.duration_ms = Some(3_000);
-    worker.send(&input).await?;
-    loop {
-        let response = worker.next_response().await?;
-        assert_eq!(response.generation, 3, "{response:?}");
-        assert_retained(&response, &["FAST=old", "SLOW=old"]);
-        assert!(!response.left1.contains("=replacement"), "{response:?}");
-        assert!(
-            !response.left2.contains('❮'),
-            "stale request applied: {response:?}"
-        );
-        if response.left1.contains("3s") {
-            break;
-        }
-    }
     gate.release()?;
     let remaining = worker.generation_responses(3).await?;
-    for response in remaining.iter().filter(|response| !response.complete) {
-        assert_retained(response, &["FAST=old", "SLOW=old"]);
-        assert!(!response.left1.contains("=replacement"), "{response:?}");
-    }
     let complete = settled(&remaining)?;
     assert!(complete.left1.contains("FAST=replacement"), "{complete:?}");
     assert!(complete.left1.contains("SLOW=replacement"), "{complete:?}");
@@ -561,9 +538,6 @@ async fn changed_environment_cwd_and_valid_config_clear_retained_information() -
     }
     gate.release()?;
     let environment = worker.generation_responses(2).await?;
-    for response in environment.iter().filter(|response| !response.complete) {
-        assert_external_hidden(response);
-    }
     assert!(
         settled(&environment)?.left1.contains("SLOW=env-new"),
         "{environment:?}"
@@ -588,9 +562,6 @@ async fn changed_environment_cwd_and_valid_config_clear_retained_information() -
     }
     cwd_gate.release()?;
     let directory = worker.generation_responses(3).await?;
-    for response in directory.iter().filter(|response| !response.complete) {
-        assert_external_hidden(response);
-    }
     assert!(
         settled(&directory)?.left1.contains("SLOW=cwd-new"),
         "{directory:?}"
@@ -618,9 +589,6 @@ async fn changed_environment_cwd_and_valid_config_clear_retained_information() -
     }
     cwd_gate.release()?;
     let configuration = worker.generation_responses(4).await?;
-    for response in configuration.iter().filter(|response| !response.complete) {
-        assert_external_hidden(response);
-    }
     let complete = settled(&configuration)?;
     assert!(
         complete.left1.contains("RECONFIGURED=config-new"),

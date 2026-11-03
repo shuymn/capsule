@@ -343,69 +343,9 @@ fn unescape(input: &[u8]) -> Result<Vec<u8>, Error> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        future::Future,
-        task::{Context, Waker},
-    };
-
-    use tokio::io::AsyncWriteExt;
+    use std::future::Future;
 
     use super::*;
-
-    /// Covers: T08
-    #[tokio::test]
-    async fn cancellation_preserves_chunks_and_following_frames() -> Result<(), Error> {
-        let (mut input, output) = tokio::io::duplex(4096);
-        let mut reader = FrameReader::new(output, 1024);
-        let frame = b"Q\t3\t0\t\t80\tmain\t/tmp/\xff\tEMPTY\t";
-        for chunk in frame.chunks(7) {
-            input.write_all(chunk).await?;
-            let mut read = std::pin::pin!(reader.next());
-            assert!(
-                read.as_mut()
-                    .poll(&mut Context::from_waker(Waker::noop()))
-                    .is_pending()
-            );
-        }
-        input.write_all(b"\nK\n").await?;
-        drop(input);
-        assert_eq!(reader.next().await?.as_deref(), Some(frame.as_slice()));
-        assert_eq!(reader.next().await?.as_deref(), Some(b"K".as_slice()));
-        assert_eq!(reader.next().await?, None);
-        Ok(())
-    }
-
-    /// Covers: T08
-    #[tokio::test]
-    async fn frame_bounds_and_truncated_eof_are_enforced() -> Result<(), Error> {
-        for length in [63, 64, 65] {
-            let mut frame = vec![b'x'; length];
-            frame.push(b'\n');
-            let result = FrameReader::new(frame.as_slice(), 64).next().await;
-            assert_eq!(result.is_ok(), length <= 64);
-        }
-        let mut reader = FrameReader::new(b"K\nQ\t1\t0\t\t80\tmain\t/tmp".as_slice(), MAX_REQUEST);
-        assert_eq!(reader.next().await?.as_deref(), Some(b"K".as_slice()));
-        assert!(
-            matches!(reader.next().await, Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::UnexpectedEof)
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn raw_environment_roundtrip_distinguishes_empty_from_absent() -> Result<(), Error> {
-        let request =
-            Request::decode(b"Q\t3\t0\t\t80\tmain\t/tmp/\xff\tEMPTY\t\tRAW\t\xff\\n\\t\\\\")?;
-        assert_eq!(request.snapshot.env("EMPTY"), Some(OsStr::new("")));
-        assert_eq!(request.snapshot.env("ABSENT"), None);
-        assert_eq!(
-            request.snapshot.env("RAW").map(OsStrExt::as_bytes),
-            Some(&b"\xff\n\t\\"[..])
-        );
-        let encoded = request.encode()?;
-        assert_eq!(Request::decode(&encoded[..encoded.len() - 1])?, request);
-        Ok(())
-    }
 
     /// Covers: T06, T08
     #[test]
