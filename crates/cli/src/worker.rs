@@ -150,9 +150,8 @@ async fn serve() -> anyhow::Result<()> {
     {
         generations.shutdown().await;
     }
-    if !writer.is_finished() {
-        writer.await??;
-    }
+    // The writer stays detached: after `stop` it ends without finishing a frame,
+    // and runtime shutdown drops it.
     result
 }
 

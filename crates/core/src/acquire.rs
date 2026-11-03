@@ -1,8 +1,9 @@
 //! Bounded acquisition from a shell snapshot, with owned subprocess lifetimes.
 
 use std::{
-    fs::File,
+    fs::{File, OpenOptions},
     io::{self, Read},
+    os::unix::fs::OpenOptionsExt,
     path::Path,
     process::{ExitStatus, Stdio},
     sync::{Arc, Mutex},
@@ -10,7 +11,7 @@ use std::{
 
 use capsule_protocol::session::Snapshot;
 use rustix::{
-    fs::{Mode, OFlags},
+    fs::OFlags,
     process::{Pid, Signal, WaitId, WaitIdOptions, kill_process_group, waitid},
 };
 use tokio::{
@@ -196,16 +197,11 @@ impl Runner {
     ) -> Result<Option<Vec<u8>>, AcquireError> {
         let path = path.to_owned();
         self.blocking(cancel, move || {
-            let fd = match rustix::fs::open(
-                &path,
-                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK,
-                Mode::empty(),
-            ) {
-                Ok(fd) => fd,
-                Err(rustix::io::Errno::NOENT) => return Ok(None),
-                Err(error) => return Err(io::Error::from(error).into()),
+            let file = match open_nonblocking(&path) {
+                Ok(file) => file,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(error.into()),
             };
-            let file = File::from(fd);
             if !file.metadata()?.is_file() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -443,6 +439,15 @@ async fn observe_exit(pid: Pid, signals: &mut ChildSignals) -> Result<(), Acquir
             );
         }
     }
+}
+
+/// Open for reading. std adds `O_CLOEXEC`; `O_NONBLOCK` keeps a FIFO from
+/// waiting for a writer.
+fn open_nonblocking(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(OFlags::NONBLOCK.bits().cast_signed())
+        .open(path)
 }
 
 fn check_size(bytes: Vec<u8>) -> Result<Vec<u8>, AcquireError> {
