@@ -90,7 +90,7 @@ controlling its parent or arbitrary same-UID code. Run the CLI regressions indep
 `uv run --no-project python -m unittest discover -s scripts -p test_session_pty.py`.
 
 The flicker setup directly launches each fresh Git/tool executable once before
-starting zsh, with a separate `SETUP_TIMEOUT_SECONDS` timeout, EOF stdin, disposable `HOME`, cwd
+starting zsh, with a separate setup timeout, EOF stdin, disposable `HOME`, cwd
 `$HOME/work`, and fixture bin first on `PATH`. Require successful exit, exact
 output, and done markers. Verify the setup-only tool count is exactly one, then
 remove the count and both done markers before shell startup. Keep the production

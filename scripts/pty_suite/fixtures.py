@@ -40,8 +40,6 @@ def acquire_config(script: Path) -> str:
 
 
 # Keys (bindkey caret notation) bound to the test widgets in both vi keymaps.
-# Timeout for each fixture executable's setup run, before zsh starts.
-SETUP_TIMEOUT_SECONDS = 8
 STATE_KEY = "^O"  # dump BUFFER, PROMPT, and Capsule state to probe files
 INJECT_KEY = "^P"  # feed $HOME/inject to _capsule_frame
 CLEAR_KEY = "^U"  # clear the buffer and select viins
@@ -176,8 +174,7 @@ def flicker_fixture(home: Path) -> str:
             [str(home / "bin" / name)],
             cwd=home / "work",
             env={"HOME": str(home), "PATH": f"{home / 'bin'}:/usr/bin:/bin"},
-            input=b"", capture_output=True, check=True,
-            timeout=SETUP_TIMEOUT_SECONDS,
+            input=b"", capture_output=True, check=True, timeout=8,
         )
         assert result.stdout == expected, (name, result.stdout, result.stderr)
         assert (home / f"{name}.done").read_bytes() == b"done", name
