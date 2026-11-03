@@ -608,8 +608,7 @@ mod properties {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(128))]
-
+        /// Covers: T01, T07
         #[test]
         fn rendered_lines_fit_the_columns_and_the_response_frame(
             (mut plan, observed) in modules(),

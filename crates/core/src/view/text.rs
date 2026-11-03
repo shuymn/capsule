@@ -228,6 +228,8 @@ mod properties {
     proptest! {
         /// Truncation fits the width and the line byte bound, and keeps either
         /// the whole text or a grapheme-boundary prefix followed by `…`.
+        ///
+        /// Covers: T07
         #[test]
         fn truncation_fits_and_keeps_a_grapheme_prefix(text in styled(), cols in cols(40)) {
             let truncated = text.truncate(cols);
@@ -247,6 +249,7 @@ mod properties {
             );
         }
 
+        /// Covers: T01
         #[test]
         fn sanitizing_is_idempotent_and_removes_controls(text in hostile_text(64)) {
             let sanitized = sanitize(&text);
@@ -254,6 +257,7 @@ mod properties {
             prop_assert!(!sanitized.chars().any(|character| character.is_control() || is_bidi_control(character)));
         }
 
+        /// Covers: T01
         #[test]
         fn serialization_displays_the_plain_text_and_hides_escapes_in_style_sequences(
             text in styled(),
