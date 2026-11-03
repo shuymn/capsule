@@ -1,4 +1,5 @@
-use super::{ConfigError, FormatPart, MAX_FORMAT_BYTES, MAX_FORMAT_DEPTH, Template, ValuePlan};
+use super::{ConfigError, FormatPart, Template, ValuePlan};
+use crate::limits::{MAX_FORMAT_BYTES, MAX_FORMAT_DEPTH};
 
 pub(super) fn compile(
     source: &str,

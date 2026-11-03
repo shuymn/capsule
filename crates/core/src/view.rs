@@ -11,13 +11,10 @@ use std::collections::HashMap;
 use self::text::StyledText;
 use crate::{
     git::GitStatus,
+    limits::MAX_MODULE_TEXT_BYTES,
     plan::{ConfigPlan, FormatPart, ModuleObservation, ModulePlan, ModuleSlot, Observation},
     render::style::Style,
 };
-
-// Prevent repeated references in a short format from multiplying bounded source
-// values into an unbounded intermediate allocation.
-const MAX_MODULE_TEXT_BYTES: usize = 64 * 1024;
 
 /// Inputs already acquired by the session; rendering performs no I/O.
 #[derive(Debug)]

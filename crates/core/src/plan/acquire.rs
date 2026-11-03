@@ -2,7 +2,10 @@ use capsule_protocol::session::Snapshot;
 use tokio_util::sync::CancellationToken;
 
 use super::{Candidate, ModuleWhen, Source, ValuePlan};
-use crate::acquire::{AcquireError, MAX_OUTPUT_BYTES, Runner};
+use crate::{
+    acquire::{AcquireError, Runner},
+    limits::MAX_OUTPUT_BYTES,
+};
 
 /// Check conditions before starting the module's value acquisitions.
 ///

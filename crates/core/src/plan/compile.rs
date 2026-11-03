@@ -7,15 +7,17 @@ use regex_lite::RegexBuilder;
 
 use super::{
     Arbitration, Candidate, CharacterConfig, CmdDurationConfig, ConfigError, ConfigPlan,
-    ConnectorConfig, DirectoryConfig, GitConfig, MAX_CANDIDATES_PER_VALUE, MAX_CONFIG_BYTES,
-    MAX_MODULES, MAX_TOTAL_CANDIDATES, MAX_TOTAL_VALUES, MAX_VALUES_PER_MODULE, ModuleAppearance,
-    ModulePlan, ModuleSlot, ModuleWhen, Source, StyleConfig, TimeConfig, ValuePlan, ViewConfig,
-    template,
+    ConnectorConfig, DirectoryConfig, GitConfig, ModuleAppearance, ModulePlan, ModuleSlot,
+    ModuleWhen, Source, StyleConfig, TimeConfig, ValuePlan, ViewConfig, template,
 };
-use crate::render::style::{Color, ColorMap, Style};
-
-const MAX_WHEN_ITEMS: usize = 64;
-const MAX_COMMAND_ARGS: usize = 64;
+use crate::{
+    limits::{
+        MAX_CANDIDATES_PER_VALUE, MAX_COMMAND_ARGS, MAX_CONFIG_BYTES, MAX_MODULES, MAX_REGEX_BYTES,
+        MAX_REGEX_NESTING, MAX_TOTAL_CANDIDATES, MAX_TOTAL_VALUES, MAX_VALUES_PER_MODULE,
+        MAX_WHEN_ITEMS,
+    },
+    render::style::{Color, ColorMap, Style},
+};
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -195,8 +197,8 @@ fn compile_candidate(raw: RawCandidate, context: &str) -> Result<Candidate, Conf
         .regex
         .map(|pattern| {
             let regex = RegexBuilder::new(&pattern)
-                .size_limit(MAX_CONFIG_BYTES)
-                .nest_limit(32)
+                .size_limit(MAX_REGEX_BYTES)
+                .nest_limit(MAX_REGEX_NESTING)
                 .build()
                 .map_err(|source| ConfigError::Regex {
                     context: context.to_owned(),

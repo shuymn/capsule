@@ -5,6 +5,7 @@
 pub mod acquire;
 pub mod git;
 pub mod init;
+pub mod limits;
 pub mod plan;
 pub mod render;
 pub mod view;

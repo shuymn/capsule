@@ -166,21 +166,34 @@ Operation audit logs and user identification for repudiation (R) are not securit
 
 ## 6. Current Resource Limits
 
-When changing a limit, update T07 and [architecture.md](architecture.md) together. Do not treat the numbers as a host-wide isolation guarantee.
+[limits.rs](../crates/core/src/limits.rs) defines every limit once; each row names its constant, and [docs.rs](../crates/cli/tests/docs.rs) fails when a row, value, or constant is missing on either side. Do not treat the numbers as a host-wide isolation guarantee; they apply per worker and scale with the number of shells.
 
-| Boundary | Limit | Basis |
+| Boundary | Limit | Constant |
 | --- | --- | --- |
-| Escaped request / response (excluding LF) | 256 KiB / 64 KiB | `session.rs`: `MAX_REQUEST`, `MAX_RESPONSE`. The shell snapshot conservatively aborts at 261000 bytes |
-| Config / a single acquired value | 64 KiB each | `plan.rs`: `MAX_CONFIG_BYTES`; `acquire.rs`: `MAX_OUTPUT_BYTES` |
-| Subprocess / blocking file jobs | 4 / 2 per worker | `Runner::default`. The worker runtime's blocking threads are also 2 |
-| One I/O (including waiting for capacity) / generation / cleanup grace | 500 ms / 2 s / 100 ms | `ACQUISITION_TIMEOUT`, `GENERATION_TIMEOUT`, `CLEANUP_TIMEOUT` |
-| Modules / all values / all candidates | 64 / 256 / 1024 | `plan.rs` |
-| Values per module / candidates per value | 16 / 8 | `plan.rs` |
-| Each condition list / command argv elements | 64 / 64 each | `compile.rs`: `MAX_WHEN_ITEMS`, `MAX_COMMAND_ARGS` |
-| Format source / optional nesting | 4 KiB / 8 | `template.rs`, `plan.rs` |
-| Compiled regex size / nesting | 64 KiB / 32 | `compile_candidate` |
-| Module format expansion / text per prompt line | 64 KiB / 2 KiB | `view.rs`: `MAX_MODULE_TEXT_BYTES`; `text.rs`: `MAX_LINE_TEXT_BYTES`. The latter is before style, prompt quoting, and wire escaping; `\` becomes 11 bytes after quoting and wire escaping |
-| Git search through cwd ancestors | 128 levels | `find_repository` |
+| Escaped request frame, excluding LF | 256 KiB | `MAX_REQUEST` |
+| Escaped response frame, excluding LF | 64 KiB | `MAX_RESPONSE` |
+| Escaped shell snapshot; a larger one omits acquisition | 261000 bytes | `MAX_SNAPSHOT_BYTES` |
+| One acquired command, file, or environment value | 64 KiB | `MAX_OUTPUT_BYTES` |
+| Config file | 64 KiB | `MAX_CONFIG_BYTES` |
+| Concurrent subprocesses | 4 | `MAX_PROCESSES` |
+| Concurrent blocking file jobs, and the worker runtime's blocking threads | 2 | `MAX_FILE_JOBS` |
+| One I/O operation, including the wait for capacity | 500 ms | `ACQUISITION_TIMEOUT` |
+| Acquisition generation | 2 s | `GENERATION_TIMEOUT` |
+| Process-group cleanup grace | 100 ms | `CLEANUP_TIMEOUT` |
+| Modules | 64 | `MAX_MODULES` |
+| Values across all modules | 256 | `MAX_TOTAL_VALUES` |
+| Candidates across all values | 1024 | `MAX_TOTAL_CANDIDATES` |
+| Values per module | 16 | `MAX_VALUES_PER_MODULE` |
+| Candidates per value | 8 | `MAX_CANDIDATES_PER_VALUE` |
+| Entries in one condition list | 64 | `MAX_WHEN_ITEMS` |
+| Command argv elements | 64 | `MAX_COMMAND_ARGS` |
+| Format source | 4 KiB | `MAX_FORMAT_BYTES` |
+| Optional format nesting | 8 | `MAX_FORMAT_DEPTH` |
+| Compiled regex size | 64 KiB | `MAX_REGEX_BYTES` |
+| Regex nesting | 32 | `MAX_REGEX_NESTING` |
+| Expanded text of one module format | 64 KiB | `MAX_MODULE_TEXT_BYTES` |
+| Plain text per prompt line, before style, prompt quoting, and wire escaping (`\` becomes 11 bytes) | 2 KiB | `MAX_LINE_TEXT_BYTES` |
+| Cwd ancestors searched for a Git repository | 128 | `MAX_REPOSITORY_DEPTH` |
 
 ## 7. Priorities and Open Questions
 

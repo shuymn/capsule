@@ -5,7 +5,11 @@ use tokio_util::sync::CancellationToken;
 
 use super::*;
 use crate::{
-    acquire::{MAX_OUTPUT_BYTES, Runner},
+    acquire::Runner,
+    limits::{
+        MAX_CANDIDATES_PER_VALUE, MAX_CONFIG_BYTES, MAX_FORMAT_BYTES, MAX_FORMAT_DEPTH,
+        MAX_MODULES, MAX_OUTPUT_BYTES, MAX_VALUES_PER_MODULE,
+    },
     render::style::Color,
 };
 

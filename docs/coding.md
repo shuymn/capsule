@@ -20,6 +20,7 @@ Read before modifying Rust. Use [architecture.md](architecture.md) for runtime c
 
 ## Resources and concurrency
 
+- Define every resource limit (size, count, concurrency, deadline) in [limits.rs](../crates/core/src/limits.rs) and add its row to the [threat-model](threat-model.md#6-current-resource-limits) table; do not inline limit literals.
 - Keep filesystem/blocking work off the async runtime and retain bounded capacity until that work actually finishes. Use the shared Runner for acquisition.
 - Own spawned tasks and their shutdown through structured concurrency. Document non-obvious cancellation and channel protocols.
 - Use channels for message passing and explicit ownership for shared state. Keep cleanup effective on errors and dropped futures.

@@ -19,23 +19,6 @@ use crate::{
     render::style::{ColorMap, Style},
 };
 
-/// Maximum TOML input size accepted before deserialization.
-pub const MAX_CONFIG_BYTES: usize = crate::acquire::MAX_OUTPUT_BYTES;
-/// Maximum number of custom modules in a plan.
-pub const MAX_MODULES: usize = 64;
-/// Maximum named values in one module.
-pub const MAX_VALUES_PER_MODULE: usize = 16;
-/// Maximum named values across the entire plan.
-pub const MAX_TOTAL_VALUES: usize = 256;
-/// Maximum fallback candidates for one named value.
-pub const MAX_CANDIDATES_PER_VALUE: usize = 8;
-/// Maximum fallback candidates across the entire plan.
-pub const MAX_TOTAL_CANDIDATES: usize = 1024;
-/// Maximum format source length, in bytes.
-pub const MAX_FORMAT_BYTES: usize = 4096;
-/// Maximum nested optional format sections.
-pub const MAX_FORMAT_DEPTH: usize = 8;
-
 /// Immutable-by-convention compiled configuration shared by one generation.
 #[derive(Debug, Clone, Default)]
 pub struct ConfigPlan {

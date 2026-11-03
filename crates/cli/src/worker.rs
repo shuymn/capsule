@@ -5,6 +5,7 @@ use std::{io, os::fd::AsFd, path::PathBuf, sync::Arc, time::Duration};
 use capsule_core::{
     acquire::{AcquireError, Runner},
     git::{ContextInfo, acquire_context, local_directory},
+    limits::{GENERATION_TIMEOUT, MAX_FILE_JOBS},
     plan::{ConfigPlan, ModuleObservation, Observation, acquire_condition, acquire_value},
     view::{self, ViewInput},
 };
@@ -18,15 +19,13 @@ use tokio_util::sync::CancellationToken;
 
 use crate::pipe::Pipe;
 
-const GENERATION_TIMEOUT: Duration = Duration::from_secs(2);
-
 pub fn run() -> anyhow::Result<()> {
     // Avoid the terminal's foreground process group: shell exit must reach EOF
     // cleanup instead of terminating the worker before it reaps its commands.
     rustix::process::setpgid(None, None)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        .max_blocking_threads(2)
+        .max_blocking_threads(MAX_FILE_JOBS)
         .build()?;
     let result = runtime.block_on(serve());
     runtime.shutdown_timeout(Duration::from_millis(500));
