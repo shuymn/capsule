@@ -261,6 +261,7 @@ fn porcelain_v2_counts_every_entry_kind() {
 # stash 5
 1 M. N... 000000 000000 abc123 def456 staged.rs
 1 .M N... 000000 000000 abc123 def456 modified.rs
+1 .M N... 000000 000000 abc123 def456 edited.rs
 1 MM N... 000000 000000 abc123 def456 both.rs
 1 D. N... 100644 000000 000000 abc123 000000 deleted.rs
 1 .D N... 100644 100644 000000 abc123 def456 removed.rs
@@ -275,7 +276,7 @@ u UU N... 000000 000000 000000 abc123 def456 ghi789 conflict.rs
             branch: Some("main".to_owned()),
             head_oid: Some("abc123def456".to_owned()),
             staged: 4,
-            modified: 3,
+            modified: 4,
             untracked: 2,
             conflicted: 1,
             stashed: 5,
