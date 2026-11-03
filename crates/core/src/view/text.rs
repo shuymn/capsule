@@ -118,7 +118,7 @@ fn sanitize(text: &str) -> String {
     let mut sanitized = String::with_capacity(text.len());
     for character in text.chars() {
         if character.is_control()
-            || matches!(character, '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+            || matches!(character, '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
         {
             sanitized.extend(character.escape_default());
         } else {
@@ -175,11 +175,14 @@ mod tests {
     /// Covers: T01
     #[test]
     fn controls_are_display_data_before_width_calculation() {
-        let text = StyledText::new("\x1b[31m\n\t\x7f\u{202e}%B$HOME`echo no`", Style::new());
+        let text = StyledText::new(
+            "\x1b[31m\n\t\x7f\u{202e}\u{61c}%B$HOME`echo no`",
+            Style::new(),
+        );
         let plain = text.plain_text();
         assert!(!plain.chars().any(char::is_control));
         assert!(plain.contains("\\n\\t"));
-        assert!(plain.contains("\\u{202e}"));
+        assert!(plain.contains("\\u{202e}\\u{61c}"));
         assert_eq!(text.width(), plain.width());
         assert!(plain.contains("%B$HOME`echo no`"));
         let serialized = text.to_zsh(ColorMap::default());
@@ -196,7 +199,7 @@ mod properties {
     use super::*;
     use crate::{
         render::style::Color,
-        test_utils::{bulky_text, displayed_prompt, hostile_text},
+        test_utils::{bulky_text, cols, displayed_prompt, hostile_text},
     };
 
     fn style() -> impl Strategy<Value = Style> {
@@ -218,42 +221,31 @@ mod properties {
         })
     }
 
-    fn cols() -> impl Strategy<Value = usize> {
-        prop_oneof![0..40usize, Just(usize::from(u16::MAX))]
-    }
-
+    /// Unicode's `Bidi_Control` characters, which reorder the display.
     fn is_bidi_control(character: char) -> bool {
-        matches!(character, '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+        matches!(character, '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
     }
 
     proptest! {
+        /// Truncation fits the width and the line byte bound, and keeps either
+        /// the whole text or a grapheme-boundary prefix followed by `…`.
         #[test]
-        fn truncation_fits_the_width(text in styled(), cols in cols()) {
-            prop_assert!(text.truncate(cols).width() <= cols);
-        }
-
-        #[test]
-        fn truncation_keeps_the_text_or_a_grapheme_prefix_with_an_ellipsis(
-            text in styled(),
-            cols in cols(),
-        ) {
-            let original = text.plain_text();
-            let truncated = text.truncate(cols).plain_text();
-            if truncated != original && !(cols == 0 && truncated.is_empty()) {
-                let prefix = truncated.strip_suffix('…');
-                prop_assert!(prefix.is_some(), "{truncated:?} lacks an ellipsis");
-                let prefix = prefix.unwrap_or_default();
-                prop_assert!(original.starts_with(prefix));
-                prop_assert!(
-                    prefix.is_empty() || original.grapheme_indices(true).any(|(index, _)| index == prefix.len()),
-                    "{prefix:?} ends inside a grapheme of {original:?}"
-                );
+        fn truncation_fits_and_keeps_a_grapheme_prefix(text in styled(), cols in cols(40)) {
+            let truncated = text.truncate(cols);
+            prop_assert!(truncated.width() <= cols);
+            let (original, kept) = (text.plain_text(), truncated.plain_text());
+            prop_assert!(kept.len() <= MAX_LINE_TEXT_BYTES);
+            if kept == original || (cols == 0 && kept.is_empty()) {
+                return Ok(());
             }
-        }
-
-        #[test]
-        fn truncation_bounds_the_line_bytes(text in styled(), cols in cols()) {
-            prop_assert!(text.truncate(cols).plain_text().len() <= MAX_LINE_TEXT_BYTES);
+            let Some(prefix) = kept.strip_suffix('…') else {
+                return Err(TestCaseError::fail(format!("{kept:?} lacks an ellipsis")));
+            };
+            prop_assert!(original.starts_with(prefix));
+            prop_assert!(
+                prefix.is_empty() || original.grapheme_indices(true).any(|(index, _)| index == prefix.len()),
+                "{prefix:?} ends inside a grapheme of {original:?}"
+            );
         }
 
         #[test]

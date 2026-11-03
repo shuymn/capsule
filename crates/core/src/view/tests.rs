@@ -435,46 +435,33 @@ fn quoted_backslashes_on_both_lines_fit_the_response_byte_limit()
 }
 
 mod properties {
-    use proptest::prelude::*;
+    use std::collections::BTreeSet;
+
+    use proptest::{prelude::*, strategy::LazyJust};
     use unicode_width::UnicodeWidthStr as _;
 
     use super::*;
     use crate::{
         acquire::AcquireError,
         plan::{Arbitration, ModuleAppearance, ModuleWhen, Template, ValuePlan},
-        test_utils::{bulky_text, displayed_prompt, hostile_text},
+        test_utils::{bulky_text, cols, displayed_prompt, format_parts, hostile_text},
     };
-
-    fn format(values: usize, depth: u32) -> BoxedStrategy<Vec<FormatPart>> {
-        let leaf = if values == 0 {
-            hostile_text(6).prop_map(FormatPart::Literal).boxed()
-        } else {
-            prop_oneof![
-                hostile_text(6).prop_map(FormatPart::Literal),
-                (0..values).prop_map(FormatPart::Value),
-            ]
-            .boxed()
-        };
-        let part = leaf.prop_recursive(depth, 12, 4, |inner| {
-            prop::collection::vec(inner, 0..4).prop_map(FormatPart::Optional)
-        });
-        prop::collection::vec(part, 0..5).boxed()
-    }
 
     fn module() -> impl Strategy<Value = ModulePlan> {
         (0..3usize)
             .prop_flat_map(|values| {
                 (
                     Just(values),
-                    format(values, 3),
+                    format_parts(values, 3),
                     prop::option::of((prop::sample::select(vec!["a", "b"]), 0..3u32)),
                     prop::bool::ANY,
                     prop::option::of(hostile_text(4)),
                     prop::option::of(hostile_text(2)),
+                    prop::sample::select(vec![Style::new(), Style::new().fg(Color::Green).bold()]),
                 )
             })
             .prop_map(
-                |(values, parts, arbitration, line2, connector, icon)| ModulePlan {
+                |(values, parts, arbitration, line2, connector, icon, style)| ModulePlan {
                     name: String::new(),
                     when: ModuleWhen::default(),
                     values: (0..values)
@@ -486,7 +473,7 @@ mod properties {
                     format: Template(parts),
                     appearance: ModuleAppearance {
                         icon,
-                        style: Style::new().fg(Color::Green),
+                        style,
                         connector,
                     },
                     arbitration: arbitration.map(|(group, priority)| Arbitration {
@@ -502,71 +489,68 @@ mod properties {
             )
     }
 
-    /// A `Clone` stand-in for [`Observation`], whose failure is not `Clone`.
-    #[derive(Debug, Clone)]
-    enum Seen<T> {
-        Ready(T),
-        Pending,
-        Missing,
-        Failed,
-    }
-
-    impl<T> Seen<T> {
-        fn observe(self) -> Observation<T> {
-            match self {
-                Self::Ready(value) => Observation::Ready(value),
-                Self::Pending => Observation::Pending,
-                Self::Missing => Observation::Missing,
-                Self::Failed => Observation::Failed(AcquireError::TimedOut),
-            }
-        }
-    }
-
-    type Snapshot = Vec<(Seen<bool>, Vec<Seen<String>>)>;
-
-    fn observe(snapshot: Snapshot) -> Vec<ModuleObservation> {
-        snapshot
-            .into_iter()
-            .map(|(condition, values)| ModuleObservation {
-                condition: condition.observe(),
-                values: values.into_iter().map(Seen::observe).collect(),
-            })
-            .collect()
-    }
-
-    fn seen<T: std::fmt::Debug + Clone>(
+    fn observation<T: std::fmt::Debug>(
         ready: impl Strategy<Value = T>,
-    ) -> impl Strategy<Value = Seen<T>> {
+    ) -> impl Strategy<Value = Observation<T>> {
         prop_oneof![
-            4 => ready.prop_map(Seen::Ready),
-            1 => Just(Seen::Pending),
-            1 => Just(Seen::Missing),
-            1 => Just(Seen::Failed),
+            4 => ready.prop_map(Observation::Ready),
+            1 => LazyJust::new(|| Observation::Pending),
+            1 => LazyJust::new(|| Observation::Missing),
+            1 => LazyJust::new(|| Observation::Failed(AcquireError::TimedOut)),
         ]
     }
 
-    /// A plan of up to six modules, each with one observation snapshot.
-    fn modules() -> impl Strategy<Value = (ConfigPlan, Snapshot)> {
+    /// Up to six modules, named by declaration index, with one observation
+    /// snapshot each.
+    fn modules() -> impl Strategy<Value = (ConfigPlan, Vec<ModuleObservation>)> {
         prop::collection::vec(module(), 0..6)
             .prop_flat_map(|modules| {
                 let observed = modules
                     .iter()
                     .map(|module| {
                         (
-                            seen(prop::bool::weighted(0.9)),
-                            prop::collection::vec(seen(bulky_text()), module.values.len()),
+                            observation(prop::bool::weighted(0.9)),
+                            prop::collection::vec(observation(bulky_text()), module.values.len()),
                         )
+                            .prop_map(|(condition, values)| ModuleObservation { condition, values })
                     })
                     .collect::<Vec<_>>();
                 (Just(modules), observed)
             })
-            .prop_map(|(modules, observed)| {
+            .prop_map(|(mut modules, observed)| {
+                for (index, module) in modules.iter_mut().enumerate() {
+                    module.name = format!("m{index}");
+                }
                 let plan = ConfigPlan {
                     modules,
                     ..ConfigPlan::default()
                 };
                 (plan, observed)
             })
+    }
+
+    /// A copy of an observation; `Observation` is not `Clone` because a failure
+    /// can hold an I/O error.
+    fn duplicate(observed: &ModuleObservation) -> ModuleObservation {
+        fn copy<T: Clone>(observation: &Observation<T>) -> Observation<T> {
+            match observation {
+                Observation::Ready(value) => Observation::Ready(value.clone()),
+                Observation::Pending => Observation::Pending,
+                Observation::Missing => Observation::Missing,
+                Observation::Failed(_) => Observation::Failed(AcquireError::TimedOut),
+            }
+        }
+        ModuleObservation {
+            condition: copy(&observed.condition),
+            values: observed.values.iter().map(copy).collect(),
+        }
+    }
+
+    fn visible_names(plan: &ConfigPlan, observed: &[ModuleObservation]) -> Vec<String> {
+        visible_modules(plan, observed)
+            .into_iter()
+            .map(|(module, _)| module.name.clone())
+            .collect()
     }
 
     /// The format evaluation rule restated: a required value that is not ready
@@ -591,7 +575,7 @@ mod properties {
 
     /// The arbitration rule restated: among displayable modules, each group
     /// keeps its lowest priority, and the earliest declaration on a tie.
-    fn reference_visible(plan: &ConfigPlan, observed: &[ModuleObservation]) -> Vec<usize> {
+    fn reference_visible(plan: &ConfigPlan, observed: &[ModuleObservation]) -> Vec<String> {
         let displayable = plan
             .modules
             .iter()
@@ -619,21 +603,8 @@ mod properties {
                         == Some((rule.priority, *index))
                 })
             })
-            .map(|(index, _)| *index)
+            .map(|(_, module)| module.name.clone())
             .collect()
-    }
-
-    fn view_input() -> impl Strategy<Value = (String, usize, String, Option<String>)> {
-        (
-            bulky_text(),
-            prop_oneof![0..120usize, Just(usize::from(u16::MAX))],
-            prop_oneof![
-                Just("main".to_owned()),
-                Just("vicmd".to_owned()),
-                hostile_text(8)
-            ],
-            prop::option::of(bulky_text()),
-        )
     }
 
     proptest! {
@@ -641,12 +612,13 @@ mod properties {
 
         #[test]
         fn rendered_lines_fit_the_columns_and_the_response_frame(
-            (plan, snapshot) in modules(),
-            (directory, cols, keymap, branch) in view_input(),
+            (mut plan, observed) in modules(),
+            directory in bulky_text(),
+            cols in cols(120),
+            keymap in prop_oneof![Just("main".to_owned()), Just("vicmd".to_owned()), hostile_text(8)],
+            branch in prop::option::of(bulky_text()),
             glyph in bulky_text(),
         ) {
-            let observed = observe(snapshot);
-            let mut plan = plan;
             plan.view.character.glyph = glyph;
             let git = branch.map(|branch| GitStatus { branch: Some(branch), ..GitStatus::default() });
             let output = render(&plan, &ViewInput {
@@ -660,20 +632,18 @@ mod properties {
                 ..input()
             });
             for line in [&output.left1, &output.left2] {
-                let displayed = displayed_prompt(line);
-                prop_assert!(displayed.is_some(), "{line:?} has an unexpected escape");
-                prop_assert!(displayed.unwrap_or_default().width() <= cols, "{line:?} exceeds {cols}");
-                if cols == 0 {
-                    prop_assert!(line.is_empty());
-                }
+                prop_assert!(
+                    displayed_prompt(line).is_some_and(|displayed| displayed.width() <= cols),
+                    "{line:?} is not literal data within {cols} columns"
+                );
+                prop_assert!(cols != 0 || line.is_empty());
             }
             let frame = capsule_protocol::session::response(u64::MAX, &output.left1, &output.left2, true);
             prop_assert!(frame.is_ok(), "{frame:?}");
         }
 
         #[test]
-        fn format_evaluation_matches_the_reference_rule((plan, snapshot) in modules()) {
-            let observed = observe(snapshot);
+        fn format_evaluation_matches_the_reference_rule((plan, observed) in modules()) {
             for (module, observed) in plan.modules.iter().zip(&observed) {
                 prop_assert_eq!(
                     evaluate_format(&module.format.0, &observed.values),
@@ -683,13 +653,29 @@ mod properties {
         }
 
         #[test]
-        fn arbitration_selects_the_lowest_priority_per_group((plan, snapshot) in modules()) {
-            let observed = observe(snapshot);
-            let visible = visible_modules(&plan, &observed)
-                .into_iter()
-                .filter_map(|(module, _)| plan.modules.iter().position(|candidate| std::ptr::eq(candidate, module)))
-                .collect::<Vec<_>>();
-            prop_assert_eq!(visible, reference_visible(&plan, &observed));
+        fn arbitration_selects_the_lowest_priority_per_group((plan, observed) in modules()) {
+            prop_assert_eq!(visible_names(&plan, &observed), reference_visible(&plan, &observed));
+        }
+
+        /// Without priority ties, the winners do not depend on declaration order.
+        #[test]
+        fn arbitration_without_ties_ignores_declaration_order(
+            (plan, observed) in modules(),
+            shuffled in Just((0..6).collect::<Vec<usize>>()).prop_shuffle(),
+        ) {
+            // `modules()` declares at most six modules; keep the indices in range.
+            let order = shuffled.into_iter().filter(|index| *index < plan.modules.len()).collect::<Vec<_>>();
+            let rules = plan.modules.iter().filter_map(|module| module.arbitration.as_ref());
+            let distinct = rules.clone().map(|rule| (&rule.group, rule.priority)).collect::<BTreeSet<_>>();
+            prop_assume!(distinct.len() == rules.count());
+            let reordered = ConfigPlan {
+                modules: order.iter().map(|index| plan.modules[*index].clone()).collect(),
+                ..ConfigPlan::default()
+            };
+            let reordered_observed = order.iter().map(|index| duplicate(&observed[*index])).collect::<Vec<_>>();
+            let before = visible_names(&plan, &observed).into_iter().collect::<BTreeSet<_>>();
+            let after = visible_names(&reordered, &reordered_observed).into_iter().collect::<BTreeSet<_>>();
+            prop_assert_eq!(before, after);
         }
     }
 }

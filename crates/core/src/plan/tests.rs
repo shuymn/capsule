@@ -534,7 +534,7 @@ mod template_properties {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::test_utils::hostile_text;
+    use crate::test_utils::{format_parts, hostile_text};
 
     const NAMES: [&str; 2] = ["a", "b"];
 
@@ -548,19 +548,11 @@ mod template_properties {
             .collect()
     }
 
-    /// A format tree as the compiler produces it, with no empty or adjacent
-    /// literals. Inside an optional section, a literal has no `]` and the
-    /// section does not start with `[`, which the syntax cannot express
+    /// A format tree the syntax can express: inside an optional section, a
+    /// literal has no `]` and the section does not start with `[`
     /// (shuymn/capsule#305).
     fn tree(depth: u32) -> impl Strategy<Value = Vec<FormatPart>> {
-        let leaf = prop_oneof![
-            hostile_text(6).prop_map(FormatPart::Literal),
-            (0..NAMES.len()).prop_map(FormatPart::Value),
-        ];
-        let part = leaf.prop_recursive(depth, 16, 4, |inner| {
-            prop::collection::vec(inner, 0..4).prop_map(FormatPart::Optional)
-        });
-        prop::collection::vec(part, 0..6).prop_map(|parts| normalize(parts, false))
+        format_parts(NAMES.len(), depth).prop_map(|parts| normalize(parts, false))
     }
 
     fn normalize(parts: Vec<FormatPart>, nested: bool) -> Vec<FormatPart> {
@@ -572,6 +564,8 @@ mod template_properties {
                 part => part,
             };
             match (normalized.last_mut(), part) {
+                // Merge and drop empty literals, so the first part decides how a
+                // section starts.
                 (_, FormatPart::Literal(text)) if text.is_empty() => {}
                 (Some(FormatPart::Literal(last)), FormatPart::Literal(text)) => {
                     last.push_str(&text);
@@ -622,8 +616,14 @@ mod template_properties {
             let mut source = String::new();
             print(&parts, &mut source);
             let compiled = template::compile(&source, &values(), "test");
-            prop_assert!(compiled.is_ok(), "{source:?}: {compiled:?}");
-            prop_assert_eq!(compiled.map(|template| template.0).unwrap_or_default(), parts);
+            let Ok(Template(compiled)) = compiled else {
+                return Err(TestCaseError::fail(format!("{source:?}: {compiled:?}")));
+            };
+            // Compare printed forms, so how literals are split is not part of
+            // the property.
+            let mut reprinted = String::new();
+            print(&compiled, &mut reprinted);
+            prop_assert_eq!(reprinted, source);
         }
     }
 }
