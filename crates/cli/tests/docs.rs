@@ -227,26 +227,39 @@ fn library_files() -> Result<BTreeMap<PathBuf, String>, Box<dyn std::error::Erro
     Ok(files)
 }
 
-/// Names that cited identifiers may resolve to: every word, every library
-/// crate name, and every `Type::function` defined in an `impl` block, also
-/// qualified by the library crate that compiles it.
-fn source_names() -> Result<(BTreeSet<String>, BTreeSet<String>), Box<dyn std::error::Error>> {
-    let libraries = library_files()?;
-    let mut all_words = libraries.values().cloned().collect::<BTreeSet<_>>();
-    let mut functions = BTreeSet::new();
+/// Names that cited identifiers may resolve to.
+#[derive(Default)]
+struct SourceNames {
+    /// Every word in the sources, and every library crate name.
+    words: BTreeSet<String>,
+    /// Every `Type::function` defined in an `impl` block, and the same
+    /// qualified by the library crate that compiles it.
+    functions: BTreeSet<String>,
+    /// The crate names of workspace libraries.
+    libraries: BTreeSet<String>,
+}
+
+fn source_names() -> Result<SourceNames, Box<dyn std::error::Error>> {
+    let files = library_files()?;
+    let libraries = files.values().cloned().collect::<BTreeSet<_>>();
+    let mut names = SourceNames {
+        words: libraries.clone(),
+        libraries,
+        ..SourceNames::default()
+    };
     for (path, text) in source_texts()? {
-        all_words.extend(words(&text).map(str::to_owned));
+        names.words.extend(words(&text).map(str::to_owned));
         if path.extension().is_some_and(|extension| extension == "rs") {
-            let library = libraries.get(&path.canonicalize()?);
+            let library = files.get(&path.canonicalize()?);
             for function in impl_functions(&text) {
                 if let Some(library) = library {
-                    functions.insert(format!("{library}::{function}"));
+                    names.functions.insert(format!("{library}::{function}"));
                 }
-                functions.insert(function);
+                names.functions.insert(function);
             }
         }
     }
-    Ok((all_words, functions))
+    Ok(names)
 }
 
 /// Lines outside fenced code blocks, with their 1-based line numbers.
@@ -292,8 +305,10 @@ fn cited_identifier(span: &str) -> Option<&str> {
 }
 
 /// GitHub heading anchors of a Markdown document, including duplicate
-/// suffixes: each heading's rendered text, lowercased, without punctuation,
-/// and with whitespace as `-`. Headings with HTML or images are rejected,
+/// suffixes, as github-slugger computes them: each heading's rendered text,
+/// lowercased, keeping only letters, numbers, marks, connector punctuation,
+/// `-`, and ASCII spaces, which become `-`. Other whitespace is dropped.
+/// Headings with HTML or images are rejected,
 /// because GitHub sanitizes them before slugging.
 fn anchors(document: &str) -> Result<BTreeSet<String>, String> {
     use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
@@ -320,7 +335,7 @@ fn anchors(document: &str) -> Result<BTreeSet<String>, String> {
                     .chars()
                     .filter(|character| {
                         character.is_alphanumeric()
-                            || character.is_whitespace()
+                            || *character == ' '
                             || matches!(
                                 character.general_category_group(),
                                 GeneralCategoryGroup::Mark
@@ -328,13 +343,7 @@ fn anchors(document: &str) -> Result<BTreeSet<String>, String> {
                             || character.general_category() == GeneralCategory::ConnectorPunctuation
                             || *character == '-'
                     })
-                    .map(|character| {
-                        if character.is_whitespace() {
-                            '-'
-                        } else {
-                            character
-                        }
-                    })
+                    .map(|character| if character == ' ' { '-' } else { character })
                     .collect::<String>();
                 // A suffixed slug may collide with an earlier heading's own
                 // text, as `Foo`, `Foo`, `Foo-1` does; skip issued slugs.
@@ -362,7 +371,7 @@ fn anchors_slug_rendered_heading_text() -> TestResult {
         ## Type \\[T\\] \\*literal\\*\n## A &amp; B\n## **Unmatched\n\
         Setext title\n============\n\
         Intro\n```\n# not a heading\n```\n---\nIntro\n\t---\n\
-        # Foo\n# Foo\n# Foo-1\n## Cafe\u{301}\n## \u{5e9}\u{5b0}\n";
+        # Foo\n# Foo\n# Foo-1\n## Cafe\u{301}\n## \u{5e9}\u{5b0}\n## A&nbsp;B\n";
     assert_eq!(
         anchors(document)?,
         [
@@ -380,6 +389,7 @@ fn anchors_slug_rendered_heading_text() -> TestResult {
             "foo-1-1",
             "cafe\u{301}",
             "\u{5e9}\u{5b0}",
+            "ab",
         ]
         .map(str::to_owned)
         .into()
@@ -522,27 +532,23 @@ fn relative_links_in_docs_resolve() -> TestResult {
 /// segment must occur, and a trailing `Type::function` must be defined in that
 /// type's `impl` block, inside the named crate when the path starts with one.
 /// Module segments are checked only as words.
-fn resolves(identifier: &str, words: &BTreeSet<String>, functions: &BTreeSet<String>) -> bool {
+fn resolves(identifier: &str, names: &SourceNames) -> bool {
     let segments = identifier.split("::").collect::<Vec<_>>();
-    let defined = segments.iter().all(|segment| words.contains(*segment));
+    let defined = segments
+        .iter()
+        .all(|segment| names.words.contains(*segment));
     match segments.as_slice() {
         [.., type_name, function]
             if type_name.starts_with(|first: char| first.is_ascii_uppercase())
                 && function.starts_with(|first: char| first.is_ascii_lowercase()) =>
         {
-            let method = format!("{type_name}::{function}");
             let method = match segments.as_slice() {
-                [crate_name, _, _, ..]
-                    if functions
-                        .range(format!("{crate_name}::")..)
-                        .next()
-                        .is_some_and(|first| first.starts_with(&format!("{crate_name}::"))) =>
-                {
-                    format!("{crate_name}::{method}")
+                [library, _, _, ..] if names.libraries.contains(*library) => {
+                    format!("{library}::{type_name}::{function}")
                 }
-                _ => method,
+                _ => format!("{type_name}::{function}"),
             };
-            defined && functions.contains(&method)
+            defined && names.functions.contains(&method)
         }
         _ => defined,
     }
@@ -577,29 +583,34 @@ fn library_files_follow_module_declarations() -> TestResult {
 
 #[test]
 fn method_paths_resolve_by_their_final_type_and_function() {
-    let words = [
-        "capsule_core",
-        "capsule_protocol",
-        "plan",
-        "session",
-        "ConfigPlan",
-        "Request",
-        "parse",
-        "encode",
-        "render",
-        "Limit",
-        "Count",
-    ]
-    .map(str::to_owned)
-    .into();
-    let functions = [
-        "ConfigPlan::parse",
-        "capsule_core::ConfigPlan::parse",
-        "Request::encode",
-        "capsule_protocol::Request::encode",
-    ]
-    .map(str::to_owned)
-    .into();
+    let to_set = |items: &[&str]| items.iter().map(|item| (*item).to_owned()).collect();
+    let names = SourceNames {
+        words: to_set(&[
+            "capsule_core",
+            "capsule_protocol",
+            "capsule_prompt_bench",
+            "plan",
+            "session",
+            "ConfigPlan",
+            "Request",
+            "Worker",
+            "parse",
+            "encode",
+            "measure",
+            "render",
+            "Limit",
+            "Count",
+        ]),
+        functions: to_set(&[
+            "ConfigPlan::parse",
+            "capsule_core::ConfigPlan::parse",
+            "Request::encode",
+            "capsule_protocol::Request::encode",
+            // A binary's method: unqualified only.
+            "Worker::measure",
+        ]),
+        libraries: to_set(&["capsule_core", "capsule_protocol", "capsule_prompt_bench"]),
+    };
     for cited in [
         "ConfigPlan::parse",
         "capsule_core::ConfigPlan::parse",
@@ -608,7 +619,7 @@ fn method_paths_resolve_by_their_final_type_and_function() {
         "Limit::Count",
         "capsule_core::Limit::Count",
     ] {
-        assert!(resolves(cited, &words, &functions), "{cited}");
+        assert!(resolves(cited, &names), "{cited}");
     }
     for cited in [
         "ConfigPlan::render",
@@ -617,20 +628,22 @@ fn method_paths_resolve_by_their_final_type_and_function() {
         "capsule_core::Limit::Bytes",
         // Defined in another crate.
         "capsule_core::session::Request::encode",
+        // Defined only in a binary, not in the named library.
+        "capsule_prompt_bench::Worker::measure",
     ] {
-        assert!(!resolves(cited, &words, &functions), "{cited}");
+        assert!(!resolves(cited, &names), "{cited}");
     }
 }
 
 #[test]
 fn identifiers_cited_in_docs_exist_in_sources() -> TestResult {
-    let (words, functions) = source_names()?;
+    let names = source_names()?;
     let mut missing = Vec::new();
     for path in documents()? {
         let document = fs::read_to_string(&path)?;
         for (number, line) in prose_lines(&document) {
             for identifier in code_spans(line).filter_map(cited_identifier) {
-                if !resolves(identifier, &words, &functions) {
+                if !resolves(identifier, &names) {
                     missing.push(format!("{}:{number}: {identifier}", path.display()));
                 }
             }
