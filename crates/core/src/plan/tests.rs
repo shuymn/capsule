@@ -135,7 +135,7 @@ fn schema_and_unknown_fields_are_rejected_at_every_boundary() {
     assert!(one_module("{value}", "value = [{ env = 'X', extra = 1 }]").is_err());
 }
 
-/// Covers: T03
+/// Covers: T03, T05
 #[test]
 fn source_and_regex_validation_happens_before_acquisition() {
     for candidate_text in [
@@ -162,6 +162,28 @@ fn source_and_regex_validation_happens_before_acquisition() {
     }
     assert!(one_module("{value}", "value = [{ env = \"A\\u0000B\" }]").is_err());
     assert!(one_module("{value}", "value = [{ command = [\"x\", \"\\u0000\"] }]").is_err());
+    assert!(one_module("{value}", "value = [{ file = \"a\\u0000b\" }]").is_err());
+}
+
+/// Covers: T05
+#[test]
+fn condition_paths_are_lexically_relative() {
+    let when = |files: &str| {
+        ConfigPlan::parse(&format!(
+            "schema_version = 2\n[[module]]\nname = 'x'\nformat = 'x'\nvalues = {{}}\nwhen = {{ files = [{files}] }}"
+        ))
+    };
+    assert!(when("'Cargo.toml', 'nested/marker'").is_ok());
+    for files in [
+        "''",
+        "'/absolute'",
+        "'../parent'",
+        "'./local'",
+        "'a/../b'",
+        "\"a\\u0000b\"",
+    ] {
+        assert!(when(files).is_err(), "accepted {files}");
+    }
 }
 
 #[test]

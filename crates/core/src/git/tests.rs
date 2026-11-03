@@ -374,3 +374,117 @@ fn test_parse_renamed_file() {
     let status = parse_porcelain_v2(output);
     assert_eq!(status.renamed, 1, "rename should be tracked");
 }
+
+// -- acquire_context tests --
+
+/// A snapshot whose `PATH` holds only a dummy `git` running `script`.
+fn dummy_git(
+    directory: &Path,
+    script: &str,
+) -> Result<(Snapshot, PathBuf), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let bin = directory.join("bin");
+    std::fs::create_dir(&bin)?;
+    let git = bin.join("git");
+    let shell = crate::test_utils::executable("sh")?;
+    std::fs::write(&git, format!("#!{shell}\n{script}\n"))?;
+    std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755))?;
+    let record = directory.join("argv");
+    let cwd = directory.join("cwd");
+    std::fs::create_dir(&cwd)?;
+    let snapshot = Snapshot {
+        cwd,
+        env: vec![
+            (OsString::from("PATH"), bin.into_os_string()),
+            (
+                OsString::from("ARGV_RECORD"),
+                record.clone().into_os_string(),
+            ),
+        ],
+    };
+    Ok((snapshot, record))
+}
+
+/// Covers: T04
+#[tokio::test]
+async fn git_runs_the_fixed_status_argv_through_the_runner()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let (snapshot, record) = dummy_git(
+        directory.path(),
+        "printf '%s\\n' \"$@\" > \"$ARGV_RECORD\"\nprintf '# branch.head main\\n'",
+    )?;
+    let context = acquire_context(
+        &snapshot,
+        &Runner::default(),
+        &CancellationToken::new(),
+        true,
+    )
+    .await?;
+    assert_eq!(
+        std::fs::read_to_string(record)?,
+        "--no-optional-locks\nstatus\n--porcelain=v2\n--branch\n--show-stash\n"
+    );
+    assert_eq!(
+        context.git.and_then(|git| git.branch).as_deref(),
+        Some("main")
+    );
+    Ok(())
+}
+
+/// Covers: T04
+#[tokio::test]
+async fn failed_or_missing_git_shows_no_git_and_keeps_the_directory()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let (snapshot, _) = dummy_git(directory.path(), "printf '# branch.head main\\n'\nexit 1")?;
+    let context = acquire_context(
+        &snapshot,
+        &Runner::default(),
+        &CancellationToken::new(),
+        true,
+    )
+    .await?;
+    assert!(context.git.is_none());
+    assert_eq!(context.directory, local_directory(&snapshot));
+
+    let missing = Snapshot {
+        env: vec![(
+            OsString::from("PATH"),
+            directory.path().join("empty").into_os_string(),
+        )],
+        ..snapshot
+    };
+    let context = acquire_context(
+        &missing,
+        &Runner::default(),
+        &CancellationToken::new(),
+        true,
+    )
+    .await?;
+    assert!(context.git.is_none());
+    Ok(())
+}
+
+/// Covers: T04
+#[tokio::test]
+async fn repository_search_stops_after_the_depth_limit() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    std::fs::create_dir(directory.path().join(".git"))?;
+    // `ancestors()` yields the cwd first, so the deepest found root is
+    // `MAX_REPOSITORY_DEPTH - 1` levels up.
+    let nested =
+        |levels: usize| (0..levels).fold(directory.path().to_owned(), |path, _| path.join("d"));
+    let deepest = nested(MAX_REPOSITORY_DEPTH);
+    std::fs::create_dir_all(&deepest)?;
+    let runner = Runner::default();
+    let cancel = CancellationToken::new();
+    let found = find_repository(&nested(MAX_REPOSITORY_DEPTH - 1), &runner, &cancel).await?;
+    assert_eq!(
+        found.map(|repo| repo.root),
+        Some(directory.path().to_owned())
+    );
+    assert!(find_repository(&deepest, &runner, &cancel).await?.is_none());
+    Ok(())
+}
