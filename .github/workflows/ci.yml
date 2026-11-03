@@ -9,7 +9,7 @@ on:
       - main
 
 env:
-  CI_MISE_VERSION: 2026.10.17
+  CI_MISE_VERSION: 2026.10.24
 
 jobs:
   lint:
