@@ -36,7 +36,12 @@ macro_rules! limits {
 }
 
 /// Escaped request header before the snapshot: the tag, the four numbers at
-/// their widest, separators, and up to 1 KiB of keymap name.
+/// their widest, separators, and up to 1 KiB of escaped keymap name.
+///
+/// This sizes [`MAX_SNAPSHOT_BYTES`] so that ordinary keymaps never push a
+/// snapshot over [`MAX_REQUEST`]; it does not bound user-defined keymap names.
+/// `init.zsh` checks the complete frame against [`MAX_REQUEST`] and selects the
+/// fallback prompt when a longer keymap exceeds it.
 const MAX_REQUEST_HEADER_BYTES: usize = "Q\t".len()
     + "18446744073709551615\t".len()
     + "-2147483648\t".len()
@@ -111,12 +116,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn zsh_snapshot_bound_matches_max_snapshot_bytes() {
-        let bound = format!("(( ${{#_CAPSULE_SNAPSHOT}} > {MAX_SNAPSHOT_BYTES} ))");
-        assert_eq!(
-            include_str!("init/init.zsh").matches(&bound).count(),
-            1,
-            "{bound}"
-        );
+    fn zsh_bounds_match_the_limits_module() {
+        // The pending frame includes its LF delimiter; MAX_REQUEST excludes it.
+        for bound in [
+            format!("(( ${{#_CAPSULE_SNAPSHOT}} > {MAX_SNAPSHOT_BYTES} ))"),
+            format!("(( ${{#_CAPSULE_PENDING}} > {} ))", MAX_REQUEST + 1),
+        ] {
+            assert_eq!(
+                include_str!("init/init.zsh").matches(&bound).count(),
+                1,
+                "{bound}"
+            );
+        }
     }
 }

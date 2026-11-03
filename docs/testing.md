@@ -23,10 +23,11 @@ Read this file before writing or modifying tests.
   stays in the suite.
 - [docs.rs](../crates/cli/tests/docs.rs) keeps documentation that restates code
   facts in sync: relative links and heading anchors, backticked identifiers
-  (snake case, screaming case, or `::` paths), the limits table, and the lint
-  policy. Fix the document or the code when it fails; list a name that is
-  intentionally not defined here in the test's external-identifier list with
-  its reason.
+  (snake case, screaming case, or `::` paths; a cited method path must be
+  defined in its type's `impl`), the limits table, the lint policy, and lint
+  inheritance in every workspace member. Fix the document or the code when it
+  fails; list a name that is intentionally not defined here in the test's
+  external-identifier list with its reason.
 - Keep doctests runnable; use hidden `# ` setup, `no_run` for external resources,
   and `compile_fail` for invalid usage.
 

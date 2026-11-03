@@ -15,7 +15,9 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 const SOURCE_DIRECTORIES: [&str; 5] = ["crates", "scripts", "nix", "examples", ".github"];
 
 /// Cited names that intentionally have no definition in this repository.
-const EXTERNAL_IDENTIFIERS: [&str; 5] = [
+const EXTERNAL_IDENTIFIERS: [&str; 6] = [
+    // The standard library and Tokio process builder.
+    "Command::new",
     // Rustdoc code block attributes.
     "no_run",
     "compile_fail",
@@ -79,9 +81,9 @@ fn documents() -> Result<Vec<PathBuf>, std::io::Error> {
     Ok(files)
 }
 
-/// Every identifier-like word in sources, scripts, configuration, and root
-/// files, excluding this test so its allowlists cannot satisfy themselves.
-fn source_words() -> Result<BTreeSet<String>, std::io::Error> {
+/// Sources, scripts, configuration, and root files that define cited names,
+/// excluding this test so its allowlists cannot satisfy themselves.
+fn source_texts() -> Result<Vec<(PathBuf, String)>, std::io::Error> {
     let this_test = root().join("crates/cli/tests/docs.rs");
     let mut files = Vec::new();
     for directory in SOURCE_DIRECTORIES {
@@ -93,22 +95,95 @@ fn source_words() -> Result<BTreeSet<String>, std::io::Error> {
             files.push(entry.path());
         }
     }
-    let mut words = BTreeSet::new();
-    for path in files {
-        if path == this_test || is_markdown(&path) {
-            continue;
-        }
-        // Binary files and bytecode caches carry no cited names.
-        let Ok(text) = fs::read_to_string(&path) else {
-            continue;
-        };
-        words.extend(
-            text.split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
-                .filter(|word| !word.is_empty())
-                .map(str::to_owned),
-        );
+    files.retain(|path| *path != this_test && !is_markdown(path));
+    // Binary files and bytecode caches carry no cited names.
+    Ok(files
+        .into_iter()
+        .filter_map(|path| fs::read_to_string(&path).ok().map(|text| (path, text)))
+        .collect())
+}
+
+fn words(text: &str) -> impl Iterator<Item = &str> {
+    text.split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+        .filter(|word| !word.is_empty())
+}
+
+/// The self type named by an `impl` header, after any generics and `for`.
+fn impl_type(header: &str) -> Option<String> {
+    let mut rest = header.trim_start();
+    if rest.starts_with('<') {
+        let mut depth = 0_usize;
+        let end = rest.char_indices().find_map(|(index, character)| {
+            match character {
+                '<' => depth += 1,
+                '>' => depth -= 1,
+                _ => {}
+            }
+            (depth == 0).then_some(index + 1)
+        })?;
+        rest = &rest[end..];
     }
-    Ok(words)
+    let rest = rest.rsplit_once(" for ").map_or(rest, |(_, target)| target);
+    let path = rest
+        .trim_start()
+        .split(|character: char| {
+            !character.is_ascii_alphanumeric() && character != '_' && character != ':'
+        })
+        .next()?;
+    path.rsplit("::")
+        .next()
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+}
+
+/// `Type::function` for every `fn` inside an `impl` block of rustfmt-formatted
+/// Rust, whose closing brace sits at the indentation of its header.
+fn impl_functions(source: &str) -> BTreeSet<String> {
+    let mut functions = BTreeSet::new();
+    let mut open = Vec::<(&str, String)>::new();
+    for line in source.lines() {
+        let item = line.trim_start();
+        let indent = &line[..line.len() - item.len()];
+        if item == "}"
+            && open
+                .last()
+                .is_some_and(|(open_indent, _)| *open_indent == indent)
+        {
+            open.pop();
+        } else if let Some(header) = item.strip_prefix("impl")
+            && header.starts_with(['<', ' '])
+            && let Some(type_name) = impl_type(header)
+        {
+            open.push((indent, type_name));
+        } else if let Some((_, type_name)) = open.last() {
+            let signature = ["pub(crate) ", "pub(super) ", "pub ", "const ", "async "]
+                .iter()
+                .fold(item, |rest, qualifier| {
+                    rest.strip_prefix(qualifier).unwrap_or(rest)
+                });
+            if let Some(name) = signature
+                .strip_prefix("fn ")
+                .and_then(|rest| words(rest).next())
+            {
+                functions.insert(format!("{type_name}::{name}"));
+            }
+        }
+    }
+    functions
+}
+
+/// Names that cited identifiers may resolve to: every word, and every
+/// `Type::function` defined in an `impl` block.
+fn source_names() -> Result<(BTreeSet<String>, BTreeSet<String>), std::io::Error> {
+    let mut all_words = BTreeSet::new();
+    let mut functions = BTreeSet::new();
+    for (path, text) in source_texts()? {
+        all_words.extend(words(&text).map(str::to_owned));
+        if path.extension().is_some_and(|extension| extension == "rs") {
+            functions.extend(impl_functions(&text));
+        }
+    }
+    Ok((all_words, functions))
 }
 
 /// Lines outside fenced code blocks, with their 1-based line numbers.
@@ -257,7 +332,11 @@ fn relative_links_in_docs_resolve() -> TestResult {
                 .filter(|target| !target.contains("://") && !target.starts_with("mailto:"));
             for target in local {
                 let (file, anchor) = target.split_once('#').unwrap_or((target, ""));
-                let resolved = directory.join(file).canonicalize().ok();
+                let resolved = if file.is_empty() {
+                    path.canonicalize().ok()
+                } else {
+                    directory.join(file).canonicalize().ok()
+                };
                 // Anchors are checked in documents; links into other files may name lines.
                 let valid = resolved.is_some_and(|resolved| {
                     anchor.is_empty()
@@ -275,18 +354,31 @@ fn relative_links_in_docs_resolve() -> TestResult {
     Ok(())
 }
 
+/// Whether a cited identifier names something defined in the sources: a
+/// `Type::function` must be defined in that type's `impl` block.
+fn resolves(identifier: &str, words: &BTreeSet<String>, functions: &BTreeSet<String>) -> bool {
+    match identifier.split_once("::") {
+        Some((type_name, function))
+            if type_name.starts_with(|first: char| first.is_ascii_uppercase())
+                && !function.contains("::") =>
+        {
+            functions.contains(identifier)
+        }
+        _ => identifier
+            .split("::")
+            .all(|segment| words.contains(segment)),
+    }
+}
+
 #[test]
 fn identifiers_cited_in_docs_exist_in_sources() -> TestResult {
-    let words = source_words()?;
+    let (words, functions) = source_names()?;
     let mut missing = Vec::new();
     for path in documents()? {
         let document = fs::read_to_string(&path)?;
         for (number, line) in prose_lines(&document) {
             for identifier in code_spans(line).filter_map(cited_identifier) {
-                if identifier
-                    .split("::")
-                    .any(|segment| !words.contains(segment))
-                {
+                if !resolves(identifier, &words, &functions) {
                     missing.push(format!("{}:{number}: {identifier}", path.display()));
                 }
             }
@@ -346,5 +438,30 @@ fn documented_lint_policy_matches_the_workspace_manifest() -> TestResult {
         }
         assert!(promised > 1, "{document}: no lint policy found");
     }
+    Ok(())
+}
+
+#[test]
+fn every_workspace_member_inherits_the_workspace_lints() -> TestResult {
+    let mut members = 0;
+    for entry in fs::read_dir(root().join("crates"))? {
+        let manifest = entry?.path().join("Cargo.toml");
+        if !manifest.is_file() {
+            continue;
+        }
+        let manifest_table = fs::read_to_string(&manifest)?.parse::<toml::Table>()?;
+        let inherits = manifest_table
+            .get("lints")
+            .and_then(|lints| lints.get("workspace"))
+            .and_then(toml::Value::as_bool);
+        assert_eq!(
+            inherits,
+            Some(true),
+            "{} must set [lints] workspace = true",
+            manifest.display()
+        );
+        members += 1;
+    }
+    assert!(members > 0, "no workspace members found");
     Ok(())
 }
