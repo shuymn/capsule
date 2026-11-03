@@ -9,7 +9,7 @@ on:
       - main
 
 env:
-  CI_MISE_VERSION: 2026.10.24
+  CI_MISE_VERSION: 2026.10.25
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
