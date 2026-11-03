@@ -1,11 +1,10 @@
 //! Bounded shell-worker frames. OS paths and exported environment remain bytes.
 
 use std::{
-    collections::HashSet,
     ffi::{OsStr, OsString},
     future::poll_fn,
     os::unix::ffi::{OsStrExt, OsStringExt},
-    path::PathBuf,
+    path::{Path, PathBuf},
     pin::Pin,
 };
 
@@ -22,15 +21,54 @@ pub const MAX_REQUEST: usize = 256 * 1024;
 pub const MAX_RESPONSE: usize = 64 * 1024;
 
 /// Complete acquisition input for one shell execution generation.
+///
+/// [`Snapshot::new`] is the only place the wire invariants are checked, so
+/// every snapshot encodes to a frame that decodes back to it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
-    /// Raw current working directory.
-    pub cwd: PathBuf,
-    /// Full exported environment; absent keys must not be inherited.
-    pub env: Vec<(OsString, OsString)>,
+    cwd: PathBuf,
+    env: Vec<(OsString, OsString)>,
 }
 
 impl Snapshot {
+    /// Build a snapshot from a raw cwd and the full exported environment;
+    /// absent keys must not be inherited. Keys are sorted, because enumeration
+    /// order is not part of the acquisition input.
+    ///
+    /// # Errors
+    /// Rejects an empty or NUL cwd, and empty, duplicate, `=` or NUL keys and
+    /// NUL values, without exposing their contents.
+    pub fn new(cwd: PathBuf, mut env: Vec<(OsString, OsString)>) -> Result<Self, Error> {
+        let raw = cwd.as_os_str().as_bytes();
+        if raw.is_empty() || raw.contains(&0) {
+            return Err(Error::Invalid("cwd"));
+        }
+        env.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        let invalid = |(key, value): &(OsString, OsString)| {
+            let key = key.as_bytes();
+            key.is_empty()
+                || key.contains(&0)
+                || key.contains(&b'=')
+                || value.as_bytes().contains(&0)
+        };
+        if env.iter().any(invalid) || env.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+            return Err(Error::Invalid("environment"));
+        }
+        Ok(Self { cwd, env })
+    }
+
+    /// Raw current working directory.
+    #[must_use]
+    pub fn cwd(&self) -> &Path {
+        &self.cwd
+    }
+
+    /// Exported variables, sorted by key.
+    #[must_use]
+    pub fn vars(&self) -> &[(OsString, OsString)] {
+        &self.env
+    }
+
     /// Look up a variable without converting its OS bytes.
     #[must_use]
     pub fn env(&self, name: &str) -> Option<&OsStr> {
@@ -38,27 +76,6 @@ impl Snapshot {
             .iter()
             .find(|(key, _)| key == name)
             .map(|(_, value)| value.as_os_str())
-    }
-
-    /// Check the invariants shared by [`Request::encode`] and [`Request::decode`].
-    fn validate(&self) -> Result<(), Error> {
-        let cwd = self.cwd.as_os_str().as_bytes();
-        if cwd.is_empty() || cwd.contains(&0) {
-            return Err(Error::Invalid("cwd"));
-        }
-        let mut keys = HashSet::with_capacity(self.env.len());
-        for (key, value) in &self.env {
-            let (key, value) = (key.as_bytes(), value.as_bytes());
-            if key.is_empty()
-                || key.contains(&0)
-                || key.contains(&b'=')
-                || value.contains(&0)
-                || !keys.insert(key)
-            {
-                return Err(Error::Invalid("environment"));
-            }
-        }
-        Ok(())
     }
 }
 
@@ -197,8 +214,7 @@ impl Request {
     /// Decode `Q, generation, exit, duration, cols, keymap, cwd, (key,value)*`.
     ///
     /// # Errors
-    /// Rejects invalid escaping, an empty cwd, duplicate/invalid environment keys
-    /// and NUL bytes.
+    /// Rejects invalid escaping and anything [`Snapshot::new`] rejects.
     pub fn decode(frame: &[u8]) -> Result<Self, Error> {
         if frame.len() > MAX_REQUEST {
             return Err(Error::TooLarge(MAX_REQUEST));
@@ -229,7 +245,7 @@ impl Request {
                 ))
             })
             .collect::<Result<Vec<_>, Error>>()?;
-        let request = Self {
+        Ok(Self {
             generation: number(generation)?,
             last_exit_code: number(exit)?,
             duration_ms: if duration.is_empty() {
@@ -239,13 +255,8 @@ impl Request {
             },
             cols: number(cols)?,
             keymap: std::str::from_utf8(&unescape(keymap)?)?.to_owned(),
-            snapshot: Snapshot {
-                cwd: PathBuf::from(OsString::from_vec(unescape(cwd)?)),
-                env,
-            },
-        };
-        request.snapshot.validate()?;
-        Ok(request)
+            snapshot: Snapshot::new(PathBuf::from(OsString::from_vec(unescape(cwd)?)), env)?,
+        })
     }
 
     /// Encode a complete request including its LF delimiter.
@@ -253,11 +264,8 @@ impl Request {
     /// Every encoded request decodes to an equal value.
     ///
     /// # Errors
-    /// Rejects requests that [`Request::decode`] would reject: an empty or NUL
-    /// cwd, or duplicate/invalid environment keys and NUL values. Also returns
-    /// an error if the escaped request exceeds the bound.
+    /// Returns an error if the escaped request exceeds the bound.
     pub fn encode(&self) -> Result<Vec<u8>, Error> {
-        self.snapshot.validate()?;
         let mut output = format!(
             "Q\t{}\t{}\t{}\t{}\t",
             self.generation,
@@ -435,35 +443,32 @@ mod tests {
             )
         }
 
-        /// Any request, including ones whose snapshot violates the wire invariants.
-        fn request() -> impl Strategy<Value = Request> {
-            (
+        /// Any request, or the rejection of a snapshot that violates the wire invariants.
+        fn request() -> impl Strategy<Value = Result<Request, Error>> {
+            let fields = (
                 any::<u64>(),
                 any::<i32>(),
                 any::<Option<u64>>(),
                 any::<u16>(),
                 text(6),
-                bytes(8),
-                vec((bytes(6), bytes(6)), 0..4),
-            )
-                .prop_map(
-                    |(generation, last_exit_code, duration_ms, cols, keymap, cwd, env)| Request {
+            );
+            let parts = (bytes(8), vec((bytes(6), bytes(6)), 0..4));
+            (fields, parts).prop_map(
+                |((generation, last_exit_code, duration_ms, cols, keymap), (cwd, env))| {
+                    let env = env
+                        .into_iter()
+                        .map(|(key, value)| (OsString::from_vec(key), OsString::from_vec(value)));
+                    let cwd = PathBuf::from(OsString::from_vec(cwd));
+                    Ok(Request {
                         generation,
-                        snapshot: Snapshot {
-                            cwd: PathBuf::from(OsString::from_vec(cwd)),
-                            env: env
-                                .into_iter()
-                                .map(|(key, value)| {
-                                    (OsString::from_vec(key), OsString::from_vec(value))
-                                })
-                                .collect(),
-                        },
+                        snapshot: Snapshot::new(cwd, env.collect())?,
                         cols,
                         last_exit_code,
                         duration_ms,
                         keymap,
-                    },
-                )
+                    })
+                },
+            )
         }
 
         /// Yields one chunk per read and reports `Pending` before each one.
@@ -502,21 +507,19 @@ mod tests {
 
         proptest! {
             #[test]
-            fn encode_accepts_exactly_what_decode_accepts(request in request()) {
-                let valid = request.snapshot.validate().is_ok();
-                match request.encode() {
-                    Ok(frame) => {
-                        prop_assert!(valid);
-                        let Some((b'\n', body)) = frame.split_last() else {
-                            return Err(TestCaseError::fail("missing frame delimiter"));
-                        };
-                        prop_assert!(!body.contains(&b'\n'));
-                        prop_assert_eq!(Request::decode(body)?, request);
-                    }
-                    Err(error) => {
-                        prop_assert!(!valid, "valid request rejected: {error}");
-                    }
-                }
+            fn snapshots_round_trip_independent_of_environment_order(request in request()) {
+                let Ok(request) = request else {
+                    return Ok(());
+                };
+                let snapshot = &request.snapshot;
+                let reversed = snapshot.vars().iter().rev().cloned().collect();
+                prop_assert_eq!(&Snapshot::new(snapshot.cwd().into(), reversed)?, snapshot);
+                let frame = request.encode()?;
+                let Some((b'\n', body)) = frame.split_last() else {
+                    return Err(TestCaseError::fail("missing frame delimiter"));
+                };
+                prop_assert!(!body.contains(&b'\n'));
+                prop_assert_eq!(Request::decode(body)?, request);
             }
 
             #[test]
@@ -549,17 +552,19 @@ mod tests {
             /// Covers: T06, T08
             #[test]
             fn rejected_frames_do_not_expose_environment_values(
-                mut request in request(),
+                request in request(),
                 index in any::<prop::sample::Index>(),
                 byte in prop_oneof![any::<u8>(), select(b"\t\\\0=".as_slice())],
             ) {
-                request
-                    .snapshot
-                    .env
-                    .push((OsString::from("SECRET"), OsString::from_vec(MARKER.to_vec())));
-                let Ok(mut frame) = request.encode() else {
+                let Ok(request) = request else {
                     return Ok(());
                 };
+                let secret = (OsString::from("SECRET"), OsString::from_vec(MARKER.to_vec()));
+                let env = request.snapshot.vars().iter().cloned().chain([secret]).collect();
+                let Ok(snapshot) = Snapshot::new(request.snapshot.cwd().into(), env) else {
+                    return Ok(());
+                };
+                let mut frame = Request { snapshot, ..request }.encode()?;
                 frame.pop();
                 frame.insert(index.index(frame.len() + 1), byte);
                 if let Err(error) = Request::decode(&frame) {

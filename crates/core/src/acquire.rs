@@ -162,9 +162,9 @@ impl Runner {
         let child_signals = signal(SignalKind::child())?;
         let child = Command::new(executable)
             .args(arguments)
-            .current_dir(&snapshot.cwd)
+            .current_dir(snapshot.cwd())
             .env_clear()
-            .envs(snapshot.env.iter().map(|(name, value)| (name, value)))
+            .envs(snapshot.vars().iter().map(|(name, value)| (name, value)))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

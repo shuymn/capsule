@@ -268,7 +268,7 @@ print -r -- RETAINED
         .ok_or("missing directory-change request")?;
     let first = Request::decode(line.as_bytes())?;
     assert_eq!(first.generation, 1);
-    assert_eq!(first.snapshot.cwd, cwd);
+    assert_eq!(first.snapshot.cwd(), cwd);
     assert_eq!(first.snapshot.env("CAP_LATE"), Some(cwd.as_os_str()));
     assert_eq!(first.last_exit_code, 7);
     assert!(first.duration_ms.is_some_and(|duration| duration >= 3_000));
@@ -352,7 +352,7 @@ for hook in "${precmd_functions[@]}"; do "$hook" >/dev/null || exit 13; done
             .duration_ms
             .is_some_and(|duration| duration >= 3_000)
     );
-    assert_eq!(empty.snapshot.cwd, cwd);
+    assert_eq!(empty.snapshot.cwd(), cwd);
     assert_eq!(empty.last_exit_code, 130);
     assert_eq!(empty.duration_ms, None);
     assert_eq!(next.last_exit_code, 5);

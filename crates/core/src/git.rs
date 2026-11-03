@@ -167,14 +167,14 @@ struct Repository {
 pub fn local_directory(snapshot: &Snapshot) -> String {
     if let Some(home) = snapshot.env("HOME").filter(|home| !home.is_empty()) {
         let home = Path::new(home);
-        if snapshot.cwd == home {
+        if snapshot.cwd() == home {
             return "~".to_owned();
         }
-        if let Ok(suffix) = snapshot.cwd.strip_prefix(home) {
+        if let Ok(suffix) = snapshot.cwd().strip_prefix(home) {
             return format!("~/{}", suffix.to_string_lossy());
         }
     }
-    snapshot.cwd.to_string_lossy().into_owned()
+    snapshot.cwd().to_string_lossy().into_owned()
 }
 
 /// Acquire directory metadata and Git with the shared bounded runner.
@@ -188,17 +188,17 @@ pub async fn acquire_context(
     cancel: &CancellationToken,
     git_enabled: bool,
 ) -> Result<ContextInfo, AcquireError> {
-    let repo = find_repository(&snapshot.cwd, runner, cancel).await?;
+    let repo = find_repository(snapshot.cwd(), runner, cancel).await?;
     let directory = repo.as_ref().map_or_else(
         || local_directory(snapshot),
         |repo| {
-            if snapshot.cwd == repo.root {
+            if snapshot.cwd() == repo.root {
                 repo.root.file_name().map_or_else(
                     || local_directory(snapshot),
                     |name| name.to_string_lossy().into_owned(),
                 )
             } else {
-                snapshot.cwd.strip_prefix(&repo.root).map_or_else(
+                snapshot.cwd().strip_prefix(&repo.root).map_or_else(
                     |_| local_directory(snapshot),
                     |path| path.to_string_lossy().into_owned(),
                 )
@@ -206,7 +206,7 @@ pub async fn acquire_context(
         },
     );
     let read_only = runner
-        .metadata(&snapshot.cwd, cancel)
+        .metadata(snapshot.cwd(), cancel)
         .await?
         .is_some_and(|metadata| metadata.permissions().readonly());
     let mut git = None;

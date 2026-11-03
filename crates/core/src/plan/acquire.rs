@@ -31,7 +31,7 @@ pub async fn acquire_condition(
     }
     let mut failure = None;
     for path in &when.files {
-        match runner.metadata(&snapshot.cwd.join(path), cancel).await {
+        match runner.metadata(&snapshot.cwd().join(path), cancel).await {
             Ok(Some(metadata)) if metadata.is_file() => return Ok(true),
             Ok(_) => {}
             Err(AcquireError::Cancelled) => return Err(AcquireError::Cancelled),
@@ -89,7 +89,7 @@ async fn acquire_candidate(
             return extract(&value.to_string_lossy(), candidate);
         }
         Source::File(path) => {
-            let Some(bytes) = runner.file(&snapshot.cwd.join(path), cancel).await? else {
+            let Some(bytes) = runner.file(&snapshot.cwd().join(path), cancel).await? else {
                 return Ok(None);
             };
             bytes

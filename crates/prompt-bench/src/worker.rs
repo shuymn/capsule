@@ -154,7 +154,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Connection<R, W> {
                 let elapsed = started.elapsed().as_secs_f64() * 1000.0;
                 let initial_ms = *initial_ms.get_or_insert(elapsed);
                 if response.complete {
-                    if expected_calls > 0 || request.snapshot.cwd.join("Cargo.toml").is_file() {
+                    if expected_calls > 0 || request.snapshot.cwd().join("Cargo.toml").is_file() {
                         anyhow::ensure!(
                             response.left1.contains(&probe.version),
                             "completed worker prompt is missing rustc output"
@@ -194,18 +194,15 @@ mod tests {
         })
     }
 
-    fn request(cwd: &Path, keymap: &str) -> Request {
-        Request {
+    fn request(cwd: &Path, keymap: &str) -> Result<Request, session::Error> {
+        Ok(Request {
             generation: 7,
-            snapshot: Snapshot {
-                cwd: cwd.into(),
-                env: Vec::new(),
-            },
+            snapshot: Snapshot::new(cwd.into(), Vec::new())?,
             cols: 240,
             last_exit_code: 0,
             duration_ms: None,
             keymap: keymap.into(),
-        }
+        })
     }
 
     fn connection() -> (
@@ -256,7 +253,7 @@ mod tests {
         });
         let sample = connection
             .measure(
-                &request(temp.path(), "main"),
+                &request(temp.path(), "main")?,
                 &probe,
                 1,
                 Duration::from_secs(2),
@@ -286,7 +283,7 @@ mod tests {
         });
         let result = connection
             .measure(
-                &request(temp.path(), "main"),
+                &request(temp.path(), "main")?,
                 &probe,
                 1,
                 Duration::from_secs(2),
@@ -317,7 +314,7 @@ mod tests {
         });
         let result = connection
             .measure(
-                &request(temp.path(), "main"),
+                &request(temp.path(), "main")?,
                 &probe,
                 1,
                 Duration::from_millis(30),
@@ -359,7 +356,7 @@ mod tests {
         });
         connection
             .measure(
-                &request(temp.path(), "vicmd"),
+                &request(temp.path(), "vicmd")?,
                 &probe,
                 0,
                 Duration::from_secs(2),
@@ -392,7 +389,7 @@ mod tests {
             });
             let result = connection
                 .measure(
-                    &request(temp.path(), "main"),
+                    &request(temp.path(), "main")?,
                     &probe,
                     expected,
                     Duration::from_secs(2),

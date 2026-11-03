@@ -324,7 +324,7 @@ async fn load_plan(
 ) -> anyhow::Result<Arc<LoadedPlan>> {
     let mut source = None;
     for path in config_paths(snapshot) {
-        let path = snapshot.cwd.join(path);
+        let path = snapshot.cwd().join(path);
         if let Some(bytes) = runner.file(&path, cancel).await? {
             source = Some(String::from_utf8(bytes)?);
             break;

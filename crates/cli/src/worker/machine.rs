@@ -244,9 +244,7 @@ impl Machine {
     }
 
     /// Accept a request; `false` when it is older than the current one.
-    fn accept(&mut self, mut request: Request, effects: &mut Vec<Effect>) -> bool {
-        // Environment order is not part of the acquisition input.
-        request.snapshot.env.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    fn accept(&mut self, request: Request, effects: &mut Vec<Effect>) -> bool {
         match self.state.as_mut() {
             Some(current) if request.generation < current.request.generation => return false,
             Some(current) if request.generation == current.request.generation => {
