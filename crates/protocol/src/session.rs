@@ -428,20 +428,20 @@ mod tests {
         const FRAME_LIMIT: usize = 8;
         const MARKER: &[u8] = b"s3cr3t-marker";
 
-        /// Bytes biased toward the characters that framing and validation treat specially.
+        /// Up to `max` values, biased toward `special` ones that the wire format treats specially.
+        fn biased<T>(special: &'static [T], max: usize) -> impl Strategy<Value = Vec<T>>
+        where
+            T: Arbitrary + Clone + std::fmt::Debug + 'static,
+        {
+            vec(prop_oneof![3 => any::<T>(), 1 => select(special)], 0..max)
+        }
+
         fn bytes(max: usize) -> impl Strategy<Value = Vec<u8>> {
-            vec(
-                prop_oneof![3 => any::<u8>(), 1 => select(b"\t\n\r\\=\0".to_vec())],
-                0..max,
-            )
+            biased(b"\t\n\r\\=\0", max)
         }
 
         fn text(max: usize) -> impl Strategy<Value = String> {
-            vec(
-                prop_oneof![3 => any::<char>(), 1 => select(vec!['\t', '\n', '\r', '\\'])],
-                0..max,
-            )
-            .prop_map(String::from_iter)
+            biased(&['\t', '\n', '\r', '\\'], max).prop_map(String::from_iter)
         }
 
         /// Frame contents without the LF delimiter, sometimes over the limit.
@@ -455,18 +455,16 @@ mod tests {
         /// Any request, including ones whose snapshot violates the wire invariants.
         fn request() -> impl Strategy<Value = Request> {
             (
-                (
-                    any::<u64>(),
-                    any::<i32>(),
-                    any::<Option<u64>>(),
-                    any::<u16>(),
-                ),
+                any::<u64>(),
+                any::<i32>(),
+                any::<Option<u64>>(),
+                any::<u16>(),
                 text(6),
                 bytes(8),
                 vec((bytes(6), bytes(6)), 0..4),
             )
                 .prop_map(
-                    |((generation, last_exit_code, duration_ms, cols), keymap, cwd, env)| Request {
+                    |(generation, last_exit_code, duration_ms, cols, keymap, cwd, env)| Request {
                         generation,
                         snapshot: Snapshot {
                             cwd: PathBuf::from(OsString::from_vec(cwd)),
@@ -557,13 +555,7 @@ mod tests {
 
             #[test]
             fn decoders_reject_arbitrary_frames_without_panicking(
-                frame in vec(
-                    prop_oneof![
-                        3 => any::<u8>(),
-                        2 => select(b"\t\\QR01-".to_vec()),
-                    ],
-                    0..64,
-                ),
+                frame in biased(b"\t\\QR01-", 64),
             ) {
                 // Only the absence of a panic is asserted here.
                 let _ = Request::decode(&frame);
@@ -572,11 +564,10 @@ mod tests {
 
             #[test]
             fn rejected_frames_do_not_expose_environment_values(
-                request in request(),
+                mut request in request(),
                 index in any::<prop::sample::Index>(),
-                byte in prop_oneof![any::<u8>(), select(b"\t\\\0=".to_vec())],
+                byte in prop_oneof![any::<u8>(), select(b"\t\\\0=".as_slice())],
             ) {
-                let mut request = request;
                 request
                     .snapshot
                     .env
@@ -608,12 +599,14 @@ mod tests {
                 }
                 stream.extend_from_slice(&tail);
                 let mut chunks = VecDeque::new();
+                let mut rest = stream.as_slice();
                 for size in sizes.iter().cycle() {
-                    if stream.is_empty() {
+                    if rest.is_empty() {
                         break;
                     }
-                    let rest = stream.split_off((*size).min(stream.len()));
-                    chunks.push_back(std::mem::replace(&mut stream, rest));
+                    let (chunk, tail) = rest.split_at((*size).min(rest.len()));
+                    chunks.push_back(chunk.to_vec());
+                    rest = tail;
                 }
 
                 let expected_frames = frames
