@@ -50,6 +50,7 @@ futures-core = { version = "0.3", default-features = false }
 time = { version = "0.3", features = ["local-offset"] }
 regex-lite = "0.1"
 tempfile = "3"
+proptest = { version = "1", default-features = false, features = ["std"] }
 anstyle = "1"
 serde_json = "1"
 strum = { version = "0.28", features = ["derive"] }
