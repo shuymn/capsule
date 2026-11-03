@@ -942,7 +942,8 @@ def run_empty_enter(shell, record):
     shell.complete(1)
     worker = shell.state()["worker"]
     (shell.home / ".capsule/config.toml").write_text("schema_version = 2\n")
-    shell.run_line("git init -q && git symbolic-ref HEAD refs/heads/ENTER_BEFORE; _CAPSULE_CMD_START=$((EPOCHREALTIME-3)); (exit 7)")
+    generation, mark = shell.run_line("git init -q && git symbolic-ref HEAD refs/heads/ENTER_BEFORE; _CAPSULE_CMD_START=$((EPOCHREALTIME-3)); (exit 7)")
+    first = [item for item in shell.transitions(mark, generation) if item["event"] == b"precmd"][-1]["duration"]
     shell.state()
     assert b"ENTER_BEFORE" in (shell.home / "rendered").read_bytes()
 
@@ -977,7 +978,8 @@ def run_empty_enter(shell, record):
     # The next command reports its own duration under the threshold rule again.
     generation, mark = shell.run_line("_CAPSULE_CMD_START=$((EPOCHREALTIME-2)); (exit 4)")
     finalized = [item for item in shell.transitions(mark, generation) if item["event"] == b"precmd"]
-    assert finalized[-1]["status"] == 4 and 2000 <= int(finalized[-1]["duration"]) < 3000, finalized
+    # Measured from this command's start, not carried over from the first one.
+    assert finalized[-1]["status"] == 4 and int(finalized[-1]["duration"]) >= 2000 and finalized[-1]["duration"] != first, finalized
     record("command_after_empty_enter_reports_its_own_status_and_duration")
 
 

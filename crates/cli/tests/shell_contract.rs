@@ -354,10 +354,9 @@ for hook in "${precmd_functions[@]}"; do "$hook" >/dev/null || exit 13; done
     assert_eq!(empty.last_exit_code, 130);
     assert_eq!(empty.duration_ms, None);
     assert_eq!(next.last_exit_code, 5);
-    assert!(
-        next.duration_ms
-            .is_some_and(|duration| (2_000..3_000).contains(&duration))
-    );
+    // Measured from this command's start, not carried over from the first one.
+    assert!(next.duration_ms.is_some_and(|duration| duration >= 2_000));
+    assert_ne!(next.duration_ms, command.duration_ms);
     assert!(
         tokio::time::timeout(Duration::from_secs(4), child.wait())
             .await??

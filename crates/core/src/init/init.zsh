@@ -181,15 +181,13 @@ _capsule_preexec() {
 }
 
 _capsule_precmd() {
-    local _capsule_exit=$?
+    # Status is zsh's $?, read before any assignment resets it.
+    _CAPSULE_LAST_EXIT=$?
     _CAPSULE_PROMPT_SUBST=${options[promptsubst]}
     emulate -L zsh
     # Make a command-level option transition safe before any user hook can fail.
     _capsule_refresh_retained_prompt
-    # Every prompt observes its local inputs afresh; empty Enter is not special.
-    # Status is zsh's $?, which empty Enter leaves unchanged. Duration exists
-    # only for a command that started since the previous prompt.
-    _CAPSULE_LAST_EXIT=$_capsule_exit
+    # Duration belongs only to a command started since the previous prompt.
     _CAPSULE_DURATION_MS=''
     if [[ -n $_CAPSULE_CMD_START ]]; then
         local -i _capsule_duration

@@ -20,13 +20,13 @@ Use generic configuration for tool-specific values; see [extending.md](extending
 ## Behavioral contract
 
 - WHILE acquisition is pending, Capsule SHALL accept input and preserve the typed buffer/cursor during redraw.
-- WHEN zsh prepares a prompt, including after empty Enter, Capsule SHALL start a generation and reload configuration asynchronously. Capture cwd and the full exported environment as OS bytes after preserved `precmd_functions` hooks complete or abort, then send the request; retain status/duration capture in the first Capsule hook.
+- WHEN zsh prepares a prompt, including after empty Enter, Capsule SHALL start a generation and reload configuration asynchronously. Capture cwd and the full exported environment as OS bytes after preserved `precmd_functions` hooks complete or abort, then send the request; capture status/duration in the first Capsule hook.
 - WHILE revalidating an identical cwd/environment snapshot, Capsule SHALL retain the last settled external display, including directory metadata, Git, and custom modules; new partial results SHALL remain hidden.
 - WHEN cwd or any exported variable's presence or bytes change, Capsule SHALL discard retained external display immediately. Environment ordering SHALL NOT affect snapshot identity.
 - WHEN reload accepts different configuration source text (including removal), Capsule SHALL discard retained display before using the new plan. Until reload settles, same-input retention SHALL be provisional; a rejected configuration SHALL retain the last valid plan.
 - WHEN a generation settles, including failure or timeout, Capsule SHALL atomically replace the external display with that generation's observations, removing results whose conditions are false or whose required values are Missing or Failed.
 - WHEN exit status, duration, width, or keymap changes, Capsule SHALL render these local inputs without waiting for external acquisition. Width and keymap SHALL NOT trigger reacquisition.
-- WHEN zsh prepares any prompt, Capsule SHALL observe local inputs from that prompt alone and SHALL NOT special-case empty Enter: exit status is zsh's `$?` as seen by the first Capsule hook (empty Enter leaves it unchanged; an interrupted line sets it), and duration is shown only for a command that started since the previous prompt.
+- WHEN zsh prepares a prompt, Capsule SHALL use zsh's `$?` as seen by the first Capsule hook as the exit status, and SHALL provide a duration only for a command that started since the previous prompt.
 - WHEN transport fails or the worker stops, Capsule SHALL select fallback and discard worker-owned retained display; the next prompt SHALL start a replacement worker.
 - WHEN spawning a command, Capsule SHALL use direct argv and replace its environment with the snapshot, preserving absent versus empty variables and non-UTF-8 bytes. Non-exported parameters, aliases, and functions are excluded.
 - WHEN one generation requests the same argv with the same cwd and environment more than once, Capsule SHALL run it once and share its outcome, including failure; a later generation SHALL run it again.
