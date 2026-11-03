@@ -1,7 +1,7 @@
 //! Unescaped styled text. Width and truncation never inspect serialized ANSI.
 
 use unicode_segmentation::UnicodeSegmentation as _;
-use unicode_width::UnicodeWidthStr as _;
+use unicode_width::UnicodeWidthStr;
 
 use crate::{
     limits::MAX_LINE_TEXT_BYTES,
@@ -63,12 +63,12 @@ impl StyledText {
     }
 
     pub(super) fn width(&self) -> usize {
-        self.plain_text().width()
+        display_width(&self.plain_text())
     }
 
     pub(super) fn truncate(&self, max_width: usize) -> Self {
         let plain = self.plain_text();
-        if plain.width() <= max_width && plain.len() <= MAX_LINE_TEXT_BYTES {
+        if display_width(&plain) <= max_width && plain.len() <= MAX_LINE_TEXT_BYTES {
             return self.clone();
         }
         if max_width == 0 {
@@ -114,6 +114,13 @@ impl StyledText {
     }
 }
 
+/// Display columns: the sum over extended grapheme clusters, as truncation
+/// counts them. Measuring the whole string instead lets `unicode-width` merge
+/// a lam-alef pair into one column where zsh counts two.
+pub(super) fn display_width(text: &str) -> usize {
+    text.graphemes(true).map(UnicodeWidthStr::width).sum()
+}
+
 fn sanitize(text: &str) -> String {
     let mut sanitized = String::with_capacity(text.len());
     for character in text.chars() {
@@ -141,6 +148,7 @@ mod tests {
             ("🇯🇵", 2),
             ("日本語", 6),
             ("%B", 2),
+            ("\u{644}\u{627}", 2),
         ] {
             assert_eq!(StyledText::new(text, Style::new()).width(), width, "{text}");
         }
@@ -183,7 +191,7 @@ mod tests {
         assert!(!plain.chars().any(char::is_control));
         assert!(plain.contains("\\n\\t"));
         assert!(plain.contains("\\u{202e}\\u{61c}"));
-        assert_eq!(text.width(), plain.width());
+        assert_eq!(text.width(), display_width(&plain));
         assert!(plain.contains("%B$HOME`echo no`"));
         let serialized = text.to_zsh(ColorMap::default());
         assert!(serialized.contains("%%B"));
@@ -250,8 +258,7 @@ mod properties {
             // The prefix is the longest one: one more grapheme would not fit.
             if let Some(next) = original[prefix.len()..].graphemes(true).next() {
                 let longer = format!("{prefix}{next}…");
-                let width = longer.graphemes(true).map(unicode_width::UnicodeWidthStr::width).sum::<usize>();
-                prop_assert!(width > cols || longer.len() > MAX_LINE_TEXT_BYTES, "{prefix:?} could keep {next:?}");
+                prop_assert!(display_width(&longer) > cols || longer.len() > MAX_LINE_TEXT_BYTES, "{prefix:?} could keep {next:?}");
             }
         }
 

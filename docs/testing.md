@@ -18,8 +18,8 @@ Read this file before writing or modifying tests.
   Assert behavior, including relevant failure/cancellation paths, without depending
   on execution order. Explain the reason and removal condition for any ignored test.
 - State invariants over generated inputs with `proptest` where a contract holds for
-  every input (round trips, bounds, absence of panics). Keep the default case count,
-  and commit any `proptest-regressions/` file a failure writes so the shrunk case
+  every input (round trips, bounds, absence of panics). Keep the default case count
+  (set `PROPTEST_CASES` for a longer local run), and commit any `proptest-regressions/` file a failure writes so the shrunk case
   stays in the suite.
 - [docs.rs](../crates/cli/tests/docs.rs) keeps documentation that restates code
   facts in sync: relative links and heading anchors, backticked identifiers
