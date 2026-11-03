@@ -333,7 +333,6 @@ async fn identical_commands_run_once_per_generation_across_values_and_modules() 
     worker.close().await
 }
 
-/// Covers: T03
 #[tokio::test]
 async fn a_fresh_worker_with_an_invalid_configuration_renders_defaults() -> Result {
     let home = tempfile::tempdir()?;
@@ -348,6 +347,7 @@ async fn a_fresh_worker_with_an_invalid_configuration_renders_defaults() -> Resu
     worker.close().await
 }
 
+/// Covers: T03
 #[tokio::test]
 async fn failed_reload_preserves_last_valid_plan_then_accepts_fixed_configuration() -> Result {
     let home = tempfile::tempdir()?;
