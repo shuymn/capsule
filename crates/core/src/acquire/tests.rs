@@ -1,6 +1,7 @@
 use std::{
     error::Error,
     ffi::OsString,
+    fs::File,
     os::unix::ffi::OsStringExt,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -28,6 +29,47 @@ fn snapshot(cwd: &Path) -> Snapshot {
             .into_iter()
             .map(|value| (OsString::from("PATH"), value))
             .collect(),
+    }
+}
+
+/// A nonblocking reader of a `liveness` FIFO in `directory`, which the
+/// commands `LIVE_DESCENDANT` starts hold open while they live.
+fn liveness(directory: &Path) -> io::Result<File> {
+    let fifo = directory.join("liveness");
+    if !std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()?
+        .success()
+    {
+        return Err(io::Error::other("mkfifo failed"));
+    }
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(OFlags::NONBLOCK.bits().cast_signed())
+        .open(fifo)
+}
+
+/// A background descendant that writes `ready` and holds the FIFO open.
+const LIVE_DESCENDANT: &str = "sh -c 'exec 3>liveness; printf ready >&3; sleep 60' &";
+
+/// Read the FIFO until EOF, which proves every writer has exited. A leaked
+/// descendant keeps it at `WouldBlock` until the deadline.
+fn drain(reader: &mut File) -> io::Result<Vec<u8>> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut observed = Vec::new();
+    loop {
+        let mut chunk = [0; 64];
+        match reader.read(&mut chunk) {
+            Ok(0) => return Ok(observed),
+            Ok(count) => observed.extend_from_slice(&chunk[..count]),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                if std::time::Instant::now() > deadline {
+                    return Err(error);
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(error),
+        }
     }
 }
 
@@ -74,7 +116,8 @@ fn command_uses_snapshot_cwd_and_reports_failed_exit() -> TestResult {
         assert_eq!(output, format!("{}\n", expected.display()).as_bytes());
         let failure = runner
             .command(
-                &argv(&["sh", "-c", "printf hidden >&2; exit 7"])?,
+                // Closing stdout early must not cut the wait for the exit status.
+                &argv(&["sh", "-c", "printf hidden >&2; exec >&-; sleep 0.2; exit 7"])?,
                 &input,
                 &cancel,
             )
@@ -110,24 +153,8 @@ fn command_rejects_excessive_stdout_and_releases_capacity() -> TestResult {
 #[test]
 fn timeout_stops_descendants_that_hold_stdout_after_the_leader_exits() -> TestResult {
     let directory = tempfile::tempdir()?;
-    let liveness = directory.path().join("liveness");
-    assert!(
-        std::process::Command::new("mkfifo")
-            .arg(&liveness)
-            .status()?
-            .success()
-    );
-    let fd = rustix::fs::open(
-        &liveness,
-        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK,
-        Mode::empty(),
-    )?;
-    let mut reader = File::from(fd);
-    let command = argv(&[
-        "sh",
-        "-c",
-        "sh -c 'exec 3>liveness; printf ready >&3; sleep 60' & exit 0",
-    ])?;
+    let mut reader = liveness(directory.path())?;
+    let command = argv(&["sh", "-c", &format!("{LIVE_DESCENDANT} exit 0")])?;
     runtime()?.block_on(async {
         let runner = Runner::default();
         let input = snapshot(directory.path());
@@ -139,11 +166,7 @@ fn timeout_stops_descendants_that_hold_stdout_after_the_leader_exits() -> TestRe
         assert!(matches!(result, Ok(Err(AcquireError::TimedOut))));
         assert_eq!(runner.processes.available_permits(), 4);
     });
-    // The descendant's extra pipe stays open while it lives. EOF after `ready`
-    // proves termination; a leaked descendant would instead return WouldBlock.
-    let mut observed = Vec::new();
-    reader.read_to_end(&mut observed)?;
-    assert_eq!(observed, b"ready");
+    assert_eq!(drain(&mut reader)?, b"ready");
     Ok(())
 }
 
@@ -188,22 +211,24 @@ fn cancellation_stops_running_commands_and_prevents_queued_spawns() -> TestResul
 
 /// Covers: T07
 #[test]
-fn dropped_command_future_retains_its_slot_until_the_child_is_reaped() -> TestResult {
+fn dropped_command_future_stops_its_group_and_retains_its_slot_until_reaped() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let mut reader = liveness(directory.path())?;
+    let command = argv(&["sh", "-c", &format!("{LIVE_DESCENDANT} sleep 60")])?;
     runtime()?.block_on(async {
         let runner = Runner::default();
         let command_runner = runner.clone();
+        let input = snapshot(directory.path());
         let command = tokio::spawn(async move {
             command_runner
-                .command(
-                    &argv(&["sleep", "60"])?,
-                    &snapshot(Path::new("/")),
-                    &CancellationToken::new(),
-                )
+                .command(&command, &input, &CancellationToken::new())
                 .await
         });
+        // Wait until the descendant holds the FIFO, so EOF below means it exited.
+        let mut ready = [0; 5];
         timeout(Duration::from_secs(5), async {
-            while runner.processes.available_permits() == 4 {
-                tokio::task::yield_now().await;
+            while !matches!(reader.read(&mut ready), Ok(count) if count > 0) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await?;
@@ -217,6 +242,7 @@ fn dropped_command_future_retains_its_slot_until_the_child_is_reaped() -> TestRe
         .await?;
         Ok::<_, Box<dyn Error>>(())
     })?;
+    drain(&mut reader)?;
     Ok(())
 }
 

@@ -8,8 +8,8 @@ test_workspace = true
 
 # Equivalent mutants: no test can tell them from the original.
 exclude_re = [
-  # The OR'ed open and waitid flags are disjoint bits, so `^` equals `|`.
-  'replace \| with \^ in (Runner::file|observe_exit)$',
+  # The OR'ed waitid flags are disjoint bits, so `^` equals `|`.
+  'replace \| with \^ in observe_exit$',
   # These already return `Poll::Ready(Ok(()))`.
   'Pipe>::poll_(flush|shutdown) -> ',
 ]

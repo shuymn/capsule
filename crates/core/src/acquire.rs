@@ -1,8 +1,9 @@
 //! Bounded acquisition from a shell snapshot, with owned subprocess lifetimes.
 
 use std::{
-    fs::File,
+    fs::OpenOptions,
     io::{self, Read},
+    os::unix::fs::OpenOptionsExt,
     path::Path,
     process::{ExitStatus, Stdio},
     sync::{Arc, Mutex},
@@ -10,7 +11,7 @@ use std::{
 
 use capsule_protocol::session::Snapshot;
 use rustix::{
-    fs::{Mode, OFlags},
+    fs::OFlags,
     process::{Pid, Signal, WaitId, WaitIdOptions, kill_process_group, waitid},
 };
 use tokio::{
@@ -196,16 +197,16 @@ impl Runner {
     ) -> Result<Option<Vec<u8>>, AcquireError> {
         let path = path.to_owned();
         self.blocking(cancel, move || {
-            let fd = match rustix::fs::open(
-                &path,
-                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK,
-                Mode::empty(),
-            ) {
-                Ok(fd) => fd,
-                Err(rustix::io::Errno::NOENT) => return Ok(None),
-                Err(error) => return Err(io::Error::from(error).into()),
+            // std opens with O_CLOEXEC; O_NONBLOCK keeps a FIFO from waiting for a writer.
+            let file = match OpenOptions::new()
+                .read(true)
+                .custom_flags(OFlags::NONBLOCK.bits().cast_signed())
+                .open(&path)
+            {
+                Ok(file) => file,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(error.into()),
             };
-            let file = File::from(fd);
             if !file.metadata()?.is_file() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -453,15 +454,21 @@ fn check_size(bytes: Vec<u8>) -> Result<Vec<u8>, AcquireError> {
     }
 }
 
-fn terminate_group(group: Pid, observed_exit_and_eof: bool) -> Result<(), AcquireError> {
+fn terminate_group(
+    group: Pid,
+    #[cfg_attr(
+        not(target_os = "macos"),
+        expect(unused_variables, reason = "only Darwin's zombie-group EPERM needs it")
+    )]
+    observed_exit_and_eof: bool,
+) -> Result<(), AcquireError> {
     match kill_process_group(group, Signal::KILL) {
         Ok(()) | Err(rustix::io::Errno::SRCH) => Ok(()),
         // Darwin reports EPERM for a process group containing only zombies.
         // Require both non-reaping exit observation and closed stdout before
         // accepting that result; live same-user descendants remain signalable.
-        Err(rustix::io::Errno::PERM) if cfg!(target_os = "macos") && observed_exit_and_eof => {
-            Ok(())
-        }
+        #[cfg(target_os = "macos")]
+        Err(rustix::io::Errno::PERM) if observed_exit_and_eof => Ok(()),
         Err(error) => Err(io::Error::from(error).into()),
     }
 }

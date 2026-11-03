@@ -150,9 +150,8 @@ async fn serve() -> anyhow::Result<()> {
     {
         generations.shutdown().await;
     }
-    if !writer.is_finished() {
-        writer.await??;
-    }
+    // `stop` ends the writer without finishing a partial frame, so joining it
+    // could only report a late write error from a shell that already left.
     result
 }
 
