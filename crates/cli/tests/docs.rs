@@ -172,18 +172,94 @@ fn impl_functions(source: &str) -> BTreeSet<String> {
     functions
 }
 
-/// Names that cited identifiers may resolve to: every word, and every
-/// `Type::function` defined in an `impl` block.
-fn source_names() -> Result<(BTreeSet<String>, BTreeSet<String>), std::io::Error> {
-    let mut all_words = BTreeSet::new();
-    let mut functions = BTreeSet::new();
-    for (path, text) in source_texts()? {
-        all_words.extend(words(&text).map(str::to_owned));
-        if path.extension().is_some_and(|extension| extension == "rs") {
-            functions.extend(impl_functions(&text));
+/// The module a `mod name;` line declares, with any visibility.
+fn declared_module(line: &str) -> Option<&str> {
+    let item = line.trim_start();
+    let item = item
+        .strip_prefix("pub")
+        .map_or(item, |rest| match rest.strip_prefix('(') {
+            Some(rest) => rest.split_once(')').map_or(rest, |(_, rest)| rest),
+            None => rest,
+        })
+        .trim_start();
+    item.strip_prefix("mod ")?.strip_suffix(';')
+}
+
+/// Every source file compiled into a workspace library, keyed by canonical
+/// path, with the library's crate name. Files are found by following `mod`
+/// declarations from each `src/lib.rs`, so binaries, integration tests, and
+/// their modules are excluded.
+fn library_files() -> Result<BTreeMap<PathBuf, String>, Box<dyn std::error::Error>> {
+    let mut files = BTreeMap::new();
+    for member in fs::read_dir(root().join("crates"))? {
+        let member = member?.path();
+        let lib = member.join("src/lib.rs");
+        if !lib.is_file() {
+            continue;
+        }
+        let manifest = fs::read_to_string(member.join("Cargo.toml"))?.parse::<toml::Table>()?;
+        let name = manifest
+            .get("lib")
+            .and_then(|lib| lib.get("name"))
+            .or_else(|| {
+                manifest
+                    .get("package")
+                    .and_then(|package| package.get("name"))
+            })
+            .and_then(toml::Value::as_str)
+            .ok_or("library without a name")?
+            .replace('-', "_");
+        // Each file with the directory that holds its child modules.
+        let mut pending = vec![(lib, member.join("src"))];
+        while let Some((file, directory)) = pending.pop() {
+            for module in fs::read_to_string(&file)?
+                .lines()
+                .filter_map(declared_module)
+            {
+                let flat = directory.join(format!("{module}.rs"));
+                let nested = directory.join(module).join("mod.rs");
+                let child = if flat.is_file() { flat } else { nested };
+                pending.push((child, directory.join(module)));
+            }
+            files.insert(file.canonicalize()?, name.clone());
         }
     }
-    Ok((all_words, functions))
+    Ok(files)
+}
+
+/// Names that cited identifiers may resolve to.
+#[derive(Default)]
+struct SourceNames {
+    /// Every word in the sources, and every library crate name.
+    words: BTreeSet<String>,
+    /// Every `Type::function` defined in an `impl` block, and the same
+    /// qualified by the library crate that compiles it.
+    functions: BTreeSet<String>,
+    /// The crate names of workspace libraries.
+    libraries: BTreeSet<String>,
+}
+
+fn source_names() -> Result<SourceNames, Box<dyn std::error::Error>> {
+    let files = library_files()?;
+    let libraries = files.values().cloned().collect::<BTreeSet<_>>();
+    let mut names = SourceNames {
+        words: libraries.clone(),
+        libraries,
+        ..SourceNames::default()
+    };
+    for (path, text) in source_texts()? {
+        names.words.extend(words(&text).map(str::to_owned));
+        if path.extension().is_some_and(|extension| extension == "rs") {
+            let library = files.get(&path.canonicalize()?);
+            for function in impl_functions(&text) {
+                if let Some(library) = library {
+                    names.functions.insert(format!("{library}::{function}"));
+                }
+                names.functions.insert(function);
+            }
+        }
+    }
+    Ok(names)
 }
 
 /// Lines outside fenced code blocks, with their 1-based line numbers.
@@ -228,31 +304,106 @@ fn cited_identifier(span: &str) -> Option<&str> {
     resolvable.then_some(span)
 }
 
-/// GitHub heading anchors of a Markdown document, including duplicate suffixes.
-fn anchors(document: &str) -> BTreeSet<String> {
-    let mut seen = BTreeMap::<String, usize>::new();
+/// GitHub heading anchors of a Markdown document, including duplicate
+/// suffixes, as github-slugger computes them: each heading's rendered text,
+/// lowercased, keeping only letters, numbers, marks, connector punctuation,
+/// `-`, and ASCII spaces, which become `-`. Other whitespace is dropped.
+/// Headings with HTML or images are rejected,
+/// because GitHub sanitizes them before slugging.
+fn anchors(document: &str) -> Result<BTreeSet<String>, String> {
+    use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+    use unicode_properties::{GeneralCategory, GeneralCategoryGroup, UnicodeGeneralCategory};
+
+    // Suffix counts per base slug, as github-slugger keeps them.
+    let mut occurrences = BTreeMap::<String, usize>::new();
     let mut anchors = BTreeSet::new();
-    for (_, line) in prose_lines(document) {
-        let Some(heading) = line.strip_prefix('#') else {
-            continue;
-        };
-        let slug = heading
-            .trim_start_matches('#')
-            .trim()
-            .to_lowercase()
-            .chars()
-            .filter(|character| character.is_alphanumeric() || matches!(character, ' ' | '-' | '_'))
-            .map(|character| if character == ' ' { '-' } else { character })
-            .collect::<String>();
-        let count = seen.entry(slug.clone()).or_default();
-        anchors.insert(if *count == 0 {
-            slug
-        } else {
-            format!("{slug}-{count}")
-        });
-        *count += 1;
+    let mut heading = None::<String>;
+    let parser = Parser::new_ext(document, Options::ENABLE_YAML_STYLE_METADATA_BLOCKS);
+    for event in parser {
+        match (&mut heading, event) {
+            (None, Event::Start(Tag::Heading { .. })) => heading = Some(String::new()),
+            (Some(text), Event::Text(part) | Event::Code(part)) => text.push_str(&part),
+            (Some(text), Event::Html(markup) | Event::InlineHtml(markup)) => {
+                return Err(format!("unsupported HTML {markup:?} in heading: {text}"));
+            }
+            (Some(text), Event::Start(Tag::Image { .. })) => {
+                return Err(format!("unsupported image in heading: {text}"));
+            }
+            (Some(text), Event::End(TagEnd::Heading(_))) => {
+                let base = text
+                    .to_lowercase()
+                    .chars()
+                    .filter(|character| {
+                        character.is_alphanumeric()
+                            || *character == ' '
+                            || matches!(
+                                character.general_category_group(),
+                                GeneralCategoryGroup::Mark
+                            )
+                            || character.general_category() == GeneralCategory::ConnectorPunctuation
+                            || *character == '-'
+                    })
+                    .map(|character| if character == ' ' { '-' } else { character })
+                    .collect::<String>();
+                // A suffixed slug may collide with an earlier heading's own
+                // text, as `Foo`, `Foo`, `Foo-1` does; skip issued slugs.
+                let mut slug = base.clone();
+                while occurrences.contains_key(&slug) {
+                    let count = occurrences.entry(base.clone()).or_default();
+                    *count += 1;
+                    slug = format!("{base}-{count}");
+                }
+                occurrences.insert(slug.clone(), 0);
+                anchors.insert(slug);
+                heading = None;
+            }
+            _ => {}
+        }
     }
-    anchors
+    Ok(anchors)
+}
+
+#[test]
+fn anchors_slug_rendered_heading_text() -> TestResult {
+    let document = "---\ntitle: x\n---\n\
+        # Setup\n## MAX_REQUEST bound\n   ### Setup ##\n\
+        ## [Install](setup.md) `cargo_add`\n## *Emphasis* and **strong**\n\
+        ## Type \\[T\\] \\*literal\\*\n## A &amp; B\n## **Unmatched\n\
+        Setext title\n============\n\
+        Intro\n```\n# not a heading\n```\n---\nIntro\n\t---\n\
+        # Foo\n# Foo\n# Foo-1\n## Cafe\u{301}\n## \u{5e9}\u{5b0}\n## A&nbsp;B\n";
+    assert_eq!(
+        anchors(document)?,
+        [
+            "setup",
+            "max_request-bound",
+            "setup-1",
+            "install-cargo_add",
+            "emphasis-and-strong",
+            "type-t-literal",
+            "a--b",
+            "unmatched",
+            "setext-title",
+            "foo",
+            "foo-1",
+            "foo-1-1",
+            "cafe\u{301}",
+            "\u{5e9}\u{5b0}",
+            "ab",
+        ]
+        .map(str::to_owned)
+        .into()
+    );
+    for unsupported in ["## <em>HTML</em>\n", "## ![Logo](logo.png) Name\n"] {
+        assert!(anchors(unsupported).is_err(), "{unsupported}");
+    }
+    Ok(())
+}
+
+/// Anchors of the Markdown file at `path`, with the path in any error.
+fn anchors_at(path: &Path) -> Result<BTreeSet<String>, Box<dyn std::error::Error>> {
+    let document = fs::read_to_string(path)?;
+    Ok(anchors(&document).map_err(|error| format!("{}: {error}", path.display()))?)
 }
 
 /// Link targets on one line: Markdown `](target)` and HTML `src="target"` or
@@ -333,8 +484,12 @@ fn threat_model_limits_table_matches_the_limits_module() -> TestResult {
 #[test]
 fn relative_links_in_docs_resolve() -> TestResult {
     let documents = documents()?;
-    // Headings of every Markdown target, loaded once; other files may name lines.
+    // Slug every document first, so an unsupported heading fails even when no
+    // link targets it; other Markdown targets are slugged when first linked.
     let mut anchors_by_path = BTreeMap::<PathBuf, BTreeSet<String>>::new();
+    for path in &documents {
+        anchors_by_path.insert(path.canonicalize()?, anchors_at(path)?);
+    }
     let mut broken = Vec::new();
     for path in &documents {
         let document = fs::read_to_string(path)?;
@@ -354,7 +509,7 @@ fn relative_links_in_docs_resolve() -> TestResult {
                     Some(_) if anchor.is_empty() => true,
                     Some(resolved) if is_markdown(&resolved) => {
                         if !anchors_by_path.contains_key(&resolved) {
-                            let headings = anchors(&fs::read_to_string(&resolved)?);
+                            let headings = anchors_at(&resolved)?;
                             anchors_by_path.insert(resolved.clone(), headings);
                         }
                         anchors_by_path
@@ -373,33 +528,122 @@ fn relative_links_in_docs_resolve() -> TestResult {
     Ok(())
 }
 
-/// Whether a cited identifier names something defined in the sources: a
-/// `Type::function` must be defined in that type's `impl` block, while other
-/// paths, such as enum variants and associated constants, need each segment.
-fn resolves(identifier: &str, words: &BTreeSet<String>, functions: &BTreeSet<String>) -> bool {
-    match identifier.split_once("::") {
-        Some((type_name, function))
+/// Whether a cited identifier names something defined in the sources: every
+/// segment must occur, and a trailing `Type::function` must be defined in that
+/// type's `impl` block, inside the named crate when the path starts with one.
+/// Module segments are checked only as words.
+fn resolves(identifier: &str, names: &SourceNames) -> bool {
+    let segments = identifier.split("::").collect::<Vec<_>>();
+    let defined = segments
+        .iter()
+        .all(|segment| names.words.contains(*segment));
+    match segments.as_slice() {
+        [.., type_name, function]
             if type_name.starts_with(|first: char| first.is_ascii_uppercase())
-                && function.starts_with(|first: char| first.is_ascii_lowercase())
-                && !function.contains("::") =>
+                && function.starts_with(|first: char| first.is_ascii_lowercase()) =>
         {
-            functions.contains(identifier)
+            let method = match segments.as_slice() {
+                [library, _, _, ..] if names.libraries.contains(*library) => {
+                    format!("{library}::{type_name}::{function}")
+                }
+                _ => format!("{type_name}::{function}"),
+            };
+            defined && names.functions.contains(&method)
         }
-        _ => identifier
-            .split("::")
-            .all(|segment| words.contains(segment)),
+        _ => defined,
+    }
+}
+
+#[test]
+fn library_files_follow_module_declarations() -> TestResult {
+    let libraries = library_files()?;
+    let library = |path: &str| -> Result<Option<String>, std::io::Error> {
+        Ok(libraries.get(&root().join(path).canonicalize()?).cloned())
+    };
+    assert_eq!(
+        library("crates/core/src/plan/template.rs")?.as_deref(),
+        Some("capsule_core")
+    );
+    assert_eq!(
+        library("crates/prompt-bench/src/lib.rs")?.as_deref(),
+        Some("capsule_prompt_bench")
+    );
+    // A module of the prompt-bench binary, an integration test, and a binary.
+    for outside in [
+        "crates/prompt-bench/src/worker.rs",
+        "crates/cli/tests/docs.rs",
+        "crates/cli/src/main.rs",
+    ] {
+        assert_eq!(library(outside)?, None, "{outside}");
+    }
+    assert_eq!(declared_module("pub(crate) mod plan;"), Some("plan"));
+    assert_eq!(declared_module("mod tests {"), None);
+    Ok(())
+}
+
+#[test]
+fn method_paths_resolve_by_their_final_type_and_function() {
+    let to_set = |items: &[&str]| items.iter().map(|item| (*item).to_owned()).collect();
+    let names = SourceNames {
+        words: to_set(&[
+            "capsule_core",
+            "capsule_protocol",
+            "capsule_prompt_bench",
+            "plan",
+            "session",
+            "ConfigPlan",
+            "Request",
+            "Worker",
+            "parse",
+            "encode",
+            "measure",
+            "render",
+            "Limit",
+            "Count",
+        ]),
+        functions: to_set(&[
+            "ConfigPlan::parse",
+            "capsule_core::ConfigPlan::parse",
+            "Request::encode",
+            "capsule_protocol::Request::encode",
+            // A binary's method: unqualified only.
+            "Worker::measure",
+        ]),
+        libraries: to_set(&["capsule_core", "capsule_protocol", "capsule_prompt_bench"]),
+    };
+    for cited in [
+        "ConfigPlan::parse",
+        "capsule_core::ConfigPlan::parse",
+        "capsule_core::plan::ConfigPlan::parse",
+        "capsule_protocol::session::Request::encode",
+        "Limit::Count",
+        "capsule_core::Limit::Count",
+    ] {
+        assert!(resolves(cited, &names), "{cited}");
+    }
+    for cited in [
+        "ConfigPlan::render",
+        "capsule_core::ConfigPlan::render",
+        "missing::ConfigPlan::parse",
+        "capsule_core::Limit::Bytes",
+        // Defined in another crate.
+        "capsule_core::session::Request::encode",
+        // Defined only in a binary, not in the named library.
+        "capsule_prompt_bench::Worker::measure",
+    ] {
+        assert!(!resolves(cited, &names), "{cited}");
     }
 }
 
 #[test]
 fn identifiers_cited_in_docs_exist_in_sources() -> TestResult {
-    let (words, functions) = source_names()?;
+    let names = source_names()?;
     let mut missing = Vec::new();
     for path in documents()? {
         let document = fs::read_to_string(&path)?;
         for (number, line) in prose_lines(&document) {
             for identifier in code_spans(line).filter_map(cited_identifier) {
-                if !resolves(identifier, &words, &functions) {
+                if !resolves(identifier, &names) {
                     missing.push(format!("{}:{number}: {identifier}", path.display()));
                 }
             }

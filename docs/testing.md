@@ -22,9 +22,11 @@ Read this file before writing or modifying tests.
   and commit any `proptest-regressions/` file a failure writes so the shrunk case
   stays in the suite.
 - [docs.rs](../crates/cli/tests/docs.rs) keeps documentation that restates code
-  facts in sync: relative links and heading anchors, backticked identifiers
-  (snake case, screaming case, or `::` paths; a cited method path must be
-  defined in its type's `impl`), the limits table, the lint policy, lint
+  facts in sync: relative links and heading anchors (slugged from the
+  rendered heading text; headings with HTML or images fail), backticked identifiers (snake case,
+  screaming case, or `::` paths; a method path, even a fully qualified one
+  such as `capsule_core::plan::ConfigPlan::parse`, must be defined in its type's
+  `impl`, within the named library crate), the limits table, the lint policy, lint
   inheritance in every workspace member, and that each Behavioral contract
   clause cites a test, clause check, or PTY record. Fix the document or the code when it
   fails; list a name that is intentionally not defined here in the test's
