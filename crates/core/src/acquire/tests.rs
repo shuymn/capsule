@@ -67,7 +67,7 @@ fn argv(args: &[&str]) -> io::Result<Vec<String>> {
 
 /// Covers: T06
 #[test]
-fn command_preserves_raw_environment_and_clears_unspecified_variables() -> TestResult {
+fn command_uses_direct_argv_and_replaces_the_environment() -> TestResult {
     let directory = tempfile::tempdir()?;
     let input = Snapshot::new(
         directory.path().to_owned(),
@@ -81,6 +81,19 @@ fn command_preserves_raw_environment_and_clears_unspecified_variables() -> TestR
             .command(&argv(&["env", "-0"])?, &input, &CancellationToken::new())
             .await?;
         assert_eq!(output, b"CAPSULE_VALUE=raw\xff\n\t\\\0");
+        // Arguments reach the program unsplit and unexpanded.
+        let hostile = ["a b", "$CAPSULE_VALUE", "*", "; exit 1", "'q'\"", "`id`"];
+        let output = Runner::default()
+            .command(
+                &argv(&[&["printf", "%s\\0"][..], &hostile].concat())?,
+                &input,
+                &CancellationToken::new(),
+            )
+            .await?;
+        assert_eq!(
+            output,
+            hostile.map(|arg| format!("{arg}\0")).concat().as_bytes()
+        );
         Ok::<_, AcquireError>(())
     })?;
     Ok(())

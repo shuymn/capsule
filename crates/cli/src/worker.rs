@@ -420,4 +420,19 @@ value = [{ env = "TOOL" }]
         }
         Ok(())
     }
+
+    #[tokio::test]
+    async fn removing_the_configuration_accepts_the_defaults() -> anyhow::Result<()> {
+        let home = tempfile::tempdir()?;
+        let previous = Arc::new(LoadedPlan {
+            config: ConfigPlan::default(),
+            source: Some("removed".to_owned()),
+        });
+        let env = vec![("HOME".into(), home.path().as_os_str().to_owned())];
+        let snapshot = Snapshot::new(home.path().to_owned(), env)?;
+        let cancel = CancellationToken::new();
+        let plan = load_plan(&snapshot, &Runner::default(), &cancel, &previous).await?;
+        assert!(!Arc::ptr_eq(&plan, &previous) && plan.source.is_none());
+        Ok(())
+    }
 }
