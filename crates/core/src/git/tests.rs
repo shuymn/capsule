@@ -320,19 +320,38 @@ fn porcelain_counts_match_the_line_prefixes() {
             tokens.collect(),
         ] {
             let status = parse_porcelain_v2(&output);
-            let count = |prefixes: &[&str]| {
-                output
-                    .lines()
-                    .filter(|line| prefixes.iter().any(|prefix| line.starts_with(prefix)))
-                    .count()
+            // Classify each line by its record type and XY field.
+            let mut expected = GitStatus::default();
+            for line in output.lines() {
+                match line.get(..2) {
+                    Some("? ") => expected.untracked += 1,
+                    Some("u ") => expected.conflicted += 1,
+                    Some(kind @ ("1 " | "2 ")) => {
+                        // An entry without its XY field is skipped.
+                        let Some(xy) = line.split_whitespace().nth(1) else {
+                            continue;
+                        };
+                        expected.renamed += usize::from(kind == "2 ");
+                        if let [x, y, ..] = xy.as_bytes() {
+                            expected.staged += usize::from(*x != b'.');
+                            expected.modified += usize::from(*y != b'.');
+                            expected.deleted += usize::from(*x == b'D' || *y == b'D');
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let counts = |status: &GitStatus| {
+                (
+                    status.staged,
+                    status.modified,
+                    status.deleted,
+                    status.renamed,
+                    status.untracked,
+                    status.conflicted,
+                )
             };
-            let entries = count(&["1 ", "2 "]);
-            assert_eq!(status.untracked, count(&["? "]));
-            assert_eq!(status.conflicted, count(&["u "]));
-            // An entry without its XY field is skipped.
-            assert!(status.renamed <= count(&["2 "]));
-            assert!(status.staged <= entries && status.modified <= entries);
-            assert!(status.deleted <= status.staged + status.modified);
+            assert_eq!(counts(&status), counts(&expected), "{output:?}");
         }
     });
 }

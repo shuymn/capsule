@@ -62,3 +62,4 @@ inherits = "dev"
 opt-level = 3
 debug = "line-tables-only"
 incremental = false
+codegen-units = 1

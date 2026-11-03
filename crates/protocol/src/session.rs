@@ -564,7 +564,9 @@ mod tests {
                 let encoded = encoded.ok()?;
                 let canonical = &encoded[..encoded.len() - 1];
                 assert!(!canonical.contains(&b'\n'));
-                decode(canonical).ok()
+                let decoded = decode(canonical);
+                assert!(decoded.is_ok(), "canonical frame rejected: {canonical:?}");
+                decoded.ok()
             }
             bolero::check!().for_each(|frame: &[u8]| {
                 if let Ok(request) = Request::decode(frame) {
