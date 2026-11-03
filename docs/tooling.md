@@ -13,8 +13,7 @@ Read this file when changing build, CI, hooks, or tool dependencies.
   aqua backend verifies release checksums and attestations at install time, so no
   `mise.lock` is committed (it would make Renovate bumps fail `--locked` installs).
 - Install zsh, Git, and `ps` from the system, not mise: macOS ships them, and Linux
-  uses the distribution package (`apt-get install zsh`). Rust stays on rustup;
-  only fuzzing needs a nightly toolchain (`rustup toolchain install nightly`).
+  uses the distribution package (`apt-get install zsh`). Rust stays on rustup.
 - `mise run check` and `mise run check:fast` install lefthook hooks. To preserve
   existing hooks, run `mise run verify` (the same steps as `check`) or individual
   tasks such as `mise run lint`.

@@ -254,21 +254,9 @@ async fn test_detect_priority_rebase_over_merge() -> Result<(), Box<dyn std::err
 
 #[test]
 fn porcelain_v2_parses_counts_detached_head_and_empty_output() {
-    let output = "\
-# branch.oid abc123def456
-# branch.head main
-# branch.ab +1 -2
-# stash 5
-1 M. N... 000000 000000 abc123 def456 staged.rs
-1 .M N... 000000 000000 abc123 def456 modified.rs
-1 A. N... 000000 100644 000000 def456 added.rs
-1 MM N... 000000 000000 abc123 def456 both.rs
-1 D. N... 100644 000000 000000 abc123 000000 deleted.rs
-1 .D N... 100644 100644 000000 abc123 def456 removed.rs
-2 R. N... 100644 100644 100644 abc123 def456 R100 new.rs\told.rs
-u UU N... 000000 000000 000000 abc123 def456 ghi789 conflict.rs
-? untracked.txt
-";
+    let output = include_str!(
+        "__fuzz__/git__tests__porcelain_counts_match_the_line_prefixes/corpus/seed-fixture"
+    );
     assert_eq!(
         parse_porcelain_v2(output),
         GitStatus {
@@ -326,7 +314,7 @@ fn porcelain_counts_match_the_line_prefixes() {
         // line structure.
         let tokens = input
             .iter()
-            .map(|choice| TOKENS[usize::from(*choice) % TOKENS.len()]);
+            .map(|choice| crate::test_utils::pick(*choice, TOKENS));
         for output in [
             String::from_utf8_lossy(input).into_owned(),
             tokens.collect(),

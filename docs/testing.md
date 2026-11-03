@@ -48,15 +48,11 @@ Read this file before writing or modifying tests.
   mutant is a test gap: add the case that kills it. For an equivalent mutant, prefer
   code that cannot produce it; otherwise exclude it there with a comment.
 - Fuzz parsers of untrusted bytes with [bolero](https://camshaft.github.io/bolero/)
-  harnesses (`bolero::check!()`). `cargo test` runs each for one second on random
-  input plus its corpus; rerun a failure with the `BOLERO_RANDOM_SEED` it prints.
-  Fuzz one with coverage guidance through
-  `mise run test:fuzz <package> <test path> -T 10m`; the weekly
-  [fuzz workflow](../.github/workflows/fuzz.yml) runs every target. The corpus lives
-  in `__fuzz__/<target>/corpus/` next to the source file; commit only hand-written
-  `seed-*` files there. To triage a crash from `__fuzz__/<target>/crashes/` (the
-  workflow uploads it), copy it to a `seed-*` file, which `cargo test` replays, then
-  fix the code.
+  harnesses. `cargo test` runs each for one second plus its corpus; fuzz one with
+  `mise run test:fuzz <package> <test path> -T 10m`, and the weekly
+  [fuzz workflow](../.github/workflows/fuzz.yml) runs all of them. Commit only
+  hand-written `seed-*` files in `__fuzz__/<target>/corpus/`; to keep a crash from
+  `__fuzz__/<target>/crashes/` as a regression, copy it there as a seed.
 - Keep doctests runnable; use hidden `# ` setup, `no_run` for external resources,
   and `compile_fail` for invalid usage.
 

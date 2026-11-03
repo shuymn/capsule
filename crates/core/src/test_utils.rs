@@ -180,3 +180,9 @@ pub fn cols(narrow: usize) -> impl proptest::strategy::Strategy<Value = usize> {
 
     prop_oneof![0..narrow, Just(usize::from(u16::MAX))]
 }
+
+/// The token a fuzz input byte selects, so random or mutated bytes reach a
+/// parser's structure instead of failing at its syntax.
+pub fn pick<'a>(choice: u8, tokens: &[&'a str]) -> &'a str {
+    tokens[usize::from(choice) % tokens.len()]
+}

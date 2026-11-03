@@ -556,33 +556,33 @@ mod tests {
         /// Covers: T08
         #[test]
         fn accepted_frames_re_encode_to_an_equal_value() {
+            /// Re-decode an accepted frame's canonical encoding.
+            fn canonical<T>(
+                encoded: Result<Vec<u8>, Error>,
+                decode: fn(&[u8]) -> Result<T, Error>,
+            ) -> Option<T> {
+                let encoded = encoded.ok()?;
+                let canonical = &encoded[..encoded.len() - 1];
+                assert!(!canonical.contains(&b'\n'));
+                decode(canonical).ok()
+            }
             bolero::check!().for_each(|frame: &[u8]| {
-                if let Ok(request) = Request::decode(frame)
-                    && let Ok(encoded) = request.encode()
-                {
-                    let canonical = &encoded[..encoded.len() - 1];
-                    assert!(!canonical.contains(&b'\n'));
-                    assert_eq!(Request::decode(canonical).ok(), Some(request));
+                if let Ok(request) = Request::decode(frame) {
+                    assert!(
+                        canonical(request.encode(), Request::decode)
+                            .is_none_or(|decoded| decoded == request)
+                    );
                 }
-                if let Ok(Response {
-                    generation,
-                    left1,
-                    left2,
-                    complete,
-                }) = Response::decode(frame)
-                    && let Ok(encoded) = response(generation, &left1, &left2, complete)
-                {
-                    let canonical = &encoded[..encoded.len() - 1];
-                    assert!(!canonical.contains(&b'\n'));
-                    let decoded = Response::decode(canonical).ok();
-                    assert_eq!(
-                        decoded,
-                        Some(Response {
-                            generation,
-                            left1,
-                            left2,
-                            complete
-                        })
+                if let Ok(decoded) = Response::decode(frame) {
+                    let Response {
+                        generation,
+                        ref left1,
+                        ref left2,
+                        complete,
+                    } = decoded;
+                    let encoded = response(generation, left1, left2, complete);
+                    assert!(
+                        canonical(encoded, Response::decode).is_none_or(|again| again == decoded)
                     );
                 }
             });

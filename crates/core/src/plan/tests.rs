@@ -12,7 +12,7 @@ use crate::{
         MAX_VALUES_PER_MODULE, MAX_WHEN_ITEMS,
     },
     render::style::Color,
-    test_utils::snapshot,
+    test_utils::{pick, snapshot},
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -686,99 +686,100 @@ fn arbitrary_configuration_text_respects_the_plan_limits() {
 struct GeneratedConfig {
     #[generator(bolero::produce::<Vec<GeneratedModule>>().with().len(0..=4usize))]
     modules: Vec<GeneratedModule>,
-    /// Small modules that can pass `MAX_MODULES` and the plan-wide totals
-    /// within `MAX_CONFIG_BYTES`.
-    #[generator(0..=70u8)]
-    padding: u8,
-    #[generator(0..=4u8)]
-    padding_values: u8,
-    #[generator(1..=8usize)]
+    /// A [`sized_plan`] prefix that can pass `MAX_MODULES` and the plan-wide
+    /// totals within `MAX_CONFIG_BYTES`.
+    #[generator(0..=MAX_MODULES + 6)]
+    padding_modules: usize,
+    #[generator(0..=4usize)]
+    padding_values: usize,
+    #[generator(1..=MAX_CANDIDATES_PER_VALUE)]
     padding_candidates: usize,
 }
 
 #[derive(Debug, bolero::TypeGenerator)]
 struct GeneratedModule {
-    #[generator(0..=65u8)]
-    files: u8,
-    #[generator(0..=65u8)]
-    env: u8,
+    #[generator(0..=MAX_WHEN_ITEMS + 1)]
+    files: usize,
+    #[generator(0..=MAX_WHEN_ITEMS + 1)]
+    env: usize,
     #[generator(bolero::produce::<Vec<u8>>().with().len(0..=16usize))]
     format: Vec<u8>,
-    #[generator(bolero::produce::<Vec<Vec<u8>>>().with().len(0..=17usize).values(bolero::produce::<Vec<u8>>().with().len(1..=9usize)))]
+    #[generator(
+        bolero::produce::<Vec<Vec<u8>>>()
+            .with()
+            .len(0..=MAX_VALUES_PER_MODULE + 1)
+            .values(bolero::produce::<Vec<u8>>().with().len(1..=MAX_CANDIDATES_PER_VALUE + 1))
+    )]
     values: Vec<Vec<u8>>,
     line2: bool,
     priority: Option<u8>,
 }
 
 fn generated_source(config: &GeneratedConfig) -> Result<String, std::fmt::Error> {
-    const FORMAT: &[&str] = &[
+    let mut source = sized_plan(
+        config.padding_modules,
+        config.padding_values,
+        config.padding_candidates,
+    )?;
+    let deepest = format!(
+        "{}{}",
+        "[x".repeat(MAX_FORMAT_DEPTH + 1),
+        "]".repeat(MAX_FORMAT_DEPTH + 1)
+    );
+    let last_value = format!("{{v{MAX_VALUES_PER_MODULE}}}");
+    let format_tokens = [
         "{v0}",
         "{v1}",
-        "{v16}",
+        &last_value,
         "[x",
         "]",
         "{{",
         "[[",
         "x",
-        "[x[x[x[x[x[x[x[x[x]]]]]]]]]",
+        &deepest,
     ];
-    let many_args = format!("{{ command = {:?} }}", vec!["a"; MAX_COMMAND_ARGS + 1]);
-    let candidates = [
-        "{ env = \"A\" }",
-        "{ file = \"f\" }",
-        "{ command = [\"c\", \"-v\"], regex = '(\\d+)' }",
-        "{ env = \"B\", regex = '((((a+)+)+)+){1000}' }",
-        "{ env = \"A\", file = \"f\" }",
+    let many_args = format!("{{command=[{}]}}", toml_list("'a'", MAX_COMMAND_ARGS + 1));
+    let candidate_tokens = [
+        "{env='A'}",
+        "{file='f'}",
+        "{command=['c', '-v'], regex='(\\d+)'}",
+        "{env='B', regex='((((a+)+)+)+){1000}'}",
+        "{env='A', file='f'}",
         &many_args,
     ];
-    let pick =
-        |choice: &u8, tokens: &[&str]| tokens[usize::from(*choice) % tokens.len()].to_owned();
-    let names = |prefix: &str, count: u8| {
+    let names = |prefix: &str, count: usize| {
         (0..count)
-            .map(|index| format!("{prefix}{index}"))
+            .map(|index| format!("'{prefix}{index}'"))
             .collect::<Vec<_>>()
+            .join(",")
     };
-    let mut source = String::from("schema_version = 2\n");
     for (index, module) in config.modules.iter().enumerate() {
-        writeln!(source, "[[module]]\nname = \"m{index}\"")?;
+        writeln!(source, "[[module]]\nname='g{index}'")?;
         writeln!(
             source,
-            "when.files = {:?}\nwhen.env = {:?}",
+            "when.files=[{}]\nwhen.env=[{}]",
             names("f", module.files),
             names("E", module.env)
         )?;
         let format = module
             .format
             .iter()
-            .map(|choice| pick(choice, FORMAT))
+            .map(|choice| pick(*choice, &format_tokens))
             .collect::<String>();
-        writeln!(source, "format = {format:?}")?;
+        writeln!(source, "format={format:?}")?;
         if module.line2 {
-            source.push_str("slot = \"line2\"\n");
+            source.push_str("slot='line2'\n");
         }
         if let Some(priority) = module.priority {
-            writeln!(
-                source,
-                "arbitration = {{ group = \"g\", priority = {priority} }}"
-            )?;
+            writeln!(source, "arbitration={{group='g', priority={priority}}}")?;
         }
         source.push_str("[module.values]\n");
         for (value, choices) in module.values.iter().enumerate() {
             let choices = choices
                 .iter()
-                .map(|choice| pick(choice, &candidates))
+                .map(|choice| pick(*choice, &candidate_tokens))
                 .collect::<Vec<_>>();
-            writeln!(source, "v{value} = [{}]", choices.join(", "))?;
-        }
-    }
-    let padding_candidates = vec!["{ env = \"A\" }"; config.padding_candidates].join(", ");
-    for index in 0..config.padding {
-        writeln!(
-            source,
-            "[[module]]\nname = \"p{index}\"\nformat = \"x\"\n[module.values]"
-        )?;
-        for value in 0..config.padding_values {
-            writeln!(source, "v{value} = [{padding_candidates}]")?;
+            writeln!(source, "v{value}=[{}]", choices.join(","))?;
         }
     }
     Ok(source)
