@@ -279,39 +279,35 @@ fn apply_change(
         }
         Change::Context(Ok(context)) => state.context = context,
         Change::Context(Err(error)) => tracing::debug!(%error, "context unavailable"),
-        // A cancelled generation can drop its Plan event while module tasks
-        // still report against that plan; ignore observations without a slot.
+        // acquire_generation sends indexed events only after delivering the
+        // generation's Plan, which sized `state.modules` for that plan.
         Change::Condition(index, value) => {
-            if let Some(module) = state.modules.get_mut(index) {
-                module.condition = match value {
-                    Ok(value) => Observation::Ready(value),
-                    Err(error) => Observation::Failed(error),
-                };
+            state.modules[index].condition = match value {
+                Ok(value) => Observation::Ready(value),
+                Err(error) => Observation::Failed(error),
             }
         }
         Change::Value(module, value, result) => {
-            if let Some(slot) = state
-                .modules
-                .get_mut(module)
-                .and_then(|module| module.values.get_mut(value))
-            {
-                *slot = match result {
-                    Ok(Some(value)) => Observation::Ready(value),
-                    Ok(None) => Observation::Missing,
-                    Err(error) => Observation::Failed(error),
-                };
+            state.modules[module].values[value] = match result {
+                Ok(Some(value)) => Observation::Ready(value),
+                Ok(None) => Observation::Missing,
+                Err(error) => Observation::Failed(error),
             }
         }
     }
 }
 
+/// Deliver an event unless the generation is cancelled first; report delivery.
 async fn send_event(
     tx: &mpsc::Sender<Event>,
     generation: u64,
     change: Change,
     cancel: &CancellationToken,
-) {
-    tokio::select! { () = cancel.cancelled() => {}, _ = tx.send(Event { generation, change }) => {} }
+) -> bool {
+    tokio::select! {
+        () = cancel.cancelled() => false,
+        result = tx.send(Event { generation, change }) => result.is_ok(),
+    }
 }
 
 async fn acquire_generation(
@@ -329,13 +325,17 @@ async fn acquire_generation(
                 Ok(plan) => (plan, None),
                 Err(error) => (previous, Some(error.to_string())),
             };
-        send_event(
+        // Indexed module events require their Plan; without it, acquire nothing.
+        if !send_event(
             &tx,
             request.generation,
             Change::Plan(plan.clone(), diagnostic),
             &cancel,
         )
-        .await;
+        .await
+        {
+            return;
+        }
         let mut jobs = JoinSet::new();
         let (context_request, context_runner, context_cancel, context_tx) =
             (request.clone(), runner.clone(), cancel.clone(), tx.clone());
@@ -508,8 +508,9 @@ async fn write_frames(
 mod tests {
     use super::*;
 
-    fn state() -> anyhow::Result<State> {
-        let request = Request::decode(b"Q\t1\t0\t\t80\tmain\t/tmp")?;
+    /// Run one generation and return its events in delivery order.
+    async fn generation_events(cancelled: bool) -> anyhow::Result<Vec<Change>> {
+        let request = Request::decode(b"Q\t1\t0\t\t80\tmain\t/")?;
         let config = ConfigPlan::parse(
             r#"
 schema_version = 2
@@ -524,49 +525,41 @@ value = [{ env = "TOOL" }]
             config,
             source: None,
         });
-        Ok(State::new(Arc::new(request), plan, None))
+        let cancel = CancellationToken::new();
+        if cancelled {
+            cancel.cancel();
+        }
+        let (tx, mut rx) = mpsc::channel(64);
+        acquire_generation(Arc::new(request), plan, Runner::default(), cancel, tx).await;
+        let mut changes = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            changes.push(event.change);
+        }
+        Ok(changes)
     }
 
-    #[test]
-    fn observations_without_an_applied_plan_are_ignored() -> anyhow::Result<()> {
-        let mut state = state()?;
-        let mut plan = state.plan.clone();
-        let mut diagnostic = None;
-        // The generation was cancelled before its Plan event was delivered.
-        for change in [
-            Change::Condition(0, Ok(true)),
-            Change::Value(0, 0, Ok(Some("x".to_owned()))),
-            Change::Value(0, 0, Err(AcquireError::Cancelled)),
-            Change::Complete,
-        ] {
-            apply_change(&mut state, change, &mut plan, &mut diagnostic);
+    #[tokio::test]
+    async fn module_events_follow_a_delivered_plan_even_when_cancelled() -> anyhow::Result<()> {
+        // A cancelled send races delivery at random, so repeat to cover both outcomes.
+        for cancelled in std::iter::once(false).chain([true; 32]) {
+            let changes = generation_events(cancelled).await?;
+            let plan = changes
+                .iter()
+                .position(|change| matches!(change, Change::Plan(..)));
+            for (index, change) in changes.iter().enumerate() {
+                if matches!(change, Change::Condition(..) | Change::Value(..)) {
+                    assert!(plan.is_some_and(|plan| plan < index));
+                }
+            }
+            assert!(matches!(changes.last(), Some(Change::Complete)));
+            if !cancelled {
+                assert!(
+                    changes
+                        .iter()
+                        .any(|change| matches!(change, Change::Condition(..)))
+                );
+            }
         }
-        assert!(state.complete);
-        assert!(state.modules.is_empty());
-        state.render()?;
-        Ok(())
-    }
-
-    #[test]
-    fn out_of_range_observations_leave_the_applied_plan_unchanged() -> anyhow::Result<()> {
-        let mut state = state()?;
-        let mut plan = state.plan.clone();
-        let mut diagnostic = None;
-        let next = state.plan.clone();
-        for change in [
-            Change::Plan(next, None),
-            Change::Condition(1, Ok(true)),
-            Change::Value(0, 1, Ok(Some("x".to_owned()))),
-            Change::Value(1, 0, Ok(Some("x".to_owned()))),
-        ] {
-            apply_change(&mut state, change, &mut plan, &mut diagnostic);
-        }
-        assert_eq!(state.modules.len(), 1);
-        assert!(matches!(state.modules[0].condition, Observation::Pending));
-        assert!(matches!(
-            state.modules[0].values[..],
-            [Observation::Pending]
-        ));
         Ok(())
     }
 }
