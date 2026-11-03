@@ -300,25 +300,19 @@ mod tests {
     #[test]
     fn color_map_accepts_exactly_the_classic_and_bright_foreground_codes() {
         let style = Style::new().fg(Color::Blue).bold();
-        for (code, valid) in [
-            (29, false),
-            (30, true),
-            (37, true),
-            (38, false),
-            (89, false),
-            (90, true),
-            (97, true),
-            (98, false),
-            (256, false),
-        ] {
+        for code in (30..=37).chain(90..=97) {
             let painted = toml::from_str::<ColorMap>(&format!("blue = {code}"))
                 .map(|color_map| style.paint_with("hello", color_map));
-            match (painted, u8::try_from(code)) {
-                (Ok(painted), Ok(code)) if valid => {
-                    assert!(contains_style_sequence(&painted, &[1, code]), "{painted}");
-                }
-                (painted, _) => assert!(painted.is_err() && !valid, "code {code}"),
-            }
+            assert!(
+                painted.is_ok_and(|painted| contains_style_sequence(&painted, &[1, code])),
+                "code {code} not painted"
+            );
+        }
+        for code in [29, 38, 89, 98, 256] {
+            assert!(
+                toml::from_str::<ColorMap>(&format!("blue = {code}")).is_err(),
+                "accepted {code}"
+            );
         }
     }
 
