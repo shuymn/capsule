@@ -147,7 +147,7 @@ fn parse_changed_entry(line: &str, status: &mut GitStatus) {
 }
 
 /// Filesystem and Git data acquired outside the view.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ContextInfo {
     /// Repository-relative or home-abbreviated directory.
     pub directory: String,

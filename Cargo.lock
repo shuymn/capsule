@@ -84,6 +84,7 @@ dependencies = [
  "capsule-core",
  "capsule-protocol",
  "clap",
+ "proptest",
  "rustix",
  "tempfile",
  "time",

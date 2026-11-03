@@ -28,6 +28,10 @@ Read this file before writing or modifying tests.
   inheritance in every workspace member. Fix the document or the code when it
   fails; list a name that is intentionally not defined here in the test's
   external-identifier list with its reason.
+- Check worker state decisions in [worker/machine/tests.rs](../crates/cli/src/worker/machine/tests.rs):
+  a reference model written from the behavioral contract runs against random
+  interleavings of requests, events, and task completion. Change the model
+  with the contract, not to match the implementation.
 - Tag a test that verifies a threat in [threat-model.md](threat-model.md) with
   a `Covers: T07, T08` comment directly above its attributes, or in a shell
   script's leading comments to cover the whole file. A Rust tag needs a
