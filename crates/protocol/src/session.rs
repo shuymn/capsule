@@ -39,6 +39,27 @@ impl Snapshot {
             .find(|(key, _)| key == name)
             .map(|(_, value)| value.as_os_str())
     }
+
+    /// Check the invariants shared by [`Request::encode`] and [`Request::decode`].
+    fn validate(&self) -> Result<(), Error> {
+        let cwd = self.cwd.as_os_str().as_bytes();
+        if cwd.is_empty() || cwd.contains(&0) {
+            return Err(Error::Invalid("cwd"));
+        }
+        let mut keys = HashSet::with_capacity(self.env.len());
+        for (key, value) in &self.env {
+            let (key, value) = (key.as_bytes(), value.as_bytes());
+            if key.is_empty()
+                || key.contains(&0)
+                || key.contains(&b'=')
+                || value.contains(&0)
+                || !keys.insert(key)
+            {
+                return Err(Error::Invalid("environment"));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Complete render request; equal generations reuse acquisition observations.
@@ -176,7 +197,8 @@ impl Request {
     /// Decode `Q, generation, exit, duration, cols, keymap, cwd, (key,value)*`.
     ///
     /// # Errors
-    /// Rejects invalid escaping, duplicate/invalid environment keys and NUL bytes.
+    /// Rejects invalid escaping, an empty cwd, duplicate/invalid environment keys
+    /// and NUL bytes.
     pub fn decode(frame: &[u8]) -> Result<Self, Error> {
         if frame.len() > MAX_REQUEST {
             return Err(Error::TooLarge(MAX_REQUEST));
@@ -186,25 +208,18 @@ impl Request {
             return Err(Error::Invalid("request fields"));
         }
         let cwd = unescape(fields[6])?;
-        if cwd.is_empty() || cwd.contains(&0) {
-            return Err(Error::Invalid("cwd"));
-        }
-        let mut env = Vec::with_capacity((fields.len() - 7) / 2);
-        let mut keys = HashSet::new();
-        for [raw_key, raw_value] in fields[7..].as_chunks::<2>().0 {
-            let key = unescape(raw_key)?;
-            let value = unescape(raw_value)?;
-            if key.is_empty()
-                || key.contains(&0)
-                || key.contains(&b'=')
-                || value.contains(&0)
-                || !keys.insert(key.clone())
-            {
-                return Err(Error::Invalid("environment"));
-            }
-            env.push((OsString::from_vec(key), OsString::from_vec(value)));
-        }
-        Ok(Self {
+        let env = fields[7..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|[key, value]| {
+                Ok((
+                    OsString::from_vec(unescape(key)?),
+                    OsString::from_vec(unescape(value)?),
+                ))
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        let request = Self {
             generation: number(fields[1])?,
             last_exit_code: number(fields[2])?,
             duration_ms: if fields[3].is_empty() {
@@ -218,14 +233,21 @@ impl Request {
                 cwd: PathBuf::from(OsString::from_vec(cwd)),
                 env,
             },
-        })
+        };
+        request.snapshot.validate()?;
+        Ok(request)
     }
 
     /// Encode a complete request including its LF delimiter.
     ///
+    /// Every encoded request decodes to an equal value.
+    ///
     /// # Errors
-    /// Returns an error if the escaped request exceeds the bound.
+    /// Rejects requests that [`Request::decode`] would reject: an empty or NUL
+    /// cwd, or duplicate/invalid environment keys and NUL values. Also returns
+    /// an error if the escaped request exceeds the bound.
     pub fn encode(&self) -> Result<Vec<u8>, Error> {
+        self.snapshot.validate()?;
         let mut output = format!(
             "Q\t{}\t{}\t{}\t{}\t",
             self.generation,
@@ -387,6 +409,244 @@ mod tests {
                     .err()
                     .is_some_and(|error| error.to_string().contains("secret"))
             );
+        }
+    }
+
+    mod properties {
+        use std::{
+            collections::VecDeque,
+            io,
+            pin::Pin,
+            task::{Context, Poll, Waker},
+        };
+
+        use proptest::{collection::vec, prelude::*, sample::select};
+        use tokio::io::ReadBuf;
+
+        use super::*;
+
+        const FRAME_LIMIT: usize = 8;
+        const MARKER: &[u8] = b"s3cr3t-marker";
+
+        /// Up to `max` values, biased toward `special` ones that the wire format treats specially.
+        fn biased<T>(special: &'static [T], max: usize) -> impl Strategy<Value = Vec<T>>
+        where
+            T: Arbitrary + Clone + std::fmt::Debug + 'static,
+        {
+            vec(prop_oneof![3 => any::<T>(), 1 => select(special)], 0..max)
+        }
+
+        fn bytes(max: usize) -> impl Strategy<Value = Vec<u8>> {
+            biased(b"\t\n\r\\=\0", max)
+        }
+
+        fn text(max: usize) -> impl Strategy<Value = String> {
+            biased(&['\t', '\n', '\r', '\\'], max).prop_map(String::from_iter)
+        }
+
+        /// Frame contents without the LF delimiter, sometimes over the limit.
+        fn payload() -> impl Strategy<Value = Vec<u8>> {
+            vec(
+                any::<u8>().prop_filter("delimiter", |byte| *byte != b'\n'),
+                0..FRAME_LIMIT + 3,
+            )
+        }
+
+        /// Any request, including ones whose snapshot violates the wire invariants.
+        fn request() -> impl Strategy<Value = Request> {
+            (
+                any::<u64>(),
+                any::<i32>(),
+                any::<Option<u64>>(),
+                any::<u16>(),
+                text(6),
+                bytes(8),
+                vec((bytes(6), bytes(6)), 0..4),
+            )
+                .prop_map(
+                    |(generation, last_exit_code, duration_ms, cols, keymap, cwd, env)| Request {
+                        generation,
+                        snapshot: Snapshot {
+                            cwd: PathBuf::from(OsString::from_vec(cwd)),
+                            env: env
+                                .into_iter()
+                                .map(|(key, value)| {
+                                    (OsString::from_vec(key), OsString::from_vec(value))
+                                })
+                                .collect(),
+                        },
+                        cols,
+                        last_exit_code,
+                        duration_ms,
+                        keymap,
+                    },
+                )
+        }
+
+        /// Yields one chunk per read and reports `Pending` before each one.
+        struct Chunked {
+            chunks: VecDeque<Vec<u8>>,
+            ready: bool,
+        }
+
+        impl AsyncRead for Chunked {
+            fn poll_read(
+                mut self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+                buf: &mut ReadBuf<'_>,
+            ) -> Poll<io::Result<()>> {
+                self.ready = !self.ready;
+                if !self.ready {
+                    return Poll::Pending;
+                }
+                if let Some(mut chunk) = self.chunks.pop_front() {
+                    let taken = chunk.len().min(buf.remaining());
+                    buf.put_slice(&chunk[..taken]);
+                    if taken < chunk.len() {
+                        self.chunks.push_front(chunk.split_off(taken));
+                    }
+                }
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        #[derive(Debug, PartialEq, Eq)]
+        enum End {
+            Clean,
+            FrameLimit,
+            UnterminatedEof,
+        }
+
+        proptest! {
+            #[test]
+            fn encode_accepts_exactly_what_decode_accepts(request in request()) {
+                let valid = request.snapshot.validate().is_ok();
+                match request.encode() {
+                    Ok(frame) => {
+                        prop_assert!(valid);
+                        let Some((b'\n', body)) = frame.split_last() else {
+                            return Err(TestCaseError::fail("missing frame delimiter"));
+                        };
+                        prop_assert!(!body.contains(&b'\n'));
+                        prop_assert_eq!(Request::decode(body)?, request);
+                    }
+                    Err(error) => {
+                        prop_assert!(!valid, "valid request rejected: {error}");
+                    }
+                }
+            }
+
+            #[test]
+            fn responses_round_trip(
+                generation in any::<u64>(),
+                left1 in text(16),
+                left2 in text(16),
+                complete in any::<bool>(),
+            ) {
+                let frame = response(generation, &left1, &left2, complete)?;
+                let Some((b'\n', body)) = frame.split_last() else {
+                    return Err(TestCaseError::fail("missing frame delimiter"));
+                };
+                prop_assert_eq!(
+                    Response::decode(body)?,
+                    Response { generation, left1, left2, complete }
+                );
+            }
+
+            #[test]
+            fn decoders_reject_arbitrary_frames_without_panicking(
+                frame in biased(b"\t\\QR01-", 64),
+            ) {
+                // Only the absence of a panic is asserted here.
+                let _ = Request::decode(&frame);
+                let _ = Response::decode(&frame);
+            }
+
+            #[test]
+            fn rejected_frames_do_not_expose_environment_values(
+                mut request in request(),
+                index in any::<prop::sample::Index>(),
+                byte in prop_oneof![any::<u8>(), select(b"\t\\\0=".as_slice())],
+            ) {
+                request
+                    .snapshot
+                    .env
+                    .push((OsString::from("SECRET"), OsString::from_vec(MARKER.to_vec())));
+                let Ok(mut frame) = request.encode() else {
+                    return Ok(());
+                };
+                frame.pop();
+                frame.insert(index.index(frame.len() + 1), byte);
+                if let Err(error) = Request::decode(&frame) {
+                    let message = error.to_string();
+                    prop_assert!(
+                        !message.as_bytes().windows(MARKER.len()).any(|window| window == MARKER),
+                        "{message}"
+                    );
+                }
+            }
+
+            #[test]
+            fn framing_is_independent_of_chunking_and_cancellation(
+                frames in vec(payload(), 0..5),
+                tail in payload(),
+                sizes in vec(1..2 * FRAME_LIMIT, 1..8),
+            ) {
+                let mut stream = Vec::new();
+                for frame in &frames {
+                    stream.extend_from_slice(frame);
+                    stream.push(b'\n');
+                }
+                stream.extend_from_slice(&tail);
+                let mut chunks = VecDeque::new();
+                let mut rest = stream.as_slice();
+                for size in sizes.iter().cycle() {
+                    if rest.is_empty() {
+                        break;
+                    }
+                    let (chunk, tail) = rest.split_at((*size).min(rest.len()));
+                    chunks.push_back(chunk.to_vec());
+                    rest = tail;
+                }
+
+                let expected_frames = frames
+                    .iter()
+                    .take_while(|frame| frame.len() <= FRAME_LIMIT)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let expected_end = if expected_frames.len() < frames.len()
+                    || tail.len() > FRAME_LIMIT
+                {
+                    End::FrameLimit
+                } else if tail.is_empty() {
+                    End::Clean
+                } else {
+                    End::UnterminatedEof
+                };
+
+                let mut reader = FrameReader::new(Chunked { chunks, ready: false }, FRAME_LIMIT);
+                let mut actual_frames = Vec::new();
+                let actual_end = loop {
+                    // Each iteration drops the previous future, cancelling any partial read.
+                    let mut next = std::pin::pin!(reader.next());
+                    match next.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+                        Poll::Pending => {}
+                        Poll::Ready(Ok(Some(frame))) => actual_frames.push(frame.to_vec()),
+                        Poll::Ready(Ok(None)) => break End::Clean,
+                        Poll::Ready(Err(Error::Invalid("frame limit"))) => break End::FrameLimit,
+                        Poll::Ready(Err(Error::Io(error)))
+                            if error.kind() == io::ErrorKind::UnexpectedEof =>
+                        {
+                            break End::UnterminatedEof;
+                        }
+                        Poll::Ready(Err(error)) => {
+                            return Err(TestCaseError::fail(error.to_string()));
+                        }
+                    }
+                };
+                prop_assert_eq!(actual_frames, expected_frames);
+                prop_assert_eq!(actual_end, expected_end);
+            }
         }
     }
 }
