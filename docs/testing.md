@@ -21,7 +21,8 @@ Read this file before writing or modifying tests.
   facts in sync: relative links and heading anchors, backticked identifiers
   (snake case, screaming case, or `::` paths), the limits table, and the lint
   policy. Fix the document or the code when it fails; list a name that is
-  intentionally not defined here in `EXTERNAL_IDENTIFIERS` with its reason.
+  intentionally not defined here in the test's external-identifier list with
+  its reason.
 - Keep doctests runnable; use hidden `# ` setup, `no_run` for external resources,
   and `compile_fail` for invalid usage.
 

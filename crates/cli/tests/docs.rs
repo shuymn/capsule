@@ -7,9 +7,34 @@ use std::{
     time::Duration,
 };
 
-use capsule_core::limits;
+use capsule_core::limits::{self, Limit};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+/// Directories whose files define the names that documentation cites.
+const SOURCE_DIRECTORIES: [&str; 5] = ["crates", "scripts", "nix", "examples", ".github"];
+
+/// Cited names that intentionally have no definition in this repository.
+const EXTERNAL_IDENTIFIERS: [&str; 5] = [
+    // Rustdoc code block attributes.
+    "no_run",
+    "compile_fail",
+    // Variables of the removed 0.x shared daemon, named by the migration guide.
+    "CAPSULE_SOCKET_PATH",
+    "CAPSULE_SOCK_DIR",
+    // A zsh option that Capsule never sets.
+    "PROMPT_PERCENT",
+];
+
+/// Documentation spellings of lints whose Cargo name differs.
+const LINT_ALIASES: [(&str, &str); 6] = [
+    ("unwrap", "unwrap_used"),
+    ("expect", "expect_used"),
+    ("panic!", "panic"),
+    ("todo!", "todo"),
+    ("unimplemented!", "unimplemented"),
+    ("dbg!", "dbg_macro"),
+];
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -19,204 +44,69 @@ fn read(path: &str) -> Result<String, std::io::Error> {
     fs::read_to_string(root().join(path))
 }
 
-/// A limit value with the unit its documentation row must use.
-#[derive(Debug, PartialEq, Eq)]
-enum Limit {
-    Bytes(usize),
-    Count(usize),
-    Time(Duration),
-}
-
-macro_rules! registry {
-    ($($kind:ident($name:ident)),* $(,)?) => {
-        [$((stringify!($name), registry!(@value $kind, limits::$name))),*]
-    };
-    (@value Bytes, $value:expr) => { Limit::Bytes($value) };
-    (@value Count, $value:expr) => { Limit::Count(usize::try_from($value)?) };
-    (@value Time, $value:expr) => { Limit::Time($value) };
-}
-
-fn limit_registry() -> Result<BTreeMap<&'static str, Limit>, Box<dyn std::error::Error>> {
-    Ok(BTreeMap::from(registry![
-        Bytes(MAX_REQUEST),
-        Bytes(MAX_RESPONSE),
-        Bytes(MAX_SNAPSHOT_BYTES),
-        Bytes(MAX_OUTPUT_BYTES),
-        Bytes(MAX_CONFIG_BYTES),
-        Count(MAX_PROCESSES),
-        Count(MAX_FILE_JOBS),
-        Time(ACQUISITION_TIMEOUT),
-        Time(GENERATION_TIMEOUT),
-        Time(CLEANUP_TIMEOUT),
-        Count(MAX_MODULES),
-        Count(MAX_TOTAL_VALUES),
-        Count(MAX_TOTAL_CANDIDATES),
-        Count(MAX_VALUES_PER_MODULE),
-        Count(MAX_CANDIDATES_PER_VALUE),
-        Count(MAX_WHEN_ITEMS),
-        Count(MAX_COMMAND_ARGS),
-        Bytes(MAX_FORMAT_BYTES),
-        Count(MAX_FORMAT_DEPTH),
-        Bytes(MAX_REGEX_BYTES),
-        Count(MAX_REGEX_NESTING),
-        Bytes(MAX_MODULE_TEXT_BYTES),
-        Bytes(MAX_LINE_TEXT_BYTES),
-        Count(MAX_REPOSITORY_DEPTH),
-    ]))
-}
-
-/// Names that `limits.rs` defines or re-exports publicly.
-fn public_limit_names(source: &str) -> BTreeSet<String> {
-    let mut names = BTreeSet::new();
-    for line in source.lines() {
-        if let Some(rest) = line.strip_prefix("pub const ") {
-            names.extend(rest.split(':').next().map(str::to_owned));
-        } else if let Some(rest) = line.strip_prefix("pub use ")
-            && let Some((_, list)) = rest.split_once('{')
-        {
-            names.extend(
-                list.trim_end_matches("};")
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|name| !name.is_empty())
-                    .map(str::to_owned),
-            );
-        }
-    }
-    names
-}
-
-fn parse_limit(text: &str) -> Option<Limit> {
-    let (number, unit) = text.split_once(' ').unwrap_or((text, ""));
-    let number = number.parse::<usize>().ok()?;
-    Some(match unit {
-        "" => Limit::Count(number),
-        "bytes" => Limit::Bytes(number),
-        "KiB" => Limit::Bytes(number * 1024),
-        "ms" => Limit::Time(Duration::from_millis(u64::try_from(number).ok()?)),
-        "s" => Limit::Time(Duration::from_secs(u64::try_from(number).ok()?)),
-        _ => return None,
-    })
-}
-
-/// Rows of the `| Boundary | Limit | Constant |` table, keyed by constant.
-fn documented_limits(document: &str) -> Result<BTreeMap<String, Limit>, String> {
-    let mut rows = BTreeMap::new();
-    let mut in_table = false;
-    for line in document.lines() {
-        if line == "| Boundary | Limit | Constant |" {
-            in_table = true;
-            continue;
-        }
-        if !in_table || line.starts_with("| ---") {
-            continue;
-        }
-        let Some(cells) = line.strip_prefix('|').and_then(|row| row.strip_suffix('|')) else {
-            break;
-        };
-        let cells = cells.rsplitn(3, '|').map(str::trim).collect::<Vec<_>>();
-        let [constant, value, _] = cells.as_slice() else {
-            return Err(format!("malformed limit row: {line}"));
-        };
-        let constant = constant.trim_matches('`').to_owned();
-        let value = parse_limit(value).ok_or_else(|| format!("unparsed limit: {line}"))?;
-        if rows.insert(constant.clone(), value).is_some() {
-            return Err(format!("duplicate limit row: {constant}"));
-        }
-    }
-    Ok(rows)
-}
-
-#[test]
-fn every_limit_is_registered_for_the_docs_check() -> TestResult {
-    let registry = limit_registry()?;
-    let registered = registry
-        .keys()
-        .map(|name| (*name).to_owned())
-        .collect::<BTreeSet<_>>();
-    assert_eq!(
-        public_limit_names(&read("crates/core/src/limits.rs")?),
-        registered
-    );
-    Ok(())
-}
-
-#[test]
-fn threat_model_limits_table_matches_the_limits_module() -> TestResult {
-    let documented = documented_limits(&read("docs/threat-model.md")?)?;
-    let registry = limit_registry()?;
-    let documented_names = documented
-        .keys()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
-    let registered_names = registry.keys().copied().collect::<BTreeSet<_>>();
-    assert_eq!(documented_names, registered_names);
-    for (name, value) in &registry {
-        assert_eq!(documented.get(*name), Some(value), "{name}");
-    }
-    Ok(())
-}
-
-#[test]
-fn zsh_snapshot_bound_matches_the_limits_module() -> TestResult {
-    let init = read("crates/core/src/init/init.zsh")?;
-    let bound = format!(
-        "(( ${{#_CAPSULE_SNAPSHOT}} > {} ))",
-        limits::MAX_SNAPSHOT_BYTES
-    );
-    assert_eq!(init.matches(&bound).count(), 1, "{bound}");
-    Ok(())
-}
-
-/// Markdown files written for agents and users; generated benchmark reports are data.
-fn documents() -> Result<Vec<PathBuf>, std::io::Error> {
-    let mut files = ["AGENTS.md", "CLAUDE.md", "README.md", "README.ja.md"]
-        .iter()
-        .map(|name| root().join(name))
-        .collect::<Vec<_>>();
-    let mut directories = vec![root().join("docs")];
+/// Regular files under `directory`, without following symlinks.
+fn files_under(directory: PathBuf) -> Result<Vec<PathBuf>, std::io::Error> {
+    let mut files = Vec::new();
+    let mut directories = vec![directory];
     while let Some(directory) = directories.pop() {
         for entry in fs::read_dir(directory)? {
-            let path = entry?.path();
-            if path.is_dir() {
-                directories.push(path);
-            } else if path.extension().is_some_and(|extension| extension == "md") {
-                files.push(path);
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                directories.push(entry.path());
+            } else if file_type.is_file() {
+                files.push(entry.path());
             }
         }
     }
+    Ok(files)
+}
+
+fn is_markdown(path: &Path) -> bool {
+    path.extension().is_some_and(|extension| extension == "md")
+}
+
+/// Markdown written for agents and users: `docs/` and the root documents.
+fn documents() -> Result<Vec<PathBuf>, std::io::Error> {
+    let mut files = files_under(root().join("docs"))?;
+    files.retain(|path| is_markdown(path));
+    files.extend(
+        ["AGENTS.md", "CLAUDE.md", "README.md", "README.ja.md"]
+            .iter()
+            .map(|name| root().join(name)),
+    );
     files.sort();
     Ok(files)
 }
 
-/// Every identifier-like word in tracked sources, scripts, and configuration.
+/// Every identifier-like word in sources, scripts, configuration, and root
+/// files, excluding this test so its allowlists cannot satisfy themselves.
 fn source_words() -> Result<BTreeSet<String>, std::io::Error> {
-    const SKIPPED: [&str; 4] = [".git", "target", "docs", "assets"];
-    let mut words = BTreeSet::new();
-    let mut directories = vec![root()];
-    while let Some(directory) = directories.pop() {
-        for entry in fs::read_dir(directory)? {
-            let path = entry?.path();
-            let name = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or_default();
-            if path.is_dir() {
-                if !SKIPPED.contains(&name) {
-                    directories.push(path);
-                }
-            } else if !name.ends_with(".md")
-                && let Ok(text) = fs::read_to_string(&path)
-            {
-                words.extend(
-                    text.split(|character: char| {
-                        !character.is_ascii_alphanumeric() && character != '_'
-                    })
-                    .filter(|word| !word.is_empty())
-                    .map(str::to_owned),
-                );
-            }
+    let this_test = root().join("crates/cli/tests/docs.rs");
+    let mut files = Vec::new();
+    for directory in SOURCE_DIRECTORIES {
+        files.extend(files_under(root().join(directory))?);
+    }
+    for entry in fs::read_dir(root())? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            files.push(entry.path());
         }
+    }
+    let mut words = BTreeSet::new();
+    for path in files {
+        if path == this_test || is_markdown(&path) {
+            continue;
+        }
+        // Binary files and bytecode caches carry no cited names.
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        words.extend(
+            text.split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+                .filter(|word| !word.is_empty())
+                .map(str::to_owned),
+        );
     }
     Ok(words)
 }
@@ -239,40 +129,28 @@ fn prose_lines(document: &str) -> Vec<(usize, &str)> {
 }
 
 /// Inline code spans delimited by single backticks.
-fn code_spans(line: &str) -> Vec<&str> {
-    line.split('`').skip(1).step_by(2).collect()
+fn code_spans(line: &str) -> impl Iterator<Item = &str> {
+    line.split('`').skip(1).step_by(2)
 }
 
-/// Cited names that intentionally have no definition in this repository.
-const EXTERNAL_IDENTIFIERS: [&str; 5] = [
-    // Rustdoc code block attributes.
-    "no_run",
-    "compile_fail",
-    // Variables of the removed 0.x shared daemon, named by the migration guide.
-    "CAPSULE_SOCKET_PATH",
-    "CAPSULE_SOCK_DIR",
-    // A zsh option that Capsule never sets.
-    "PROMPT_PERCENT",
-];
+fn is_identifier(text: &str) -> bool {
+    text.chars()
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+        && text
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '_')
+}
 
 /// Rust or shell identifiers worth resolving: paths and snake/screaming case
 /// names, excluding naming prefixes such as `to_`.
 fn cited_identifier(span: &str) -> Option<&str> {
     let span = span.strip_suffix("()").unwrap_or(span);
-    if span.ends_with('_') || EXTERNAL_IDENTIFIERS.contains(&span) {
-        return None;
-    }
-    let is_identifier = |segment: &str| {
-        segment
-            .chars()
-            .next()
-            .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
-            && segment
-                .chars()
-                .all(|character| character.is_ascii_alphanumeric() || character == '_')
-    };
-    (span.split("::").all(is_identifier) && (span.contains("::") || span.contains('_')))
-        .then_some(span)
+    let resolvable = span.split("::").all(is_identifier)
+        && (span.contains("::") || span.contains('_'))
+        && !span.ends_with('_')
+        && !EXTERNAL_IDENTIFIERS.contains(&span);
+    resolvable.then_some(span)
 }
 
 /// GitHub heading anchors of a Markdown document, including duplicate suffixes.
@@ -303,37 +181,90 @@ fn anchors(document: &str) -> BTreeSet<String> {
 }
 
 /// Inline link targets, `](target)`, on one line.
-fn link_targets(line: &str) -> Vec<&str> {
+fn link_targets(line: &str) -> impl Iterator<Item = &str> {
     line.split("](")
         .skip(1)
         .filter_map(|rest| rest.split_once(')').map(|(target, _)| target))
         .map(|target| target.split_once(' ').map_or(target, |(path, _)| path))
-        .collect()
+}
+
+fn parse_limit(text: &str) -> Option<Limit> {
+    let (number, unit) = text.split_once(' ').unwrap_or((text, ""));
+    let number = number.parse::<usize>().ok()?;
+    let millis = |factor: u64| Some(Duration::from_millis(u64::try_from(number).ok()? * factor));
+    Some(match unit {
+        "" => Limit::Count(number),
+        "bytes" => Limit::Bytes(number),
+        "KiB" => Limit::Bytes(number * 1024),
+        "ms" => Limit::Time(millis(1)?),
+        "s" => Limit::Time(millis(1000)?),
+        _ => return None,
+    })
+}
+
+/// Rows of the `| Boundary | Limit | Constant |` table, keyed by constant.
+fn documented_limits(document: &str) -> Result<BTreeMap<String, Limit>, String> {
+    let mut rows = BTreeMap::new();
+    let lines = document
+        .lines()
+        .skip_while(|line| *line != "| Boundary | Limit | Constant |")
+        .skip(2)
+        .take_while(|line| line.starts_with('|'));
+    for line in lines {
+        // Split from the right so boundary text may contain `|`.
+        let cells = line
+            .trim_matches('|')
+            .rsplitn(3, '|')
+            .map(str::trim)
+            .collect::<Vec<_>>();
+        let [constant, value, _] = cells.as_slice() else {
+            return Err(format!("malformed limit row: {line}"));
+        };
+        let constant = constant.trim_matches('`').to_owned();
+        let value = parse_limit(value).ok_or_else(|| format!("unparsed limit: {line}"))?;
+        if rows.insert(constant.clone(), value).is_some() {
+            return Err(format!("duplicate limit row: {constant}"));
+        }
+    }
+    Ok(rows)
+}
+
+#[test]
+fn threat_model_limits_table_matches_the_limits_module() -> TestResult {
+    let documented = documented_limits(&read("docs/threat-model.md")?)?;
+    let defined = limits::ALL
+        .iter()
+        .map(|(name, limit)| ((*name).to_owned(), *limit))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(defined.len(), limits::ALL.len(), "duplicate limit names");
+    assert_eq!(documented, defined);
+    Ok(())
 }
 
 #[test]
 fn relative_links_in_docs_resolve() -> TestResult {
+    let documents = documents()?;
+    let mut anchors_by_path = BTreeMap::new();
+    for path in &documents {
+        anchors_by_path.insert(path.canonicalize()?, anchors(&fs::read_to_string(path)?));
+    }
     let mut broken = Vec::new();
-    for path in documents()? {
-        let document = fs::read_to_string(&path)?;
+    for path in &documents {
+        let document = fs::read_to_string(path)?;
         let directory = path.parent().ok_or("document without a parent")?;
         for (number, line) in prose_lines(&document) {
-            for target in link_targets(line) {
-                if target.contains("://") || target.starts_with("mailto:") {
-                    continue;
-                }
+            let local = link_targets(line)
+                .filter(|target| !target.contains("://") && !target.starts_with("mailto:"));
+            for target in local {
                 let (file, anchor) = target.split_once('#').unwrap_or((target, ""));
-                let resolved = if file.is_empty() {
-                    path.clone()
-                } else {
-                    directory.join(file)
-                };
-                let valid = resolved.exists()
-                    && (anchor.is_empty()
-                        || resolved
-                            .extension()
-                            .is_some_and(|extension| extension != "md")
-                        || anchors(&fs::read_to_string(&resolved)?).contains(anchor));
+                let resolved = directory.join(file).canonicalize().ok();
+                // Anchors are checked in documents; links into other files may name lines.
+                let valid = resolved.is_some_and(|resolved| {
+                    anchor.is_empty()
+                        || anchors_by_path
+                            .get(&resolved)
+                            .is_none_or(|anchors| anchors.contains(anchor))
+                });
                 if !valid {
                     broken.push(format!("{}:{number}: {target}", path.display()));
                 }
@@ -351,7 +282,7 @@ fn identifiers_cited_in_docs_exist_in_sources() -> TestResult {
     for path in documents()? {
         let document = fs::read_to_string(&path)?;
         for (number, line) in prose_lines(&document) {
-            for identifier in code_spans(line).into_iter().filter_map(cited_identifier) {
+            for identifier in code_spans(line).filter_map(cited_identifier) {
                 if identifier
                     .split("::")
                     .any(|segment| !words.contains(segment))
@@ -369,70 +300,51 @@ fn identifiers_cited_in_docs_exist_in_sources() -> TestResult {
     Ok(())
 }
 
-/// Lint levels from `Cargo.toml` `[workspace.lints.*]` sections.
-fn workspace_lint_levels(manifest: &str) -> BTreeMap<String, String> {
+/// Lint levels from `Cargo.toml` `[workspace.lints.*]`, in short or table form.
+fn workspace_lint_levels() -> Result<BTreeMap<String, String>, Box<dyn std::error::Error>> {
+    let manifest = read("Cargo.toml")?.parse::<toml::Table>()?;
+    let groups = manifest
+        .get("workspace")
+        .and_then(|workspace| workspace.get("lints"))
+        .and_then(toml::Value::as_table)
+        .ok_or("missing [workspace.lints]")?;
     let mut levels = BTreeMap::new();
-    let mut in_lints = false;
-    for line in manifest.lines() {
-        let line = line.split('#').next().unwrap_or_default().trim();
-        if line.starts_with('[') {
-            in_lints = line.starts_with("[workspace.lints.");
-        } else if in_lints && let Some((name, level)) = line.split_once('=') {
-            levels.insert(
-                name.trim().to_owned(),
-                level.trim().trim_matches('"').to_owned(),
-            );
+    for lints in groups.values().filter_map(toml::Value::as_table) {
+        for (name, setting) in lints {
+            let level = setting
+                .as_str()
+                .or_else(|| setting.get("level").and_then(toml::Value::as_str))
+                .ok_or("lint without a level")?;
+            levels.insert(name.clone(), level.to_owned());
         }
     }
-    levels
+    Ok(levels)
 }
-
-/// How the docs spell each lint they promise, and its Cargo lint name.
-const DOCUMENTED_LINTS: [(&str, &str); 7] = [
-    ("unsafe_code", "unsafe_code"),
-    ("unwrap", "unwrap_used"),
-    ("expect", "expect_used"),
-    ("panic!", "panic"),
-    ("todo!", "todo"),
-    ("unimplemented!", "unimplemented"),
-    ("dbg!", "dbg_macro"),
-];
 
 #[test]
 fn documented_lint_policy_matches_the_workspace_manifest() -> TestResult {
-    let levels = workspace_lint_levels(&read("Cargo.toml")?);
+    let levels = workspace_lint_levels()?;
     for document in ["AGENTS.md", "CLAUDE.md", "docs/tooling.md"] {
         let text = read(document)?;
-        let mut promised = BTreeSet::new();
-        for (number, line) in prose_lines(&text) {
-            if !line.contains("denied") && !line.contains("forbidden") {
-                continue;
-            }
-            for span in code_spans(line) {
-                let Some((_, lint)) = DOCUMENTED_LINTS
+        let mut promised = 0;
+        let policy_lines = prose_lines(&text)
+            .into_iter()
+            .filter(|(_, line)| line.contains("denied") || line.contains("forbidden"));
+        for (number, line) in policy_lines {
+            for span in code_spans(line).filter(|span| is_identifier(span.trim_end_matches('!'))) {
+                let lint = LINT_ALIASES
                     .iter()
                     .find(|(spelling, _)| *spelling == span)
-                else {
-                    assert!(
-                        !span.ends_with('!'),
-                        "{document}:{number}: unmapped lint `{span}`"
-                    );
-                    continue;
-                };
-                let expected = if *lint == "unsafe_code" {
-                    "forbid"
-                } else {
-                    "deny"
-                };
-                assert_eq!(
-                    levels.get(*lint).map(String::as_str),
-                    Some(expected),
-                    "{document}:{number}: `{span}`"
+                    .map_or(span, |(_, lint)| lint);
+                let level = levels.get(lint).map(String::as_str);
+                assert!(
+                    matches!(level, Some("deny" | "forbid")),
+                    "{document}:{number}: `{span}` is {level:?} in Cargo.toml"
                 );
-                promised.insert(*lint);
+                promised += 1;
             }
         }
-        assert!(promised.len() > 1, "{document}: no lint policy found");
+        assert!(promised > 1, "{document}: no lint policy found");
     }
     Ok(())
 }
