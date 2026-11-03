@@ -228,29 +228,69 @@ fn cited_identifier(span: &str) -> Option<&str> {
     resolvable.then_some(span)
 }
 
-/// The text of an ATX heading line. Headings with markup that GitHub renders
-/// before slugging (code, links, emphasis, HTML) are rejected, so a heading
-/// this check would slug differently fails loudly.
+/// Whether `text` holds a `delimiter` run that can open emphasis followed by
+/// one that can close it. An underscore cannot open or close inside a word.
+fn has_emphasis(text: &str, delimiter: char) -> bool {
+    let mut open = false;
+    for (index, character) in text.char_indices() {
+        if character != delimiter {
+            continue;
+        }
+        let before = text[..index].chars().next_back();
+        let after = text[index + delimiter.len_utf8()..].chars().next();
+        let word = |neighbor: Option<char>| {
+            delimiter == '_' && neighbor.is_some_and(char::is_alphanumeric)
+        };
+        if open && before.is_some_and(|before| !before.is_whitespace()) && !word(after) {
+            return true;
+        }
+        open |= after.is_some_and(|after| !after.is_whitespace()) && !word(before);
+    }
+    false
+}
+
+/// The text of an ATX heading line, without its optional closing `#`
+/// sequence. Headings with markup that GitHub renders before slugging (code,
+/// links, emphasis, HTML) are rejected, so a heading this check would slug
+/// differently fails loudly.
 fn atx_heading(line: &str) -> Result<Option<&str>, String> {
-    let text = line.trim_start_matches('#');
-    let level = line.len() - text.len();
-    if !(1..=6).contains(&level) || !(text.is_empty() || text.starts_with(' ')) {
+    let indented = line.trim_start_matches(' ');
+    let text = indented.trim_start_matches('#');
+    let level = indented.len() - text.len();
+    if line.len() - indented.len() > 3
+        || !(1..=6).contains(&level)
+        || !(text.is_empty() || text.starts_with([' ', '\t']))
+    {
         return Ok(None);
     }
-    let emphasis = text.char_indices().any(|(index, character)| {
-        let intraword = |neighbor: Option<char>| neighbor.is_some_and(char::is_alphanumeric);
-        character == '_'
-            && !(intraword(text[..index].chars().next_back())
-                && intraword(text[index + 1..].chars().next()))
-    });
-    if emphasis || text.contains(['`', '[', '*', '<']) {
+    let text = text.trim();
+    let unclosed = text.trim_end_matches('#');
+    let text = if unclosed.is_empty() || unclosed.ends_with([' ', '\t']) {
+        unclosed.trim_end()
+    } else {
+        text
+    };
+    if text.contains(['`', '[', '<']) || has_emphasis(text, '*') || has_emphasis(text, '_') {
         return Err(format!("unsupported markup in heading: {line}"));
     }
-    Ok(Some(text.trim()))
+    Ok(Some(text))
+}
+
+/// Whether `line` opens a list item: `-`, `*`, or `+`, or one to nine digits
+/// and `.` or `)`, followed by a space or the end of the line.
+fn is_list_item(line: &str) -> bool {
+    let digits = line.trim_start_matches(|character: char| character.is_ascii_digit());
+    let rest = match line.len() - digits.len() {
+        0 => line.strip_prefix(['-', '*', '+']),
+        1..=9 => digits.strip_prefix(['.', ')']),
+        _ => None,
+    };
+    rest.is_some_and(|rest| rest.is_empty() || rest.starts_with([' ', '\t']))
 }
 
 /// Whether `line` underlines the previous prose line as a Setext heading,
-/// rather than following a blank line, a heading, or a block marker.
+/// rather than following a blank line, a heading, a table, a quote, or a list
+/// item.
 fn is_setext_underline(line: &str, previous: Option<&str>) -> bool {
     let underline = line.trim();
     let marker = underline.chars().all(|character| character == '=')
@@ -258,8 +298,9 @@ fn is_setext_underline(line: &str, previous: Option<&str>) -> bool {
     let paragraph = previous.is_some_and(|previous| {
         let previous = previous.trim_start();
         !previous.is_empty()
-            && !previous.starts_with(['#', '|', '>', '-', '*', '+'])
-            && !previous.starts_with(|first: char| first.is_ascii_digit())
+            && !matches!(atx_heading(previous), Ok(Some(_)))
+            && !previous.starts_with(['|', '>'])
+            && !is_list_item(previous)
     });
     !underline.is_empty() && line.len() - line.trim_start().len() <= 3 && marker && paragraph
 }
@@ -308,16 +349,19 @@ fn anchors(document: &str) -> Result<BTreeSet<String>, String> {
 #[test]
 fn anchors_slug_plain_atx_headings_and_reject_other_forms() -> TestResult {
     let document = "---\nstatus: accepted\n---\n\
-        # Setup\n## MAX_REQUEST bound\n### Setup\n#NotAHeading\nText\n\n---\n";
+        # Setup\n## MAX_REQUEST bound\n   ### Setup ##\n## Option_\n## 2 * 3\n\
+        #NotAHeading\nText\n\n---\n- item\n---\n1. step\n---\n";
     assert_eq!(
         anchors(document)?,
-        ["setup", "max_request-bound", "setup-1"]
+        ["setup", "max_request-bound", "setup-1", "option_", "2--3"]
             .map(str::to_owned)
             .into()
     );
     for unsupported in [
         "Title\n=====\n",
         "Intro\nTitle\n---\n",
+        "2026 Plan\n---\n",
+        "  ## *Setup*\n",
         "## [Setup](setup.md)\n",
         "## `code`\n",
         "## *Emphasis*\n",
