@@ -277,6 +277,13 @@ _capsule_finalize_prompt() {
     return 0
 }
 
+_capsule_line_init() {
+    # precmd consumes the command start. When a named precmd error skipped
+    # Capsule's hooks, drop it before the next command line is edited.
+    [[ $CONTEXT == start ]] && _CAPSULE_CMD_START=''
+    return 0
+}
+
 _capsule_redraw() {
     emulate -L zsh
     if [[ $_CAPSULE_LAST_COLS != ${COLUMNS:-80} || $_CAPSULE_LAST_KEYMAP != ${KEYMAP:-main} ]]; then
@@ -324,8 +331,10 @@ _capsule_init() {
     preexec_functions=(_capsule_preexec "${(@)preexec_functions:#_capsule_preexec}")
     zshexit_functions=(_capsule_cleanup_fds "${(@)zshexit_functions:#_capsule_cleanup_fds}")
     autoload -Uz add-zle-hook-widget
+    add-zle-hook-widget -d line-init _capsule_line_init 2>/dev/null
     add-zle-hook-widget -d line-pre-redraw _capsule_redraw 2>/dev/null
     add-zle-hook-widget -d keymap-select _capsule_redraw 2>/dev/null
+    add-zle-hook-widget line-init _capsule_line_init
     add-zle-hook-widget line-pre-redraw _capsule_redraw
     add-zle-hook-widget keymap-select _capsule_redraw
 }

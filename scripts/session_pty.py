@@ -875,7 +875,7 @@ def run_named_hook_error(shell, record):
     assert retained == (shell.home / "rendered").read_bytes(), "option-off prompt must hold retained text"
     shell.pump()
     before = log.stat().st_size
-    shell.command("_capsule_test_named_error=1")
+    shell.command("_capsule_test_named_error=1; _CAPSULE_CMD_START=$((EPOCHREALTIME-3))")
     eventually(lambda: (shell.home / "named-error").exists(), "named precmd hook", shell.pump)
     eventually(lambda: b"division by zero" in log.read_bytes()[before:], "genuine named hook error", shell.pump)
     state = shell.state(wait_ready=False)
@@ -898,11 +898,18 @@ def run_named_hook_error(shell, record):
     assert not any(marker.exists() for marker in markers)
     record("response_after_named_precmd_error_stays_literal")
 
+    # The skipped prompt never consumed the command start; the next prompt must
+    # not attribute it, plus the time spent at that prompt, to empty Enter.
+    generation, mark = shell.run_line("")
+    finalized = [item for item in shell.transitions(mark, generation) if item["event"] == b"precmd"]
+    assert generation == 3 and finalized and finalized[-1]["duration"] == b"", finalized
+    record("empty_enter_after_named_precmd_error_omits_stale_duration")
+
     mark = shell.mark()
-    shell.command("_capsule_test_named_error=0; (exit 7)")
-    shell.complete(3, mark)
-    finalized = [item for item in shell.transitions(mark, 3) if item["event"] == b"precmd"]
-    assert finalized and finalized[-1]["status"] == 7, finalized
+    shell.command("_CAPSULE_CMD_START=$((EPOCHREALTIME-2)); (exit 7)")
+    shell.complete(4, mark)
+    finalized = [item for item in shell.transitions(mark, 4) if item["event"] == b"precmd"]
+    assert finalized and finalized[-1]["status"] == 7 and int(finalized[-1]["duration"]) >= 2000, finalized
     assert shell.state()["worker"] == worker
     assert not any(marker.exists() for marker in markers)
     record("named_precmd_recovery_keeps_command_status_and_worker")
@@ -981,6 +988,16 @@ def run_empty_enter(shell, record):
     # Measured from this command's start, not carried over from the first one.
     assert finalized[-1]["status"] == 4 and int(finalized[-1]["duration"]) >= 2000 and finalized[-1]["duration"] != first, finalized
     record("command_after_empty_enter_reports_its_own_status_and_duration")
+
+    # A nested line editor inside the command must not discard its start time.
+    generation = shell.next_generation()
+    mark = shell.mark()
+    shell.command("_CAPSULE_CMD_START=$((EPOCHREALTIME-2)); vared -c _capsule_test_vared; (exit 6)")
+    shell.send(b"\n")
+    shell.complete(generation, mark)
+    finalized = [item for item in shell.transitions(mark, generation) if item["event"] == b"precmd"]
+    assert finalized[-1]["status"] == 6 and int(finalized[-1]["duration"]) >= 2000, finalized
+    record("command_using_nested_line_editor_keeps_its_duration")
 
 
 MATRIX_PAYLOAD = "$(print -n x > ~/dollar) `print -n x > ~/backtick`"
@@ -1271,6 +1288,7 @@ def run(binary: Path, output: Path):
         shell = start("named-hook-error", precmd_setup=(
             "precmd() {\n"
             "  if (( _capsule_test_named_error )); then\n"
+            "    _capsule_test_named_error=0\n"
             "    setopt promptsubst\n"
             "    print -r -- reached > \"$HOME/named-error\"\n"
             "    : $((1/0))\n"

@@ -66,7 +66,7 @@ Require successful exit and all contract records:
 | Binary selection | A renamed selected executable supplies init, worker, and fd-config even beside a different executable named capsule |
 | Cleanup safety | Confirmed-dead worker identities are retired; historical PIDs never become signal targets after reuse |
 | One shell | One worker; resize/keymap changes reuse acquisition |
-| Empty Enter | Empty Enter is an ordinary prompt: it shows Git changes made outside the shell, keeps zsh's unchanged `$?` as the status, and omits the previous command's duration; the next command shows its own duration; repeated empty Enter settles on the newest generation with the same worker |
+| Empty Enter | Empty Enter is an ordinary prompt: it shows Git changes made outside the shell, keeps zsh's unchanged `$?` as the status, and omits the previous command's duration; the next command, including one using a nested line editor, shows its own duration; repeated empty Enter settles on the newest generation with the same worker |
 | Hook matrix | For commands and empty Enter combined with named or preserved hooks that change cwd, exports, or `PROMPT_SUBST`, or raise a preserved-hook shell error: each prompt advances one generation on the same worker, acquisition sees post-hook cwd/exports, status follows zsh's `$?`, duration appears only after a command, and the prompt stays literal for the current option |
 | Initialization | With `add-zsh-hook` already loaded by another integration, ordinary commands advance generations and update real Git state and file-backed modules using the same worker |
 | Revalidation | With file-controlled slow acquisition and unchanged cwd/environment/config, ordinary commands preserve Git/tool information in every intermediate frame and actual shell prompt assignment, including finalized precmd; the first command after a directory-aware precmd hook updates exports also preserves the settled display |
@@ -77,7 +77,7 @@ Require successful exit and all contract records:
 | Input | Delayed prompt updates preserve the typed buffer and cursor |
 | Transport | A backpressured large request completes without further keyboard input; stale/future responses cannot replace the prompt |
 | Recovery | Worker failure selects fallback; the next prompt starts a replacement worker even if a preserved precmd hook raises a genuine shell error |
-| Named hook | After a named `precmd` enables `PROMPT_SUBST` and raises a genuine shell error, the expanded worker display and a later matching response stay literal without marker side effects; the next command keeps its status and worker |
+| Named hook | After a named `precmd` enables `PROMPT_SUBST` and raises a genuine shell error, the expanded worker display and a later matching response stay literal without marker side effects; the following empty Enter omits the skipped command's duration; the next command keeps its status and worker |
 | Exit and exec | Pipes close; worker and active acquisition descendants terminate; exec cleanup is checked after a replacement-ready marker and while the controlled replacement remains alive |
 | Ten shells | Ten distinct workers, one initial acquisition each, and no workers left active after exit |
 
