@@ -65,6 +65,11 @@ description = "Run mutation testing; pass cargo-mutants options such as --in-dif
 tools = { "github:sourcefrog/cargo-mutants" = "27.1.0" }
 run = "cargo mutants"
 
+[tasks."test:fuzz"]
+description = "Fuzz one bolero target with libFuzzer (requires a nightly toolchain): mise run test:fuzz <package> <test path> [-T 10m]"
+tools = { "cargo:cargo-bolero" = "0.13.5" }
+run = "cargo +nightly bolero test --package"
+
 [tasks.doc]
 description = "Build documentation without dependency docs"
 run = "cargo doc --workspace --no-deps"

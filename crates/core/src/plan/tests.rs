@@ -8,7 +8,8 @@ use crate::{
     acquire::Runner,
     limits::{
         MAX_CANDIDATES_PER_VALUE, MAX_COMMAND_ARGS, MAX_CONFIG_BYTES, MAX_FORMAT_BYTES,
-        MAX_FORMAT_DEPTH, MAX_MODULES, MAX_OUTPUT_BYTES, MAX_VALUES_PER_MODULE, MAX_WHEN_ITEMS,
+        MAX_FORMAT_DEPTH, MAX_MODULES, MAX_OUTPUT_BYTES, MAX_TOTAL_CANDIDATES, MAX_TOTAL_VALUES,
+        MAX_VALUES_PER_MODULE, MAX_WHEN_ITEMS,
     },
     render::style::Color,
     test_utils::snapshot,
@@ -630,4 +631,167 @@ mod template_properties {
             prop_assert_eq!(reprinted, source);
         }
     }
+}
+
+/// Panics unless a configuration `source` is rejected or compiles within every
+/// count and depth limit in threat-model.md §6; the regex builder bounds
+/// regex size and nesting.
+fn assert_accepted_within_limits(source: &str) {
+    fn depth(parts: &[FormatPart]) -> usize {
+        parts
+            .iter()
+            .map(|part| match part {
+                FormatPart::Optional(parts) => depth(parts) + 1,
+                _ => 0,
+            })
+            .max()
+            .unwrap_or(0)
+    }
+    let Ok(plan) = ConfigPlan::parse(source) else {
+        return;
+    };
+    let values = || plan.modules.iter().flat_map(|module| &module.values);
+    let candidates = || values().flat_map(|value| &value.candidates);
+    assert!(plan.modules.len() <= MAX_MODULES);
+    assert!(values().count() <= MAX_TOTAL_VALUES);
+    assert!(candidates().count() <= MAX_TOTAL_CANDIDATES);
+    for module in &plan.modules {
+        assert!(module.values.len() <= MAX_VALUES_PER_MODULE);
+        assert!(
+            module.when.files.len() <= MAX_WHEN_ITEMS && module.when.env.len() <= MAX_WHEN_ITEMS
+        );
+        assert!(depth(&module.format.0) <= MAX_FORMAT_DEPTH);
+    }
+    for value in values() {
+        assert!((1..=MAX_CANDIDATES_PER_VALUE).contains(&value.candidates.len()));
+    }
+    for candidate in candidates() {
+        assert!(
+            !matches!(&candidate.source, Source::Command(args) if args.len() > MAX_COMMAND_ARGS)
+        );
+    }
+}
+
+/// Covers: T07
+#[test]
+fn arbitrary_configuration_text_respects_the_plan_limits() {
+    bolero::check!().for_each(|input: &[u8]| {
+        assert_accepted_within_limits(&String::from_utf8_lossy(input));
+    });
+}
+
+/// Modules whose fields pick from fixed fragments, so generated
+/// configurations mostly compile, and each limit is sometimes exceeded.
+#[derive(Debug, bolero::TypeGenerator)]
+struct GeneratedConfig {
+    #[generator(bolero::produce::<Vec<GeneratedModule>>().with().len(0..=4usize))]
+    modules: Vec<GeneratedModule>,
+    /// Small modules that can pass `MAX_MODULES` and the plan-wide totals
+    /// within `MAX_CONFIG_BYTES`.
+    #[generator(0..=70u8)]
+    padding: u8,
+    #[generator(0..=4u8)]
+    padding_values: u8,
+    #[generator(1..=8usize)]
+    padding_candidates: usize,
+}
+
+#[derive(Debug, bolero::TypeGenerator)]
+struct GeneratedModule {
+    #[generator(0..=65u8)]
+    files: u8,
+    #[generator(0..=65u8)]
+    env: u8,
+    #[generator(bolero::produce::<Vec<u8>>().with().len(0..=16usize))]
+    format: Vec<u8>,
+    #[generator(bolero::produce::<Vec<Vec<u8>>>().with().len(0..=17usize).values(bolero::produce::<Vec<u8>>().with().len(1..=9usize)))]
+    values: Vec<Vec<u8>>,
+    line2: bool,
+    priority: Option<u8>,
+}
+
+fn generated_source(config: &GeneratedConfig) -> Result<String, std::fmt::Error> {
+    const FORMAT: &[&str] = &[
+        "{v0}",
+        "{v1}",
+        "{v16}",
+        "[x",
+        "]",
+        "{{",
+        "[[",
+        "x",
+        "[x[x[x[x[x[x[x[x[x]]]]]]]]]",
+    ];
+    let many_args = format!("{{ command = {:?} }}", vec!["a"; MAX_COMMAND_ARGS + 1]);
+    let candidates = [
+        "{ env = \"A\" }",
+        "{ file = \"f\" }",
+        "{ command = [\"c\", \"-v\"], regex = '(\\d+)' }",
+        "{ env = \"B\", regex = '((((a+)+)+)+){1000}' }",
+        "{ env = \"A\", file = \"f\" }",
+        &many_args,
+    ];
+    let pick =
+        |choice: &u8, tokens: &[&str]| tokens[usize::from(*choice) % tokens.len()].to_owned();
+    let names = |prefix: &str, count: u8| {
+        (0..count)
+            .map(|index| format!("{prefix}{index}"))
+            .collect::<Vec<_>>()
+    };
+    let mut source = String::from("schema_version = 2\n");
+    for (index, module) in config.modules.iter().enumerate() {
+        writeln!(source, "[[module]]\nname = \"m{index}\"")?;
+        writeln!(
+            source,
+            "when.files = {:?}\nwhen.env = {:?}",
+            names("f", module.files),
+            names("E", module.env)
+        )?;
+        let format = module
+            .format
+            .iter()
+            .map(|choice| pick(choice, FORMAT))
+            .collect::<String>();
+        writeln!(source, "format = {format:?}")?;
+        if module.line2 {
+            source.push_str("slot = \"line2\"\n");
+        }
+        if let Some(priority) = module.priority {
+            writeln!(
+                source,
+                "arbitration = {{ group = \"g\", priority = {priority} }}"
+            )?;
+        }
+        source.push_str("[module.values]\n");
+        for (value, choices) in module.values.iter().enumerate() {
+            let choices = choices
+                .iter()
+                .map(|choice| pick(choice, &candidates))
+                .collect::<Vec<_>>();
+            writeln!(source, "v{value} = [{}]", choices.join(", "))?;
+        }
+    }
+    let padding_candidates = vec!["{ env = \"A\" }"; config.padding_candidates].join(", ");
+    for index in 0..config.padding {
+        writeln!(
+            source,
+            "[[module]]\nname = \"p{index}\"\nformat = \"x\"\n[module.values]"
+        )?;
+        for value in 0..config.padding_values {
+            writeln!(source, "v{value} = [{padding_candidates}]")?;
+        }
+    }
+    Ok(source)
+}
+
+/// Covers: T07
+#[test]
+fn generated_configurations_respect_the_plan_limits() {
+    bolero::check!()
+        .with_type::<GeneratedConfig>()
+        .for_each(|config| {
+            if let Ok(source) = generated_source(config) {
+                assert_accepted_within_limits(&source);
+            }
+        });
 }

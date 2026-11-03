@@ -1,0 +1,13 @@
+# branch.oid abc123def456
+# branch.head main
+# branch.ab +1 -2
+# stash 5
+1 M. N... 000000 000000 abc123 def456 staged.rs
+1 .M N... 000000 000000 abc123 def456 modified.rs
+1 A. N... 000000 100644 000000 def456 added.rs
+1 MM N... 000000 000000 abc123 def456 both.rs
+1 D. N... 100644 000000 000000 abc123 000000 deleted.rs
+1 .D N... 100644 100644 000000 abc123 def456 removed.rs
+2 R. N... 100644 100644 100644 abc123 def456 R100 new.rs	old.rs
+u UU N... 000000 000000 000000 abc123 def456 ghi789 conflict.rs
+? untracked.txt

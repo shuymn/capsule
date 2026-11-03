@@ -292,6 +292,63 @@ u UU N... 000000 000000 000000 abc123 def456 ghi789 conflict.rs
     assert_eq!(parse_porcelain_v2(""), GitStatus::default());
 }
 
+#[test]
+fn porcelain_counts_match_the_line_prefixes() {
+    const TOKENS: &[&str] = &[
+        "# branch.oid ",
+        "# branch.head ",
+        "(detached)",
+        "# branch.ab ",
+        "# stash ",
+        "1 ",
+        "2 ",
+        "u ",
+        "? ",
+        "+",
+        "-",
+        ".",
+        "M",
+        "D",
+        "A",
+        "R",
+        " ",
+        "\t",
+        "\n",
+        "\r\n",
+        "0",
+        "7",
+        "18446744073709551616",
+        "x",
+        "é",
+    ];
+    bolero::check!().for_each(|input: &[u8]| {
+        // Also read each byte as a token choice, so random input reaches the
+        // line structure.
+        let tokens = input
+            .iter()
+            .map(|choice| TOKENS[usize::from(*choice) % TOKENS.len()]);
+        for output in [
+            String::from_utf8_lossy(input).into_owned(),
+            tokens.collect(),
+        ] {
+            let status = parse_porcelain_v2(&output);
+            let count = |prefixes: &[&str]| {
+                output
+                    .lines()
+                    .filter(|line| prefixes.iter().any(|prefix| line.starts_with(prefix)))
+                    .count()
+            };
+            let entries = count(&["1 ", "2 "]);
+            assert_eq!(status.untracked, count(&["? "]));
+            assert_eq!(status.conflicted, count(&["u "]));
+            // An entry without its XY field is skipped.
+            assert!(status.renamed <= count(&["2 "]));
+            assert!(status.staged <= entries && status.modified <= entries);
+            assert!(status.deleted <= status.staged + status.modified);
+        }
+    });
+}
+
 // -- acquire_context tests --
 
 /// A snapshot in `directory/repo/sub`, under a repository root, whose `PATH`

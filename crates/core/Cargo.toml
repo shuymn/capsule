@@ -26,6 +26,7 @@ tracing.workspace = true
 unicode-width.workspace = true
 
 [dev-dependencies]
+bolero.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 
