@@ -228,17 +228,94 @@ fn cited_identifier(span: &str) -> Option<&str> {
     resolvable.then_some(span)
 }
 
-/// GitHub heading anchors of a Markdown document, including duplicate suffixes.
-fn anchors(document: &str) -> BTreeSet<String> {
+/// The text of an ATX heading line as GitHub renders it: links and images
+/// keep their text, and code spans keep their content. Emphasis and HTML are
+/// rejected, so headings this check cannot slug fail loudly.
+fn atx_heading(line: &str) -> Result<Option<String>, String> {
+    let indented = line.trim_start_matches(' ');
+    let level = indented.len() - indented.trim_start_matches('#').len();
+    let rest = &indented[level..];
+    if line.len() - indented.len() > 3
+        || !(1..=6).contains(&level)
+        || !(rest.is_empty() || rest.starts_with([' ', '\t']))
+    {
+        return Ok(None);
+    }
+    let rest = rest.trim();
+    // An optional closing sequence of `#` follows a space.
+    let unclosed = rest.trim_end_matches('#');
+    let text = if unclosed.is_empty() || unclosed.ends_with([' ', '\t']) {
+        unclosed.trim_end()
+    } else {
+        rest
+    };
+    let mut rendered = String::new();
+    for (index, part) in text.split('`').enumerate() {
+        if index % 2 == 1 {
+            rendered.push_str(part);
+            continue;
+        }
+        if part.contains(['*', '_', '<']) {
+            return Err(format!("unsupported inline markup in heading: {line}"));
+        }
+        let mut rest = part;
+        while let Some(open) = rest.find('[') {
+            let (before, link) = rest.split_at(open);
+            let Some((label, after)) = link[1..].split_once("](") else {
+                return Err(format!("unsupported brackets in heading: {line}"));
+            };
+            let Some((_, after)) = after.split_once(')') else {
+                return Err(format!("unclosed link in heading: {line}"));
+            };
+            rendered.push_str(before.strip_suffix('!').unwrap_or(before));
+            rendered.push_str(label);
+            rest = after;
+        }
+        rendered.push_str(rest);
+    }
+    Ok(Some(rendered))
+}
+
+/// Whether `line` underlines the previous prose line as a Setext heading,
+/// rather than following a blank line, a heading, or a block marker.
+fn is_setext_underline(line: &str, previous: Option<&str>) -> bool {
+    let underline = line.trim();
+    let marker = underline.chars().all(|character| character == '=')
+        || underline.chars().all(|character| character == '-');
+    let paragraph = previous.is_some_and(|previous| {
+        let previous = previous.trim_start();
+        !previous.is_empty()
+            && !previous.starts_with(['#', '|', '>', '-', '*', '+'])
+            && !previous.starts_with(|first: char| first.is_ascii_digit())
+    });
+    !underline.is_empty() && line.len() - line.trim_start().len() <= 3 && marker && paragraph
+}
+
+/// GitHub heading anchors of a Markdown document, including duplicate
+/// suffixes. Leading YAML front matter is skipped, and Setext headings are
+/// rejected because no document uses them.
+fn anchors(document: &str) -> Result<BTreeSet<String>, String> {
     let mut seen = BTreeMap::<String, usize>::new();
     let mut anchors = BTreeSet::new();
-    for (_, line) in prose_lines(document) {
-        let Some(heading) = line.strip_prefix('#') else {
+    let lines = prose_lines(document);
+    let front_matter = match lines.as_slice() {
+        [(1, "---"), rest @ ..] => rest
+            .iter()
+            .position(|(_, line)| *line == "---")
+            .map_or(0, |end| end + 2),
+        _ => 0,
+    };
+    let mut previous = None;
+    for &(number, line) in &lines[front_matter..] {
+        if is_setext_underline(line, previous) {
+            return Err(format!("line {number}: Setext heading; use `#` instead"));
+        }
+        previous = Some(line);
+        let Some(heading) = atx_heading(line).map_err(|error| format!("line {number}: {error}"))?
+        else {
             continue;
         };
         let slug = heading
-            .trim_start_matches('#')
-            .trim()
             .to_lowercase()
             .chars()
             .filter(|character| character.is_alphanumeric() || matches!(character, ' ' | '-' | '_'))
@@ -252,7 +329,31 @@ fn anchors(document: &str) -> BTreeSet<String> {
         });
         *count += 1;
     }
-    anchors
+    Ok(anchors)
+}
+
+#[test]
+fn anchors_slug_rendered_atx_headings_and_reject_other_forms() -> TestResult {
+    let document = "---\nstatus: accepted\n---\n\
+        # Setup\n## [Install](setup.md) `cargo_add`\n### Setup ###\n\
+        #NotAHeading\n    # Indented code\nText\n\n---\n";
+    assert_eq!(
+        anchors(document)?,
+        ["setup", "install-cargo_add", "setup-1"]
+            .map(str::to_owned)
+            .into()
+    );
+    for unsupported in [
+        "Title\n=====\n",
+        "Intro\nTitle\n---\n",
+        "## *Emphasis*\n",
+        "## snake_case\n",
+        "## <em>HTML</em>\n",
+        "## [Unclosed](link\n",
+    ] {
+        assert!(anchors(unsupported).is_err(), "{unsupported}");
+    }
+    Ok(())
 }
 
 /// Link targets on one line: Markdown `](target)` and HTML `src="target"` or
@@ -333,11 +434,17 @@ fn threat_model_limits_table_matches_the_limits_module() -> TestResult {
 #[test]
 fn relative_links_in_docs_resolve() -> TestResult {
     let documents = documents()?;
-    // Headings of every Markdown target, loaded once; other files may name lines.
+    // Headings of every Markdown document and target, loaded once; other
+    // files may name lines.
     let mut anchors_by_path = BTreeMap::<PathBuf, BTreeSet<String>>::new();
     let mut broken = Vec::new();
     for path in &documents {
         let document = fs::read_to_string(path)?;
+        // Slug every document, so an unsupported heading fails even before a
+        // link targets it.
+        let headings =
+            anchors(&document).map_err(|error| format!("{}: {error}", path.display()))?;
+        anchors_by_path.insert(path.canonicalize()?, headings);
         let directory = path.parent().ok_or("document without a parent")?;
         for (number, line) in prose_lines(&document) {
             let local = link_targets(line)
@@ -354,7 +461,8 @@ fn relative_links_in_docs_resolve() -> TestResult {
                     Some(_) if anchor.is_empty() => true,
                     Some(resolved) if is_markdown(&resolved) => {
                         if !anchors_by_path.contains_key(&resolved) {
-                            let headings = anchors(&fs::read_to_string(&resolved)?);
+                            let headings = anchors(&fs::read_to_string(&resolved)?)
+                                .map_err(|error| format!("{}: {error}", resolved.display()))?;
                             anchors_by_path.insert(resolved.clone(), headings);
                         }
                         anchors_by_path
@@ -373,21 +481,55 @@ fn relative_links_in_docs_resolve() -> TestResult {
     Ok(())
 }
 
-/// Whether a cited identifier names something defined in the sources: a
-/// `Type::function` must be defined in that type's `impl` block, while other
-/// paths, such as enum variants and associated constants, need each segment.
+/// Whether a cited identifier names something defined in the sources: every
+/// segment must occur, and a path ending in `Type::function`, such as
+/// `capsule_core::ConfigPlan::parse`, must define that function in the type's
+/// `impl` block. Other paths, such as enum variants and associated constants,
+/// need only their segments.
 fn resolves(identifier: &str, words: &BTreeSet<String>, functions: &BTreeSet<String>) -> bool {
-    match identifier.split_once("::") {
-        Some((type_name, function))
+    let segments = identifier.split("::").collect::<Vec<_>>();
+    let defined = segments.iter().all(|segment| words.contains(*segment));
+    match segments.as_slice() {
+        [.., type_name, function]
             if type_name.starts_with(|first: char| first.is_ascii_uppercase())
-                && function.starts_with(|first: char| first.is_ascii_lowercase())
-                && !function.contains("::") =>
+                && function.starts_with(|first: char| first.is_ascii_lowercase()) =>
         {
-            functions.contains(identifier)
+            defined && functions.contains(&format!("{type_name}::{function}"))
         }
-        _ => identifier
-            .split("::")
-            .all(|segment| words.contains(segment)),
+        _ => defined,
+    }
+}
+
+#[test]
+fn method_paths_resolve_by_their_final_type_and_function() {
+    let words = [
+        "capsule_core",
+        "plan",
+        "ConfigPlan",
+        "parse",
+        "render",
+        "Limit",
+        "Count",
+    ]
+    .map(str::to_owned)
+    .into();
+    let functions = BTreeSet::from(["ConfigPlan::parse".to_owned()]);
+    for cited in [
+        "ConfigPlan::parse",
+        "capsule_core::ConfigPlan::parse",
+        "capsule_core::plan::ConfigPlan::parse",
+        "Limit::Count",
+        "capsule_core::Limit::Count",
+    ] {
+        assert!(resolves(cited, &words, &functions), "{cited}");
+    }
+    for cited in [
+        "ConfigPlan::render",
+        "capsule_core::ConfigPlan::render",
+        "missing::ConfigPlan::parse",
+        "capsule_core::Limit::Bytes",
+    ] {
+        assert!(!resolves(cited, &words, &functions), "{cited}");
     }
 }
 

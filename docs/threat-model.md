@@ -197,6 +197,9 @@ Operation audit logs and user identification for repudiation (R) are not securit
 | Expanded text of one module format | 64 KiB | `MAX_MODULE_TEXT_BYTES` |
 | Plain text per prompt line, before style, prompt quoting, and wire escaping (`\` becomes 11 bytes) | 2 KiB | `MAX_LINE_TEXT_BYTES` |
 | Cwd ancestors searched for a Git repository | 128 | `MAX_REPOSITORY_DEPTH` |
+| Shell write attempts per flush of a pending request | 2 | `MAX_FLUSH_WRITES` |
+| Shell reads per worker-output callback | 8 | `MAX_CALLBACK_READS` |
+| One shell read of worker output | 4 KiB | `CALLBACK_READ_BYTES` |
 
 ## 7. Priorities and Open Questions
 

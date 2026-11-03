@@ -117,6 +117,16 @@ limits! {
 
     /// Maximum cwd ancestors searched for a Git repository.
     Count MAX_REPOSITORY_DEPTH: usize = 128;
+
+    /// Maximum write attempts per `_capsule_flush` in `init.zsh`, so a slow
+    /// worker cannot hold the line editor; unsent bytes wait for the worker's
+    /// next `K` frame or the next request.
+    Count MAX_FLUSH_WRITES: usize = 2;
+    /// Maximum reads per `_capsule_async_callback` in `init.zsh`, so a fast
+    /// worker cannot hold the line editor; unread bytes wake the next callback.
+    Count MAX_CALLBACK_READS: usize = 8;
+    /// Bytes requested by each of those reads.
+    Bytes CALLBACK_READ_BYTES: usize = 4096;
 }
 
 const _: () = assert!(MAX_SNAPSHOT_BYTES + MAX_REQUEST_HEADER_BYTES <= MAX_REQUEST);
@@ -135,6 +145,9 @@ mod tests {
             format!("(( ${{#_CAPSULE_PENDING}} > {} ))", MAX_REQUEST + 1),
             format!("(( ${{#_capsule_line}} > {MAX_RESPONSE} ))"),
             format!("(( ${{#_CAPSULE_RX}} > {MAX_RESPONSE} ))"),
+            format!("(( _CAPSULE_FD_IN && _capsule_round++ < {MAX_FLUSH_WRITES} ))"),
+            format!("(( _CAPSULE_FD_OUT && _capsule_round++ < {MAX_CALLBACK_READS} ))"),
+            format!("sysread -i $_CAPSULE_FD_OUT -s {CALLBACK_READ_BYTES} "),
         ] {
             assert_eq!(
                 include_str!("init/init.zsh").matches(&bound).count(),
