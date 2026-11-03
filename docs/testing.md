@@ -90,11 +90,11 @@ controlling its parent or arbitrary same-UID code. Run the CLI regressions indep
 `uv run --no-project python -m unittest discover -s scripts -p test_session_pty.py`.
 
 The flicker setup directly launches each fresh Git/tool executable once before
-starting zsh, with a separate 8s timeout, EOF stdin, disposable `HOME`, cwd
+starting zsh, with a separate `SETUP_TIMEOUT_SECONDS` timeout, EOF stdin, disposable `HOME`, cwd
 `$HOME/work`, and fixture bin first on `PATH`. Require successful exit, exact
 output, and done markers. Verify the setup-only tool count is exactly one, then
 remove the count and both done markers before shell startup. Keep the production
-500ms deadline, generation counts, accepted-completion witnesses, and gate
+`ACQUISITION_TIMEOUT`, generation counts, accepted-completion witnesses, and gate
 deadlines unchanged; do not retry failed scenarios.
 
 Require successful exit and all contract records. [contracts.py](../scripts/pty_suite/contracts.py) is the source of this table: the driver rejects a record no contract lists and fails when a listed record is missing, and the CLI regressions fail when the table below differs from the registry. Edit the registry, then run `uv run --no-project scripts/session_pty.py --update-docs`:
