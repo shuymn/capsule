@@ -41,6 +41,7 @@ fn argv(args: &[&str]) -> io::Result<Vec<String>> {
     Ok(command)
 }
 
+/// Covers: T06
 #[test]
 fn command_preserves_raw_environment_and_clears_unspecified_variables() -> TestResult {
     let directory = tempfile::tempdir()?;
@@ -86,6 +87,7 @@ fn command_uses_snapshot_cwd_and_reports_failed_exit() -> TestResult {
     Ok(())
 }
 
+/// Covers: T07
 #[test]
 fn command_rejects_excessive_stdout_and_releases_capacity() -> TestResult {
     let command = argv(&["sh", "-c", "printf '%65537s' x"])?;
@@ -104,6 +106,7 @@ fn command_rejects_excessive_stdout_and_releases_capacity() -> TestResult {
     Ok(())
 }
 
+/// Covers: T07
 #[test]
 fn timeout_stops_descendants_that_hold_stdout_after_the_leader_exits() -> TestResult {
     let directory = tempfile::tempdir()?;
@@ -144,6 +147,7 @@ fn timeout_stops_descendants_that_hold_stdout_after_the_leader_exits() -> TestRe
     Ok(())
 }
 
+/// Covers: T07
 #[test]
 fn cancellation_stops_running_commands_and_prevents_queued_spawns() -> TestResult {
     runtime()?.block_on(async {
@@ -182,6 +186,7 @@ fn cancellation_stops_running_commands_and_prevents_queued_spawns() -> TestResul
     Ok(())
 }
 
+/// Covers: T07
 #[test]
 fn dropped_command_future_retains_its_slot_until_the_child_is_reaped() -> TestResult {
     runtime()?.block_on(async {
@@ -215,6 +220,7 @@ fn dropped_command_future_retains_its_slot_until_the_child_is_reaped() -> TestRe
     Ok(())
 }
 
+/// Covers: T07
 #[test]
 fn file_distinguishes_missing_empty_oversized_and_non_regular_sources() -> TestResult {
     let directory = tempfile::tempdir()?;
@@ -243,6 +249,7 @@ fn file_distinguishes_missing_empty_oversized_and_non_regular_sources() -> TestR
     Ok(())
 }
 
+/// Covers: T07
 #[test]
 fn cancelled_blocking_jobs_keep_both_slots_until_their_actual_completion() -> TestResult {
     runtime()?.block_on(async {

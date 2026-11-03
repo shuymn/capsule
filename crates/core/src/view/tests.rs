@@ -128,6 +128,7 @@ fn character_keymap_and_status_use_current_inputs_only() {
     );
 }
 
+/// Covers: T01
 #[test]
 fn literal_data_is_safe_with_prompt_substitution_on_and_off()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -377,6 +378,7 @@ values = { value = [{ command = ["never-run-by-view"] }] }
     Ok(())
 }
 
+/// Covers: T07
 #[test]
 fn repeated_references_cannot_amplify_bounded_values() {
     let value = "x".repeat(MAX_MODULE_TEXT_BYTES);
@@ -385,6 +387,7 @@ fn repeated_references_cannot_amplify_bounded_values() {
     assert!(evaluate_format(&[FormatPart::Value(0), FormatPart::Value(0)], &observed).is_none());
 }
 
+/// Covers: T07
 #[test]
 fn pathological_zero_width_data_still_fits_the_response_byte_limit()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -409,6 +412,7 @@ fn pathological_zero_width_data_still_fits_the_response_byte_limit()
     Ok(())
 }
 
+/// Covers: T07
 #[test]
 fn quoted_backslashes_on_both_lines_fit_the_response_byte_limit()
 -> Result<(), Box<dyn std::error::Error>> {

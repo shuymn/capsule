@@ -342,6 +342,7 @@ mod tests {
 
     use super::*;
 
+    /// Covers: T08
     #[tokio::test]
     async fn cancellation_preserves_chunks_and_following_frames() -> Result<(), Error> {
         let (mut input, output) = tokio::io::duplex(4096);
@@ -364,6 +365,7 @@ mod tests {
         Ok(())
     }
 
+    /// Covers: T08
     #[tokio::test]
     async fn frame_bounds_and_truncated_eof_are_enforced() -> Result<(), Error> {
         for length in [63, 64, 65] {
@@ -395,6 +397,7 @@ mod tests {
         Ok(())
     }
 
+    /// Covers: T06, T08
     #[test]
     fn invalid_frames_fail_without_exposing_values() {
         for frame in [
@@ -553,6 +556,7 @@ mod tests {
                 );
             }
 
+            /// Covers: T08
             #[test]
             fn decoders_reject_arbitrary_frames_without_panicking(
                 frame in biased(b"\t\\QR01-", 64),
@@ -562,6 +566,7 @@ mod tests {
                 let _ = Response::decode(&frame);
             }
 
+            /// Covers: T06, T08
             #[test]
             fn rejected_frames_do_not_expose_environment_values(
                 mut request in request(),
@@ -586,6 +591,7 @@ mod tests {
                 }
             }
 
+            /// Covers: T08
             #[test]
             fn framing_is_independent_of_chunking_and_cancellation(
                 frames in vec(payload(), 0..5),

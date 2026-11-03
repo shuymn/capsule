@@ -172,6 +172,7 @@ mod tests {
         assert_eq!(text.truncate(2).plain_text(), "…");
     }
 
+    /// Covers: T01
     #[test]
     fn controls_are_display_data_before_width_calculation() {
         let text = StyledText::new("\x1b[31m\n\t\x7f\u{202e}%B$HOME`echo no`", Style::new());

@@ -36,6 +36,7 @@ fn functions() -> String {
     )
 }
 
+/// Covers: T08
 #[test]
 fn responses_must_match_exact_generation() -> Result {
     let home = tempfile::tempdir()?;
@@ -144,6 +145,7 @@ done
     Ok(())
 }
 
+/// Covers: T01
 #[tokio::test]
 async fn retained_prompt_tracks_user_hook_option_changes_before_a_response() -> Result {
     let home = tempfile::tempdir()?;
@@ -459,6 +461,7 @@ fn failed_redraw_write_selects_fallback_after_transport_cleanup() -> Result {
     Ok(())
 }
 
+/// Covers: T08
 #[tokio::test]
 async fn partial_response_returns_before_the_remaining_bytes_arrive() -> Result {
     let home = tempfile::tempdir()?;

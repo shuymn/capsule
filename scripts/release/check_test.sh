@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Covers: T10
 
 set -euo pipefail
 

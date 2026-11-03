@@ -41,6 +41,7 @@ def run_binary_selection(suite):
     suite.record("retired_worker_pids_are_not_cleanup_targets")
 
 
+# Covers: T08
 def run_functional(suite):
     with suite.session("functional") as shell:
         shell.complete(1)
@@ -129,6 +130,7 @@ def run_functional(suite):
         suite.record("worker_failure_uses_fallback_and_next_command_restarts_worker")
 
 
+# Covers: T08
 def run_cleanup(suite):
     _assert_session_cleanup(suite, "exit")
     suite.record("exit_closes_cloexec_pipes_and_cleans_active_process_group")
@@ -149,6 +151,7 @@ def _assert_session_cleanup(suite, mode):
             eventually(lambda pid=pid: not active(pid), "acquisition descendant cleanup")
 
 
+# Covers: T08
 def run_parallel(suite):
     many = [suite.start(f"parallel-{index}") for index in range(10)]
     worker_ids = set()

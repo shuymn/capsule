@@ -287,15 +287,19 @@ fn parse_limit(text: &str) -> Option<Limit> {
     })
 }
 
+/// Body rows of the Markdown table whose header line is `header`.
+fn table_rows<'a>(document: &'a str, header: &str) -> impl Iterator<Item = &'a str> {
+    document
+        .lines()
+        .skip_while(move |line| *line != header)
+        .skip(2)
+        .take_while(|line| line.starts_with('|'))
+}
+
 /// Rows of the `| Boundary | Limit | Constant |` table, keyed by constant.
 fn documented_limits(document: &str) -> Result<BTreeMap<String, Limit>, String> {
     let mut rows = BTreeMap::new();
-    let lines = document
-        .lines()
-        .skip_while(|line| *line != "| Boundary | Limit | Constant |")
-        .skip(2)
-        .take_while(|line| line.starts_with('|'));
-    for line in lines {
+    for line in table_rows(document, "| Boundary | Limit | Constant |") {
         // Split from the right so boundary text may contain `|`.
         let cells = line
             .trim_matches('|')
@@ -480,5 +484,298 @@ fn every_workspace_member_inherits_the_workspace_lints() -> TestResult {
         members += 1;
     }
     assert!(members > 0, "no workspace members found");
+    Ok(())
+}
+
+/// A `Covers:` comment naming the threats a test, or a whole test file, verifies.
+#[derive(Debug, PartialEq, Eq)]
+struct Coverage {
+    path: String,
+    /// `None` when the tag sits in the file's leading comments.
+    test: Option<String>,
+    threats: Vec<String>,
+}
+
+/// The body of a Rust, Python, or shell comment line, or of an attribute.
+fn comment_body(line: &str) -> Option<&str> {
+    let line = line.trim_start();
+    ["///", "//!", "//", "#"]
+        .iter()
+        .find_map(|prefix| line.strip_prefix(prefix))
+        .map(str::trim)
+}
+
+/// The name of a Rust `fn` or Python `def` declared on `line`.
+fn declared_function(line: &str) -> Option<&str> {
+    let mut words = words(line);
+    loop {
+        match words.next()? {
+            "pub" | "crate" | "super" | "const" | "async" => {}
+            "fn" | "def" => return words.next(),
+            _ => return None,
+        }
+    }
+}
+
+/// `Covers:` tags in one source file. A tag binds to the function declared
+/// after its run of comments, attributes, and decorators (a Rust test needs a
+/// `#[test]` or `#[tokio::test]` attribute in that run), or, in a shell
+/// script, to the file when it precedes all code; any other placement, or a
+/// threat outside `threats`, is an error.
+fn coverage_tags(
+    path: &str,
+    source: &str,
+    threats: &BTreeSet<&str>,
+) -> Result<Vec<Coverage>, String> {
+    let rust = path.ends_with(".rs");
+    let mut tags = Vec::new();
+    let mut pending = Vec::new();
+    let mut is_test = false;
+    let mut header = true;
+    for (index, line) in source.lines().enumerate() {
+        let location = format!("{path}:{}", index + 1);
+        if let Some(body) = comment_body(line) {
+            is_test |=
+                matches!(body, "[test]" | "[tokio::test]") || body.starts_with("[tokio::test(");
+            if let Some(list) = body.strip_prefix("Covers:") {
+                let ids = list.split(',').map(str::trim).collect::<Vec<_>>();
+                if let Some(id) = ids.iter().find(|id| !threats.contains(*id)) {
+                    return Err(format!(
+                        "{location}: unknown threat {id:?} in `Covers:` tag"
+                    ));
+                }
+                pending.push((location, ids.into_iter().map(str::to_owned).collect()));
+            }
+            continue;
+        }
+        if line.trim_start().starts_with('@') {
+            continue;
+        }
+        let declared = declared_function(line).filter(|_| is_test || !rust);
+        for (location, threats) in pending.drain(..) {
+            let test = match declared {
+                Some(name) => Some(name.to_owned()),
+                None if header && path.ends_with(".sh") => None,
+                None => return Err(format!("{location}: `Covers:` tag precedes no test")),
+            };
+            tags.push(Coverage {
+                path: path.to_owned(),
+                test,
+                threats,
+            });
+        }
+        is_test = false;
+        header &= line.trim().is_empty();
+    }
+    match pending.first() {
+        Some((location, _)) => Err(format!("{location}: `Covers:` tag precedes no test")),
+        None => Ok(tags),
+    }
+}
+
+/// Function names listed in the PTY suite's run-order `SCENARIOS` tuple.
+fn registered_scenarios(source: &str) -> BTreeSet<&str> {
+    source
+        .lines()
+        .skip_while(|line| *line != "SCENARIOS = (")
+        .skip(1)
+        .take_while(|line| *line != ")")
+        .map(|line| line.trim().trim_end_matches(','))
+        .collect()
+}
+
+/// Threat IDs defined by the `### Txx — …` headings of the threat model.
+fn defined_threats(document: &str) -> BTreeSet<&str> {
+    prose_lines(document)
+        .into_iter()
+        .filter_map(|(_, line)| line.strip_prefix("### "))
+        .filter_map(|heading| heading.split_whitespace().next())
+        .filter(|id| id.starts_with('T'))
+        .collect()
+}
+
+/// The generated "Existing verification" cell for a row covering `threats`:
+/// the tagged tests by file, then each threat that has none.
+fn verification_cell(tags: &[Coverage], threats: &BTreeSet<&str>) -> String {
+    let mut files = BTreeMap::<&str, Vec<&str>>::new();
+    let mut untagged = threats.clone();
+    for tag in tags {
+        if !tag
+            .threats
+            .iter()
+            .any(|threat| threats.contains(threat.as_str()))
+        {
+            continue;
+        }
+        for threat in &tag.threats {
+            untagged.remove(threat.as_str());
+        }
+        files
+            .entry(&tag.path)
+            .or_default()
+            .extend(tag.test.as_deref());
+    }
+    let mut parts = files
+        .into_iter()
+        .map(|(path, tests)| {
+            let link = format!("[{path}](../{path})");
+            if tests.is_empty() {
+                return link;
+            }
+            let names = tests
+                .iter()
+                .map(|test| format!("`{test}`"))
+                .collect::<Vec<_>>();
+            format!("{link}: {}", names.join(", "))
+        })
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        return "Source review only".to_owned();
+    }
+    if !untagged.is_empty() {
+        let untagged = untagged.into_iter().collect::<Vec<_>>();
+        parts.push(format!("source review only for {}", untagged.join(", ")));
+    }
+    parts.join("; ")
+}
+
+/// `docs/threat-model.md` with every §8 "Existing verification" cell
+/// regenerated from `tags`.
+fn regenerate_verification(document: &str, tags: &[Coverage]) -> Result<String, String> {
+    let defined = defined_threats(document);
+    let mut listed = BTreeSet::new();
+    let mut updated = document.to_owned();
+    let header = "| Threat / condition | Existing verification | Additional checks and evidence |";
+    for row in table_rows(document, header) {
+        let cells = row
+            .strip_prefix("| ")
+            .and_then(|row| row.strip_suffix(" |"))
+            .map(|row| row.splitn(3, " | ").collect::<Vec<_>>());
+        let Some([condition, _, additional]) = cells.as_deref() else {
+            return Err(format!("malformed verification row: {row}"));
+        };
+        let threats = words(condition)
+            .filter(|word| defined.contains(word))
+            .collect::<BTreeSet<_>>();
+        for threat in &threats {
+            if !listed.insert(*threat) {
+                return Err(format!("{threat} has more than one verification row"));
+            }
+        }
+        let cell = verification_cell(tags, &threats);
+        updated = updated.replacen(row, &format!("| {condition} | {cell} | {additional} |"), 1);
+    }
+    if listed != defined {
+        return Err(format!(
+            "threats without a verification row: {:?}",
+            defined.difference(&listed)
+        ));
+    }
+    Ok(updated)
+}
+
+#[test]
+fn coverage_tags_bind_to_the_next_test_or_the_file_header() -> TestResult {
+    let threats = BTreeSet::from(["T01", "T07", "T08", "T10"]);
+    let tag = |test: Option<&str>, threats: &[&str]| Coverage {
+        path: "a.rs".into(),
+        test: test.map(str::to_owned),
+        threats: threats.iter().map(|threat| (*threat).to_owned()).collect(),
+    };
+    let script = coverage_tags("a.sh", "#!/bin/sh\n# Covers: T10\nset -eu\n", &threats)?;
+    assert_eq!(
+        script,
+        [Coverage {
+            path: "a.sh".into(),
+            test: None,
+            threats: vec!["T10".into()]
+        }]
+    );
+    let source = "use x;\n\n\
+        /// Covers: T01, T07\n#[test]\n/// Docs.\nfn first() {}\n\
+        // Covers: T08\n#[tokio::test]\nasync fn second() {}\n";
+    assert_eq!(
+        coverage_tags("a.rs", source, &threats)?,
+        [
+            tag(Some("first"), &["T01", "T07"]),
+            tag(Some("second"), &["T08"])
+        ]
+    );
+    let python = coverage_tags(
+        "a.py",
+        "x = 1\n# Covers: T08\n@decorator\ndef run(suite):\n",
+        &threats,
+    )?;
+    assert_eq!(
+        python.first().and_then(|tag| tag.test.as_deref()),
+        Some("run")
+    );
+    for stray in [
+        "use x;\n// Covers: T01\nconst X: u8 = 0;\n",
+        "use x;\n/// Covers: T01\nfn helper() {}\n",
+        "/// Covers: T01,\n#[test]\nfn f() {}\n",
+        "/// Covers: T11\n#[test]\nfn f() {}\n",
+        "use x;\n// Covers: T01\n",
+        "// Covers: T01\nuse x;\n",
+        "use x;\n/// Covers: T01\n#[cfg(test)]\nfn helper() {}\n",
+    ] {
+        assert!(coverage_tags("a.rs", stray, &threats).is_err(), "{stray}");
+    }
+    Ok(())
+}
+
+#[test]
+fn verification_cells_list_each_threat_without_a_tagged_test() {
+    let tags = [Coverage {
+        path: "a.rs".into(),
+        test: Some("t".into()),
+        threats: vec!["T02".into()],
+    }];
+    assert_eq!(
+        verification_cell(&tags, &BTreeSet::from(["T02", "T06"])),
+        "[a.rs](../a.rs): `t`; source review only for T06"
+    );
+    assert_eq!(
+        verification_cell(&tags, &BTreeSet::from(["T05"])),
+        "Source review only"
+    );
+}
+
+/// Set `CAPSULE_UPDATE_DOCS=1` to rewrite the column instead of failing.
+#[test]
+fn threat_model_verification_column_matches_coverage_tags() -> TestResult {
+    let path = "docs/threat-model.md";
+    let document = read(path)?;
+    let threats = defined_threats(&document);
+    let mut tags = Vec::new();
+    for (source, text) in source_texts()? {
+        if matches!(
+            source.extension().and_then(|extension| extension.to_str()),
+            Some("rs" | "py" | "sh")
+        ) {
+            let relative = source.strip_prefix(root())?.to_string_lossy().into_owned();
+            tags.extend(coverage_tags(&relative, &text, &threats)?);
+        }
+    }
+    let scenarios = read("scripts/pty_suite/scenarios/__init__.py")?;
+    let registered = registered_scenarios(&scenarios);
+    for tag in tags.iter().filter(|tag| tag.path.ends_with(".py")) {
+        let test = tag.test.as_deref().unwrap_or_default();
+        assert!(
+            registered.contains(test),
+            "{}: `{test}` is not in SCENARIOS",
+            tag.path
+        );
+    }
+    let updated = regenerate_verification(&document, &tags)?;
+    if updated != document && std::env::var_os("CAPSULE_UPDATE_DOCS").is_some() {
+        fs::write(root().join(path), &updated)?;
+        return Ok(());
+    }
+    assert!(
+        updated == document,
+        "{path} §8 is out of date with the `Covers:` tags; run \
+         `CAPSULE_UPDATE_DOCS=1 cargo test -p capsule-cli --test docs`"
+    );
     Ok(())
 }
