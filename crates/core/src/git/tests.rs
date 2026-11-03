@@ -377,59 +377,58 @@ fn test_parse_renamed_file() {
 
 // -- acquire_context tests --
 
-/// A snapshot whose `PATH` holds only a dummy `git` running `script`.
-fn dummy_git(
-    directory: &Path,
-    script: &str,
-) -> Result<(Snapshot, PathBuf), Box<dyn std::error::Error>> {
-    use std::os::unix::fs::PermissionsExt;
-
+/// A snapshot in `directory/repo/sub`, under a repository root, whose `PATH`
+/// holds only a dummy `git` running `script`.
+fn dummy_git(directory: &Path, script: &str) -> Result<Snapshot, Box<dyn std::error::Error>> {
     let bin = directory.join("bin");
+    let cwd = directory.join("repo/sub");
     std::fs::create_dir(&bin)?;
-    let git = bin.join("git");
-    let shell = crate::test_utils::executable("sh")?;
-    std::fs::write(&git, format!("#!{shell}\n{script}\n"))?;
-    std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755))?;
-    let record = directory.join("argv");
-    let cwd = directory.join("cwd");
-    std::fs::create_dir(&cwd)?;
-    let snapshot = Snapshot {
+    std::fs::create_dir_all(&cwd)?;
+    std::fs::create_dir(directory.join("repo/.git"))?;
+    crate::test_utils::write_script(&bin.join("git"), script)?;
+    Ok(Snapshot {
         cwd,
-        env: vec![
-            (OsString::from("PATH"), bin.into_os_string()),
-            (
-                OsString::from("ARGV_RECORD"),
-                record.clone().into_os_string(),
-            ),
-        ],
-    };
-    Ok((snapshot, record))
+        env: vec![(OsString::from("PATH"), bin.into_os_string())],
+    })
+}
+
+async fn context(snapshot: &Snapshot, git_enabled: bool) -> Result<ContextInfo, AcquireError> {
+    acquire_context(
+        snapshot,
+        &Runner::default(),
+        &CancellationToken::new(),
+        git_enabled,
+    )
+    .await
+}
+
+/// A dummy `git` script that records its arguments in `record`.
+fn recording(record: &Path) -> String {
+    format!("printf '%s\\n' \"$@\" > '{}'", record.display())
 }
 
 /// Covers: T04
 #[tokio::test]
-async fn git_runs_the_fixed_status_argv_through_the_runner()
--> Result<(), Box<dyn std::error::Error>> {
+async fn git_runs_the_fixed_status_argv() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
-    let (snapshot, record) = dummy_git(
-        directory.path(),
-        "printf '%s\\n' \"$@\" > \"$ARGV_RECORD\"\nprintf '# branch.head main\\n'",
-    )?;
-    let context = acquire_context(
-        &snapshot,
-        &Runner::default(),
-        &CancellationToken::new(),
-        true,
-    )
-    .await?;
+    let record = directory.path().join("argv");
+    let snapshot = dummy_git(directory.path(), &recording(&record))?;
+    assert!(context(&snapshot, true).await?.git.is_some());
     assert_eq!(
         std::fs::read_to_string(record)?,
         "--no-optional-locks\nstatus\n--porcelain=v2\n--branch\n--show-stash\n"
     );
-    assert_eq!(
-        context.git.and_then(|git| git.branch).as_deref(),
-        Some("main")
-    );
+    Ok(())
+}
+
+/// Covers: T04
+#[tokio::test]
+async fn disabled_git_runs_no_git_process() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let record = directory.path().join("argv");
+    let snapshot = dummy_git(directory.path(), &recording(&record))?;
+    assert!(context(&snapshot, false).await?.git.is_none());
+    assert!(!record.exists());
     Ok(())
 }
 
@@ -438,16 +437,11 @@ async fn git_runs_the_fixed_status_argv_through_the_runner()
 async fn failed_or_missing_git_shows_no_git_and_keeps_the_directory()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
-    let (snapshot, _) = dummy_git(directory.path(), "printf '# branch.head main\\n'\nexit 1")?;
-    let context = acquire_context(
-        &snapshot,
-        &Runner::default(),
-        &CancellationToken::new(),
-        true,
-    )
-    .await?;
-    assert!(context.git.is_none());
-    assert_eq!(context.directory, local_directory(&snapshot));
+    // Output before a failing exit must not be displayed either.
+    let snapshot = dummy_git(directory.path(), "printf '# branch.head main\\n'\nexit 1")?;
+    let context_info = context(&snapshot, true).await?;
+    assert!(context_info.git.is_none());
+    assert_eq!(context_info.directory, "sub");
 
     let missing = Snapshot {
         env: vec![(
@@ -456,14 +450,9 @@ async fn failed_or_missing_git_shows_no_git_and_keeps_the_directory()
         )],
         ..snapshot
     };
-    let context = acquire_context(
-        &missing,
-        &Runner::default(),
-        &CancellationToken::new(),
-        true,
-    )
-    .await?;
-    assert!(context.git.is_none());
+    let context_info = context(&missing, true).await?;
+    assert!(context_info.git.is_none());
+    assert_eq!(context_info.directory, "sub");
     Ok(())
 }
 
@@ -474,8 +463,7 @@ async fn repository_search_stops_after_the_depth_limit() -> Result<(), Box<dyn s
     std::fs::create_dir(directory.path().join(".git"))?;
     // `ancestors()` yields the cwd first, so the deepest found root is
     // `MAX_REPOSITORY_DEPTH - 1` levels up.
-    let nested =
-        |levels: usize| (0..levels).fold(directory.path().to_owned(), |path, _| path.join("d"));
+    let nested = |levels: usize| directory.path().join("d/".repeat(levels));
     let deepest = nested(MAX_REPOSITORY_DEPTH);
     std::fs::create_dir_all(&deepest)?;
     let runner = Runner::default();

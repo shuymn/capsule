@@ -14,6 +14,28 @@ pub fn executable(name: &str) -> std::io::Result<String> {
         .map_err(std::io::Error::other)
 }
 
+/// Write an executable `sh` script at `path` without this process ever
+/// holding a writable descriptor to it.
+///
+/// A child forked by a parallel test can inherit such a descriptor until its
+/// own exec, and executing the script then fails with ETXTBSY. Copying from a
+/// non-executable source in a `cp` subprocess keeps the writer out of this
+/// process.
+pub fn write_script(path: &std::path::Path, body: &str) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let source = path.with_extension("source");
+    std::fs::write(&source, format!("#!{}\n{body}\n", executable("sh")?))?;
+    let status = std::process::Command::new(executable("cp")?)
+        .arg(&source)
+        .arg(path)
+        .status()?;
+    if !status.success() {
+        return Err(std::io::Error::other(format!("cp failed: {status}")));
+    }
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+}
+
 /// Checks whether `text` contains ANSI SGR codes matching the given sequence.
 ///
 /// Different terminal libraries may emit combined (`\x1b[1;32m`) or split
