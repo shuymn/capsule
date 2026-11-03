@@ -519,8 +519,9 @@ fn declared_function(line: &str) -> Option<&str> {
 
 /// `Covers:` tags in one source file. A tag binds to the function declared
 /// after its run of comments, attributes, and decorators (a Rust test needs a
-/// test attribute in that run), or to the file when it precedes all code; any
-/// other placement, or a threat outside `threats`, is an error.
+/// `#[test]` or `#[tokio::test]` attribute in that run), or, in a shell
+/// script, to the file when it precedes all code; any other placement, or a
+/// threat outside `threats`, is an error.
 fn coverage_tags(
     path: &str,
     source: &str,
@@ -534,7 +535,8 @@ fn coverage_tags(
     for (index, line) in source.lines().enumerate() {
         let location = format!("{path}:{}", index + 1);
         if let Some(body) = comment_body(line) {
-            is_test |= body.starts_with('[') && body.contains("test");
+            is_test |=
+                matches!(body, "[test]" | "[tokio::test]") || body.starts_with("[tokio::test(");
             if let Some(list) = body.strip_prefix("Covers:") {
                 let ids = list.split(',').map(str::trim).collect::<Vec<_>>();
                 if let Some(id) = ids.iter().find(|id| !threats.contains(*id)) {
@@ -553,7 +555,7 @@ fn coverage_tags(
         for (location, threats) in pending.drain(..) {
             let test = match declared {
                 Some(name) => Some(name.to_owned()),
-                None if header => None,
+                None if header && path.ends_with(".sh") => None,
                 None => return Err(format!("{location}: `Covers:` tag precedes no test")),
             };
             tags.push(Coverage {
@@ -569,6 +571,17 @@ fn coverage_tags(
         Some((location, _)) => Err(format!("{location}: `Covers:` tag precedes no test")),
         None => Ok(tags),
     }
+}
+
+/// Function names listed in the PTY suite's run-order `SCENARIOS` tuple.
+fn registered_scenarios(source: &str) -> BTreeSet<&str> {
+    source
+        .lines()
+        .skip_while(|line| *line != "SCENARIOS = (")
+        .skip(1)
+        .take_while(|line| *line != ")")
+        .map(|line| line.trim().trim_end_matches(','))
+        .collect()
 }
 
 /// Threat IDs defined by the `### Txx — …` headings of the threat model.
@@ -669,13 +682,21 @@ fn coverage_tags_bind_to_the_next_test_or_the_file_header() -> TestResult {
         test: test.map(str::to_owned),
         threats: threats.iter().map(|threat| (*threat).to_owned()).collect(),
     };
-    let source = "#!/bin/sh\n# Covers: T10\nset -eu\n\n\
+    let script = coverage_tags("a.sh", "#!/bin/sh\n# Covers: T10\nset -eu\n", &threats)?;
+    assert_eq!(
+        script,
+        [Coverage {
+            path: "a.sh".into(),
+            test: None,
+            threats: vec!["T10".into()]
+        }]
+    );
+    let source = "use x;\n\n\
         /// Covers: T01, T07\n#[test]\n/// Docs.\nfn first() {}\n\
         // Covers: T08\n#[tokio::test]\nasync fn second() {}\n";
     assert_eq!(
         coverage_tags("a.rs", source, &threats)?,
         [
-            tag(None, &["T10"]),
             tag(Some("first"), &["T01", "T07"]),
             tag(Some("second"), &["T08"])
         ]
@@ -695,6 +716,8 @@ fn coverage_tags_bind_to_the_next_test_or_the_file_header() -> TestResult {
         "/// Covers: T01,\n#[test]\nfn f() {}\n",
         "/// Covers: T11\n#[test]\nfn f() {}\n",
         "use x;\n// Covers: T01\n",
+        "// Covers: T01\nuse x;\n",
+        "use x;\n/// Covers: T01\n#[cfg(test)]\nfn helper() {}\n",
     ] {
         assert!(coverage_tags("a.rs", stray, &threats).is_err(), "{stray}");
     }
@@ -733,6 +756,16 @@ fn threat_model_verification_column_matches_coverage_tags() -> TestResult {
             let relative = source.strip_prefix(root())?.to_string_lossy().into_owned();
             tags.extend(coverage_tags(&relative, &text, &threats)?);
         }
+    }
+    let scenarios = read("scripts/pty_suite/scenarios/__init__.py")?;
+    let registered = registered_scenarios(&scenarios);
+    for tag in tags.iter().filter(|tag| tag.path.ends_with(".py")) {
+        let test = tag.test.as_deref().unwrap_or_default();
+        assert!(
+            registered.contains(test),
+            "{}: `{test}` is not in SCENARIOS",
+            tag.path
+        );
     }
     let updated = regenerate_verification(&document, &tags)?;
     if updated != document && std::env::var_os("CAPSULE_UPDATE_DOCS").is_some() {

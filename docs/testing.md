@@ -29,8 +29,10 @@ Read this file before writing or modifying tests.
   fails; list a name that is intentionally not defined here in the test's
   external-identifier list with its reason.
 - Tag a test that verifies a threat in [threat-model.md](threat-model.md) with
-  a `Covers: T07, T08` comment directly above its attributes, or in a script's
-  leading comments to cover the whole file; a Rust tag needs a test attribute.
+  a `Covers: T07, T08` comment directly above its attributes, or in a shell
+  script's leading comments to cover the whole file. A Rust tag needs a
+  `#[test]` or `#[tokio::test]` attribute, and a PTY tag a function in
+  `SCENARIOS`.
   `docs.rs` rejects unknown threat IDs and stray tags and checks the §8
   "Existing verification" column; regenerate it with
   `CAPSULE_UPDATE_DOCS=1 cargo test -p capsule-cli --test docs`.
