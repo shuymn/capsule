@@ -17,6 +17,11 @@ Read this file before writing or modifying tests.
 - Use isolated fixtures, `Result` with `?` for fallible setup, and RAII cleanup.
   Assert behavior, including relevant failure/cancellation paths, without depending
   on execution order. Explain the reason and removal condition for any ignored test.
+- [docs.rs](../crates/cli/tests/docs.rs) keeps documentation that restates code
+  facts in sync: relative links and heading anchors, backticked identifiers
+  (snake case, screaming case, or `::` paths), the limits table, and the lint
+  policy. Fix the document or the code when it fails; list a name that is
+  intentionally not defined here in `EXTERNAL_IDENTIFIERS` with its reason.
 - Keep doctests runnable; use hidden `# ` setup, `no_run` for external resources,
   and `compile_fail` for invalid usage.
 
