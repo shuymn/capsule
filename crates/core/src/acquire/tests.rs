@@ -220,7 +220,7 @@ fn dropped_command_future_retains_its_slot_until_the_child_is_reaped() -> TestRe
     Ok(())
 }
 
-/// Covers: T07
+/// Covers: T05, T07
 #[test]
 fn file_distinguishes_missing_empty_oversized_and_non_regular_sources() -> TestResult {
     let directory = tempfile::tempdir()?;

@@ -135,7 +135,19 @@ fn schema_and_unknown_fields_are_rejected_at_every_boundary() {
     assert!(one_module("{value}", "value = [{ env = 'X', extra = 1 }]").is_err());
 }
 
-/// Covers: T03
+/// TOML strings that both source and condition paths must reject: anything
+/// but a relative path of normal components without NUL.
+const INVALID_PATHS: [&str; 7] = [
+    "''",
+    "'/absolute'",
+    "'../parent'",
+    "'./local'",
+    "'nested/./local'",
+    "'a/../b'",
+    "\"a\\u0000b\"",
+];
+
+/// Covers: T03, T05
 #[test]
 fn source_and_regex_validation_happens_before_acquisition() {
     for candidate_text in [
@@ -144,11 +156,6 @@ fn source_and_regex_validation_happens_before_acquisition() {
         "[{ env = 'X', file = 'x' }]",
         "[{ env = '' }]",
         "[{ env = 'A=B' }]",
-        "[{ file = '' }]",
-        "[{ file = '/absolute' }]",
-        "[{ file = '../parent' }]",
-        "[{ file = './local' }]",
-        "[{ file = 'nested/./local' }]",
         "[{ command = [] }]",
         "[{ command = [''] }]",
         "[{ env = 'X', regex = '(' }]",
@@ -162,6 +169,26 @@ fn source_and_regex_validation_happens_before_acquisition() {
     }
     assert!(one_module("{value}", "value = [{ env = \"A\\u0000B\" }]").is_err());
     assert!(one_module("{value}", "value = [{ command = [\"x\", \"\\u0000\"] }]").is_err());
+    for path in INVALID_PATHS {
+        assert!(
+            one_module("{value}", &format!("value = [{{ file = {path} }}]")).is_err(),
+            "accepted file {path}"
+        );
+    }
+}
+
+/// Covers: T05
+#[test]
+fn condition_paths_are_lexically_relative() {
+    let when = |files: &str| {
+        ConfigPlan::parse(&format!(
+            "schema_version = 2\n[[module]]\nname = 'x'\nformat = 'x'\nvalues = {{}}\nwhen = {{ files = [{files}] }}"
+        ))
+    };
+    assert!(when("'Cargo.toml', 'nested/marker'").is_ok());
+    for path in INVALID_PATHS {
+        assert!(when(path).is_err(), "accepted condition {path}");
+    }
 }
 
 #[test]
