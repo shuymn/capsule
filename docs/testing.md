@@ -119,17 +119,7 @@ Record each platform separately. A filesystem that rejects non-UTF-8 names produ
 `non_utf8_fixture_supported = false`; require the Linux record with `true` for that
 cwd boundary. Partial `results.json` output from a failed run is not a pass.
 
-Also run `mise run test` on each platform for fragmented/cancelled frames, partial shell
-reads, frame bounds, command/file limits, and process cleanup regressions. Require
-the shell regression with real initialization and installed precmd order to keep
-retained dollar/backtick payloads literal when a preserved user hook toggles
-`PROMPT_SUBST` in either direction, before any new response is released. Require
-real interactive hook-error regressions for command-level and hook-level option
-transitions, user-hook short-circuiting, status/duration capture, snapshot
-invalidation, and replacement-worker startup. Require initialized shell regressions
-to preserve user-owned prompts during changed snapshots, ready responses, and
-worker startup. Verify hook ordering, each hook's original command status, and
-continuation after ordinary nonzero returns, plus `add-zsh-hook` registration, removal, and listing after repeated
-initialization with `add-zsh-hook` absent, marked for autoload, or already loaded.
+Also run `mise run test` on each platform: the contract, shell, and property tests that
+[architecture.md](architecture.md#behavioral-contract) cites must pass there too.
 Suite results and acquisition timings do not replace interactive PTY evidence. Follow
 [benchmarking.md](benchmarking.md) for timing definitions and host requirements.

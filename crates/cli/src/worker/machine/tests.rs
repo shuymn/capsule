@@ -562,86 +562,114 @@ impl Model {
     }
 }
 
-/// Contract rules checked directly, so a failure names the broken rule even
-/// when the model is wrong in the same way as the machine.
-fn check_invariants(
+// Contract clauses checked directly, so a failure names the broken clause even
+// when the model is wrong in the same way as the machine. docs/architecture.md
+// cites each one.
+
+fn at_most_one_generation_starts(did: &[Did]) -> Result<(), TestCaseError> {
+    let spawned = did
+        .iter()
+        .filter(|did| matches!(did, Did::Spawn(..)))
+        .count();
+    prop_assert!(spawned <= 1, "more than one generation started");
+    Ok(())
+}
+
+/// Complete observations are settled; incomplete ones show only retained or local data.
+fn partial_results_stay_hidden(after: Option<&View>) -> Result<(), TestCaseError> {
+    let shows_pending = after.is_some_and(|view| {
+        view.modules.iter().any(|(condition, values)| {
+            *condition == Seen::Pending || values.contains(&Seen::Pending)
+        })
+    });
+    prop_assert!(!shows_pending, "a response shows Pending");
+    Ok(())
+}
+
+fn events_for_other_or_settled_generations_change_nothing(
+    op: &Op,
+    before: Option<&View>,
+    after: Option<&View>,
+) -> Result<(), TestCaseError> {
+    if let (Some(generation), Some(before)) = (op.event_generation(), before)
+        && (generation != before.generation || before.complete)
+    {
+        prop_assert_eq!(
+            after,
+            Some(before),
+            "an event for another or a settled generation changed the display"
+        );
+    }
+    Ok(())
+}
+
+fn local_inputs_rerender_without_reacquisition(
     op: &Op,
     before: Option<&View>,
     after: Option<&View>,
     did: &[Did],
 ) -> Result<(), TestCaseError> {
-    let has_pending = |view: &View| {
-        view.modules.iter().any(|(condition, values)| {
-            *condition == Seen::Pending || values.contains(&Seen::Pending)
-        })
-    };
-    prop_assert!(
-        did.iter()
-            .filter(|did| matches!(did, Did::Spawn(..)))
-            .count()
-            <= 1,
-        "more than one generation started"
-    );
-    if let Some(after) = after {
+    if let (
+        Op::Request {
+            generation, local, ..
+        },
+        Some(before),
+    ) = (op, before)
+        && *generation == before.generation
+    {
         prop_assert!(
-            !has_pending(after),
-            "a response shows Pending: complete observations are settled, and incomplete ones show only retained or local data"
+            !did.iter()
+                .any(|did| matches!(did, Did::Spawn(..) | Did::Cancel)),
+            "a same-generation request started or cancelled acquisition"
+        );
+        let expected = View {
+            local: *local,
+            ..before.clone()
+        };
+        prop_assert_eq!(
+            after,
+            Some(&expected),
+            "a same-generation request changed more than local inputs"
         );
     }
-    match (op, before) {
-        (op, Some(before))
-            if op
-                .event_generation()
-                .is_some_and(|generation| generation != before.generation || before.complete) =>
-        {
-            prop_assert_eq!(
-                after,
-                Some(before),
-                "an event for another or a settled generation changed the display"
-            );
-        }
-        (
-            Op::Request {
-                generation, local, ..
-            },
-            Some(before),
-        ) if *generation == before.generation => {
-            prop_assert!(
-                !did.iter()
-                    .any(|did| matches!(did, Did::Spawn(..) | Did::Cancel)),
-                "a same-generation request started or cancelled acquisition"
-            );
-            prop_assert_eq!(
-                after,
-                Some(&View {
-                    local: *local,
-                    ..before.clone()
-                }),
-                "a same-generation request changed more than local inputs"
-            );
-        }
-        (
-            Op::Request {
-                generation, cwd, ..
-            },
-            Some(before),
-        ) if *generation > before.generation && cwd_path(*cwd) != before.cwd => {
-            prop_assert!(
-                after.is_some_and(|after| after.modules.is_empty() && !after.acquired),
-                "a changed snapshot kept retained display"
-            );
-        }
-        (Op::Plan { generation, .. }, Some(before)) if *generation == before.generation => {
-            if let Some(after) = after
-                && after.plan != before.plan
-            {
-                prop_assert!(
-                    after.modules.is_empty() && !after.acquired,
-                    "an accepted plan change kept retained display"
-                );
-            }
-        }
-        _ => {}
+    Ok(())
+}
+
+fn changed_snapshot_discards_retained_display(
+    op: &Op,
+    before: Option<&View>,
+    after: Option<&View>,
+) -> Result<(), TestCaseError> {
+    if let (
+        Op::Request {
+            generation, cwd, ..
+        },
+        Some(before),
+    ) = (op, before)
+        && *generation > before.generation
+        && cwd_path(*cwd) != before.cwd
+    {
+        prop_assert!(
+            after.is_some_and(|after| after.modules.is_empty() && !after.acquired),
+            "a changed snapshot kept retained display"
+        );
+    }
+    Ok(())
+}
+
+fn accepted_plan_change_discards_retained_display(
+    op: &Op,
+    before: Option<&View>,
+    after: Option<&View>,
+) -> Result<(), TestCaseError> {
+    if let (Op::Plan { generation, .. }, Some(before), Some(after)) = (op, before, after)
+        && *generation == before.generation
+        && after.plan != before.plan
+    {
+        prop_assert!(
+            after.modules.is_empty() && !after.acquired,
+            "an accepted plan change kept retained display"
+        );
     }
     Ok(())
 }
@@ -657,9 +685,16 @@ proptest! {
             let op = &op.resolve(before.as_ref().map(|view| view.generation));
             let did = machine.step(fixture.input(op)?).iter().map(|effect| fixture.did(effect)).collect::<Vec<_>>();
             let after = fixture.view(&machine);
-            check_invariants(op, before.as_ref(), after.as_ref(), &did)?;
+            let (before, after) = (before.as_ref(), after.as_ref());
+            at_most_one_generation_starts(&did)?;
+            partial_results_stay_hidden(after)?;
+            events_for_other_or_settled_generations_change_nothing(op, before, after)?;
+            local_inputs_rerender_without_reacquisition(op, before, after, &did)?;
+            changed_snapshot_discards_retained_display(op, before, after)?;
+            accepted_plan_change_discards_retained_display(op, before, after)?;
             prop_assert_eq!(&did, &model.step(op, &fixture), "effects after {:?}", op);
-            prop_assert_eq!(&after, &model.view(), "display after {:?}", op);
+            let expected = model.view();
+            prop_assert_eq!(after, expected.as_ref(), "display after {:?}", op);
         }
     }
 }

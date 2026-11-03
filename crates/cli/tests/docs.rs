@@ -573,6 +573,46 @@ fn coverage_tags(
     }
 }
 
+/// Rust and Python function names, plus the PTY records the contract registry lists.
+fn specification_names() -> Result<BTreeSet<String>, std::io::Error> {
+    let mut names = BTreeSet::new();
+    for (path, text) in source_texts()? {
+        if path.ends_with("scripts/pty_suite/contracts.py") {
+            names.extend(words(&text).map(str::to_owned));
+        }
+        names.extend(
+            text.lines()
+                .filter_map(declared_function)
+                .map(str::to_owned),
+        );
+    }
+    Ok(names)
+}
+
+#[test]
+fn behavioral_contract_clauses_cite_declared_tests() -> TestResult {
+    let names = specification_names()?;
+    let document = read("docs/architecture.md")?;
+    let section = document
+        .split_once("## Behavioral contract\n")
+        .and_then(|(_, rest)| rest.split("\n## ").next())
+        .ok_or("missing Behavioral contract section")?;
+    let mut problems = Vec::new();
+    for clause in section.lines().filter(|line| line.starts_with("- ")) {
+        let cited = clause
+            .split_once(" Spec: ")
+            .map_or_else(Vec::new, |(_, spec)| code_spans(spec).collect());
+        if cited.is_empty() {
+            problems.push(format!("cites no test: {clause}"));
+        }
+        for name in cited.into_iter().filter(|name| !names.contains(*name)) {
+            problems.push(format!("not a declared function or PTY record: {name}"));
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+    Ok(())
+}
+
 /// Function names listed in the PTY suite's run-order `SCENARIOS` tuple.
 fn registered_scenarios(source: &str) -> BTreeSet<&str> {
     source
