@@ -13,7 +13,7 @@ use std::{
 use tokio::{runtime::Runtime, sync::oneshot};
 
 use super::*;
-use crate::test_utils::mkfifo;
+use crate::test_utils::{mkfifo, snapshot};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -21,16 +21,6 @@ fn runtime() -> io::Result<Runtime> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-}
-
-fn snapshot(cwd: &Path) -> Snapshot {
-    Snapshot {
-        cwd: cwd.to_owned(),
-        env: std::env::var_os("PATH")
-            .into_iter()
-            .map(|value| (OsString::from("PATH"), value))
-            .collect(),
-    }
 }
 
 /// A nonblocking reader of a `liveness` FIFO in `directory`, which the
@@ -79,11 +69,13 @@ fn argv(args: &[&str]) -> io::Result<Vec<String>> {
 #[test]
 fn command_preserves_raw_environment_and_clears_unspecified_variables() -> TestResult {
     let directory = tempfile::tempdir()?;
-    let mut input = snapshot(directory.path());
-    input.env = vec![(
-        OsString::from("CAPSULE_VALUE"),
-        OsString::from_vec(b"raw\xff\n\t\\".to_vec()),
-    )];
+    let input = Snapshot::new(
+        directory.path().to_owned(),
+        vec![(
+            OsString::from("CAPSULE_VALUE"),
+            OsString::from_vec(b"raw\xff\n\t\\".to_vec()),
+        )],
+    )?;
     runtime()?.block_on(async {
         let output = Runner::default()
             .command(&argv(&["env", "-0"])?, &input, &CancellationToken::new())
@@ -98,9 +90,9 @@ fn command_preserves_raw_environment_and_clears_unspecified_variables() -> TestR
 fn command_uses_snapshot_cwd_and_reports_failed_exit() -> TestResult {
     let directory = tempfile::tempdir()?;
     let expected = std::fs::canonicalize(directory.path())?;
+    let input = snapshot(directory.path(), &[])?;
     runtime()?.block_on(async {
         let runner = Runner::default();
-        let input = snapshot(directory.path());
         let cancel = CancellationToken::new();
         let output = runner
             .command(&argv(&["pwd", "-P"])?, &input, &cancel)
@@ -126,14 +118,11 @@ fn command_uses_snapshot_cwd_and_reports_failed_exit() -> TestResult {
 #[test]
 fn command_rejects_excessive_stdout_and_releases_capacity() -> TestResult {
     let command = argv(&["sh", "-c", "printf '%65537s' x"])?;
+    let input = snapshot(Path::new("/"), &[])?;
     runtime()?.block_on(async {
         let runner = Runner::default();
         let output = runner
-            .command(
-                &command,
-                &snapshot(Path::new("/")),
-                &CancellationToken::new(),
-            )
+            .command(&command, &input, &CancellationToken::new())
             .await;
         assert!(matches!(output, Err(AcquireError::OutputTooLarge)));
         assert_eq!(runner.processes.available_permits(), 4);
@@ -147,9 +136,9 @@ fn timeout_stops_descendants_that_hold_stdout_after_the_leader_exits() -> TestRe
     let directory = tempfile::tempdir()?;
     let mut reader = liveness(directory.path())?;
     let command = argv(&["sh", "-c", &format!("{LIVE_DESCENDANT} exit 0")])?;
+    let input = snapshot(directory.path(), &[])?;
     runtime()?.block_on(async {
         let runner = Runner::default();
-        let input = snapshot(directory.path());
         let result = timeout(
             Duration::from_secs(5),
             runner.command(&command, &input, &CancellationToken::new()),
@@ -165,18 +154,16 @@ fn timeout_stops_descendants_that_hold_stdout_after_the_leader_exits() -> TestRe
 /// Covers: T07
 #[test]
 fn cancellation_stops_running_commands_and_prevents_queued_spawns() -> TestResult {
+    let input = snapshot(Path::new("/"), &[])?;
     runtime()?.block_on(async {
         let runner = Runner::default();
         let cancel = CancellationToken::new();
         let command_runner = runner.clone();
         let command_cancel = cancel.clone();
+        let command_input = input.clone();
         let command = tokio::spawn(async move {
             command_runner
-                .command(
-                    &argv(&["sleep", "60"])?,
-                    &snapshot(Path::new("/")),
-                    &command_cancel,
-                )
+                .command(&argv(&["sleep", "60"])?, &command_input, &command_cancel)
                 .await
         });
         timeout(Duration::from_secs(5), async {
@@ -189,11 +176,7 @@ fn cancellation_stops_running_commands_and_prevents_queued_spawns() -> TestResul
         assert!(matches!(command.await?, Err(AcquireError::Cancelled)));
         assert_eq!(runner.processes.available_permits(), 4);
         let queued = runner
-            .command(
-                &argv(&["/does/not/exist"])?,
-                &snapshot(Path::new("/")),
-                &cancel,
-            )
+            .command(&argv(&["/does/not/exist"])?, &input, &cancel)
             .await;
         assert!(matches!(queued, Err(AcquireError::Cancelled)));
         Ok::<_, Box<dyn Error>>(())
@@ -210,7 +193,7 @@ fn dropped_command_future_stops_its_group_and_retains_its_slot_until_reaped() ->
     runtime()?.block_on(async {
         let runner = Runner::default();
         let command_runner = runner.clone();
-        let input = snapshot(directory.path());
+        let input = snapshot(directory.path(), &[])?;
         let command = tokio::spawn(async move {
             command_runner
                 .command(&args, &input, &CancellationToken::new())
@@ -339,11 +322,8 @@ fn deduplicating_runner_shares_identical_commands_within_one_scope() -> TestResu
         ])
     };
     let (same, other) = (counted("same")?, counted("other")?);
-    let input = snapshot(directory.path());
-    let mut changed = input.clone();
-    changed
-        .env
-        .push((OsString::from("CAPSULE_SCOPE"), OsString::from("changed")));
+    let input = snapshot(directory.path(), &[])?;
+    let changed = snapshot(directory.path(), &[("CAPSULE_SCOPE", "changed")])?;
     let runs = || std::fs::read(&count).map(|bytes| bytes.len());
     runtime()?.block_on(async {
         let cancel = CancellationToken::new();
@@ -385,7 +365,7 @@ fn deduplicating_runner_shares_failures() -> TestResult {
         "-c",
         &format!("printf x >> {}; exit 7", count.display()),
     ])?;
-    let input = snapshot(directory.path());
+    let input = snapshot(directory.path(), &[])?;
     runtime()?.block_on(async {
         let cancel = CancellationToken::new();
         let scope = Runner::default().deduplicating();

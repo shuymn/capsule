@@ -303,10 +303,10 @@ fn dummy_git(directory: &Path, script: &str) -> Result<Snapshot, Box<dyn std::er
     std::fs::create_dir_all(&cwd)?;
     std::fs::create_dir(directory.join("repo/.git"))?;
     crate::test_utils::write_script(&bin.join("git"), script)?;
-    Ok(Snapshot {
+    Ok(Snapshot::new(
         cwd,
-        env: vec![(OsString::from("PATH"), bin.into_os_string())],
-    })
+        vec![(OsString::from("PATH"), bin.into_os_string())],
+    )?)
 }
 
 async fn context(snapshot: &Snapshot, git_enabled: bool) -> Result<ContextInfo, AcquireError> {
@@ -360,13 +360,13 @@ async fn failed_or_missing_git_shows_no_git_and_keeps_the_directory()
     assert!(context_info.git.is_none());
     assert_eq!(context_info.directory, "sub");
 
-    let missing = Snapshot {
-        env: vec![(
+    let missing = Snapshot::new(
+        snapshot.cwd().to_owned(),
+        vec![(
             OsString::from("PATH"),
             directory.path().join("empty").into_os_string(),
         )],
-        ..snapshot
-    };
+    )?;
     let context_info = context(&missing, true).await?;
     assert!(context_info.git.is_none());
     assert_eq!(context_info.directory, "sub");
@@ -395,15 +395,14 @@ async fn repository_search_stops_after_the_depth_limit() -> Result<(), Box<dyn s
 }
 
 #[test]
-fn local_directory_abbreviates_only_a_nonempty_home() {
+fn local_directory_abbreviates_only_a_nonempty_home() -> Result<(), Box<dyn std::error::Error>> {
     let directory = |cwd: &str, home: &str| {
-        local_directory(&Snapshot {
-            cwd: cwd.into(),
-            env: vec![("HOME".into(), home.into())],
-        })
+        Snapshot::new(cwd.into(), vec![("HOME".into(), home.into())])
+            .map(|snapshot| local_directory(&snapshot))
     };
-    assert_eq!(directory("/home/u", "/home/u"), "~");
-    assert_eq!(directory("/home/u/src", "/home/u"), "~/src");
-    assert_eq!(directory("/home/user", "/home/u"), "/home/user");
-    assert_eq!(directory("/home/u/src", ""), "/home/u/src");
+    assert_eq!(directory("/home/u", "/home/u")?, "~");
+    assert_eq!(directory("/home/u/src", "/home/u")?, "~/src");
+    assert_eq!(directory("/home/user", "/home/u")?, "/home/user");
+    assert_eq!(directory("/home/u/src", "")?, "/home/u/src");
+    Ok(())
 }

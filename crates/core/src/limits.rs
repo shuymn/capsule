@@ -151,10 +151,7 @@ mod tests {
 
         let widest = Request {
             generation: u64::MAX,
-            snapshot: Snapshot {
-                cwd: "/".into(),
-                env: Vec::new(),
-            },
+            snapshot: Snapshot::new("/".into(), Vec::new())?,
             cols: u16::MAX,
             last_exit_code: i32::MIN,
             duration_ms: Some(u64::MAX),

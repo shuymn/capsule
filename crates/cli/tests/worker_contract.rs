@@ -116,28 +116,33 @@ impl Worker {
     }
 }
 
-fn request(home: &Path, generation: u64) -> Request {
-    Request {
+fn request(home: &Path, generation: u64) -> Result<Request> {
+    Ok(Request {
         generation,
         cols: 100,
         last_exit_code: 0,
         duration_ms: None,
         keymap: "main".to_owned(),
-        snapshot: Snapshot {
-            cwd: home.to_owned(),
-            env: vec![
-                (OsString::from("HOME"), home.as_os_str().to_owned()),
-                (
-                    OsString::from("PATH"),
-                    std::env::var_os("PATH").unwrap_or_default(),
-                ),
-                (
-                    OsString::from("COUNT_FILE"),
-                    home.join("count").into_os_string(),
-                ),
-            ],
-        },
-    }
+        snapshot: snapshot(home, home, [])?,
+    })
+}
+
+/// The base environment of [`request`] at `cwd`, plus `extra` variables.
+fn snapshot<const N: usize>(
+    home: &Path,
+    cwd: &Path,
+    extra: [(&str, OsString); N],
+) -> Result<Snapshot> {
+    let base = [
+        ("HOME", home.as_os_str().to_owned()),
+        ("PATH", std::env::var_os("PATH").unwrap_or_default()),
+        ("COUNT_FILE", home.join("count").into_os_string()),
+    ];
+    let env = base
+        .into_iter()
+        .chain(extra)
+        .map(|(name, value)| (name.into(), value));
+    Ok(Snapshot::new(cwd.to_owned(), env.collect())?)
 }
 
 fn write_config(home: &Path, text: &str) -> Result {
@@ -276,11 +281,8 @@ async fn same_generation_rerenders_without_reacquiring_and_environment_is_replac
     let home = tempfile::tempdir()?;
     write_config(home.path(), CONFIG)?;
     let mut worker = Worker::start(home.path())?;
-    let mut input = request(home.path(), 1);
-    input
-        .snapshot
-        .env
-        .push(("DISPLAY_VAR".into(), "first".into()));
+    let mut input = request(home.path(), 1)?;
+    input.snapshot = snapshot(home.path(), home.path(), [("DISPLAY_VAR", "first".into())])?;
     let initial = worker.render(&input).await?;
     assert!(
         initial.contains("VALUE=first"),
@@ -295,7 +297,7 @@ async fn same_generation_rerenders_without_reacquiring_and_environment_is_replac
     assert!(rerender.contains('❮'));
     assert_eq!(std::fs::read(home.path().join("count"))?, b"x");
     input.generation = 2;
-    input.snapshot.env.retain(|(name, _)| name != "DISPLAY_VAR");
+    input.snapshot = snapshot(home.path(), home.path(), [])?;
     assert!(worker.render(&input).await?.contains("VALUE=unset"));
     assert_eq!(std::fs::read(home.path().join("count"))?, b"xx");
     worker.close().await
@@ -318,7 +320,7 @@ async fn identical_commands_run_once_per_generation_across_values_and_modules() 
         ),
     )?;
     let mut worker = Worker::start(home.path())?;
-    let mut input = request(home.path(), 1);
+    let mut input = request(home.path(), 1)?;
     let first = worker.render(&input).await?;
     assert!(
         first.contains("V=1.2.3 (beta)") && first.contains("RAW=tool 1.2.3-beta"),
@@ -337,7 +339,7 @@ async fn failed_reload_preserves_last_valid_plan_then_accepts_fixed_configuratio
     let home = tempfile::tempdir()?;
     write_config(home.path(), CONFIG)?;
     let mut worker = Worker::start(home.path())?;
-    let initial = worker.render(&request(home.path(), 1)).await?;
+    let initial = worker.render(&request(home.path(), 1)?).await?;
     assert!(
         initial.contains("VALUE=unset"),
         "render={initial:?}, count={:?}",
@@ -346,14 +348,14 @@ async fn failed_reload_preserves_last_valid_plan_then_accepts_fixed_configuratio
     write_config(home.path(), "schema_version = 2\nunknown = true\n")?;
     assert!(
         worker
-            .render(&request(home.path(), 2))
+            .render(&request(home.path(), 2)?)
             .await?
             .contains("VALUE=unset")
     );
     write_config(home.path(), &CONFIG.replace("VALUE=", "UPDATED="))?;
     assert!(
         worker
-            .render(&request(home.path(), 3))
+            .render(&request(home.path(), 3)?)
             .await?
             .contains("UPDATED=unset")
     );
@@ -375,8 +377,8 @@ async fn same_snapshot_retains_all_pending_frames_and_commits_external_changes_t
     write_config(home.path(), RETAINED_CONFIG)?;
     let mut gate = Gate::new(&cwd)?;
     let mut worker = Worker::start(home.path())?;
-    let mut input = request(home.path(), 1);
-    input.snapshot.cwd = cwd.clone();
+    let mut input = request(home.path(), 1)?;
+    input.snapshot = snapshot(home.path(), &cwd, [])?;
     input.cols = 160;
     worker.send(&input).await?;
     gate.wait_for_entry(1).await?;
@@ -400,7 +402,6 @@ async fn same_snapshot_retains_all_pending_frames_and_commits_external_changes_t
     std::fs::create_dir(cwd.join("failed"))?;
     std::fs::remove_file(cwd.join("condition"))?;
     input.generation = 2;
-    input.snapshot.env.reverse(); // Enumeration order is not an environment change.
     worker.send(&input).await?;
     gate.wait_for_entry(2).await?;
     let first = loop {
@@ -454,7 +455,7 @@ async fn cancellation_and_failed_reload_retain_the_last_settled_generation() -> 
     std::fs::write(home.path().join("slow"), "old")?;
     let mut gate = Gate::new(home.path())?;
     let mut worker = Worker::start(home.path())?;
-    let mut input = request(home.path(), 1);
+    let mut input = request(home.path(), 1)?;
     worker.send(&input).await?;
     gate.wait_for_entry(1).await?;
     gate.release()?;
@@ -510,11 +511,9 @@ async fn changed_environment_cwd_and_valid_config_clear_retained_information() -
     std::fs::write(home.path().join("slow"), "old")?;
     let mut gate = Gate::new(home.path())?;
     let mut worker = Worker::start(home.path())?;
-    let mut input = request(home.path(), 1);
-    input
-        .snapshot
-        .env
-        .push(("UNUSED".into(), OsString::from_vec(vec![b'v', 0xff])));
+    let mut input = request(home.path(), 1)?;
+    let unused = |byte| [("UNUSED", OsString::from_vec(vec![b'v', byte]))];
+    input.snapshot = snapshot(home.path(), home.path(), unused(0xff))?;
     worker.send(&input).await?;
     gate.wait_for_entry(1).await?;
     gate.release()?;
@@ -523,8 +522,7 @@ async fn changed_environment_cwd_and_valid_config_clear_retained_information() -
 
     // Even an unused exported variable's non-UTF-8 bytes belong to the snapshot.
     input.generation = 2;
-    let (_, unused) = input.snapshot.env.last_mut().ok_or("missing UNUSED")?;
-    *unused = OsString::from_vec(vec![b'v', 0xfe]);
+    input.snapshot = snapshot(home.path(), home.path(), unused(0xfe))?;
     std::fs::write(home.path().join("fast"), "env-new")?;
     std::fs::write(home.path().join("slow"), "env-new")?;
     worker.send(&input).await?;
@@ -549,7 +547,7 @@ async fn changed_environment_cwd_and_valid_config_clear_retained_information() -
     std::fs::write(cwd.join("slow"), "cwd-new")?;
     let mut cwd_gate = Gate::new(&cwd)?;
     input.generation = 3;
-    input.snapshot.cwd = cwd.clone();
+    input.snapshot = snapshot(home.path(), &cwd, unused(0xfe))?;
     worker.send(&input).await?;
     cwd_gate.wait_for_entry(1).await?;
     loop {
@@ -638,8 +636,8 @@ async fn real_git_directory_and_optional_time_survive_acquisition_completion() -
         "schema_version = 2\n[time]\ndisabled = false\n",
     )?;
     let mut worker = Worker::start(home.path())?;
-    let mut input = request(home.path(), 1);
-    input.snapshot.cwd = repo.join("src");
+    let mut input = request(home.path(), 1)?;
+    input.snapshot = snapshot(home.path(), &repo.join("src"), [])?;
     let rendered = worker.render(&input).await?;
     let response = capsule_protocol::session::Response::decode(rendered.as_bytes())?;
     assert!(response.left1.contains("src"), "{response:?}");
@@ -666,12 +664,8 @@ async fn relative_config_paths_follow_the_request_cwd() -> Result {
             config_dir.join("config.toml"),
             format!("schema_version = 2\n[character]\nglyph = '{directory}'\n"),
         )?;
-        let mut input = request(home.path(), generation);
-        input.snapshot.cwd = cwd;
-        input
-            .snapshot
-            .env
-            .push(("XDG_CONFIG_HOME".into(), xdg.into()));
+        let mut input = request(home.path(), generation)?;
+        input.snapshot = snapshot(home.path(), &cwd, [("XDG_CONFIG_HOME", xdg.into())])?;
         let rendered = worker.render(&input).await?;
         let response = capsule_protocol::session::Response::decode(rendered.as_bytes())?;
         assert!(response.left2.contains(directory), "{response:?}");

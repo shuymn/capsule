@@ -2,9 +2,9 @@
 //! completion against a reference model written from the behavioral contract
 //! in docs/architecture.md.
 
-use std::{ffi::OsString, path::PathBuf};
+use std::path::PathBuf;
 
-use capsule_protocol::session::Snapshot;
+use capsule_protocol::session::{self, Snapshot};
 use proptest::prelude::*;
 
 use super::*;
@@ -234,14 +234,14 @@ impl Fixture {
             .collect()
     }
 
-    fn input(&self, op: &Op) -> Input {
+    fn input(&self, op: &Op) -> Result<Input, session::Error> {
         let event = |generation, change| Input::Event(Event { generation, change });
-        match *op {
+        Ok(match *op {
             Op::Request {
                 generation,
                 cwd,
                 local,
-            } => Input::Request(request(generation, cwd, local)),
+            } => Input::Request(request(generation, cwd, local)?),
             Op::Plan {
                 generation,
                 plan,
@@ -285,7 +285,7 @@ impl Fixture {
             ),
             Op::Complete { generation } => event(generation, Change::Complete),
             Op::Joined { failed } => Input::Joined { failed },
-        }
+        })
     }
 
     fn did(&self, effect: &Effect) -> Did {
@@ -301,7 +301,7 @@ impl Fixture {
         let shown = machine.shown()?;
         Some(View {
             generation: shown.request.generation,
-            cwd: shown.request.snapshot.cwd.clone(),
+            cwd: shown.request.snapshot.cwd().to_owned(),
             local: Local {
                 cols: shown.request.cols,
                 vicmd: shown.request.keymap == keymap_name(true),
@@ -326,21 +326,15 @@ impl Fixture {
     }
 }
 
-fn request(generation: u64, cwd: u8, local: Local) -> Request {
-    Request {
+fn request(generation: u64, cwd: u8, local: Local) -> Result<Request, session::Error> {
+    Ok(Request {
         generation,
-        snapshot: Snapshot {
-            cwd: cwd_path(cwd),
-            env: vec![
-                (OsString::from("B"), OsString::new()),
-                (OsString::from("A"), OsString::new()),
-            ],
-        },
+        snapshot: Snapshot::new(cwd_path(cwd), Vec::new())?,
         cols: local.cols,
         last_exit_code: local.status,
         duration_ms: local.duration,
         keymap: keymap_name(local.vicmd).to_owned(),
-    }
+    })
 }
 
 /// Acquired context is marked read-only so it is distinguishable from local data.
@@ -661,7 +655,7 @@ proptest! {
         for op in &ops {
             let before = fixture.view(&machine);
             let op = &op.resolve(before.as_ref().map(|view| view.generation));
-            let did = machine.step(fixture.input(op)).iter().map(|effect| fixture.did(effect)).collect::<Vec<_>>();
+            let did = machine.step(fixture.input(op)?).iter().map(|effect| fixture.did(effect)).collect::<Vec<_>>();
             let after = fixture.view(&machine);
             check_invariants(op, before.as_ref(), after.as_ref(), &did)?;
             prop_assert_eq!(&did, &model.step(op, &fixture), "effects after {:?}", op);
@@ -671,35 +665,8 @@ proptest! {
 }
 
 #[test]
-fn environment_order_does_not_change_the_snapshot() {
-    let local = Local {
-        cols: 80,
-        vicmd: false,
-        status: 0,
-        duration: None,
-    };
-    let mut machine = Machine::default();
-    let spawned = |effects: &[Effect]| {
-        effects.iter().find_map(|effect| match effect {
-            Effect::Spawn(request, _) => Some(request.snapshot.clone()),
-            _ => None,
-        })
-    };
-    let first = spawned(&machine.step(Input::Request(request(1, 0, local))));
-    let mut reordered = request(2, 0, local);
-    reordered.snapshot.env.reverse();
-    // The second request waits for the first task, but its snapshot is sorted.
-    assert!(spawned(&machine.step(Input::Request(reordered))).is_none());
-    assert!(first.is_some());
-    assert_eq!(
-        spawned(&machine.step(Input::Joined { failed: false })),
-        first
-    );
-}
-
-#[test]
 fn events_queued_before_a_failed_task_cannot_change_its_settled_display()
--> Result<(), capsule_core::plan::ConfigError> {
+-> Result<(), Box<dyn std::error::Error>> {
     let local = Local {
         cols: 80,
         vicmd: false,
@@ -708,7 +675,7 @@ fn events_queued_before_a_failed_task_cannot_change_its_settled_display()
     };
     let mut machine = Machine::default();
     let fixture = Fixture::new(machine.plan.clone())?;
-    machine.step(Input::Request(request(1, 0, local)));
+    machine.step(Input::Request(request(1, 0, local)?));
     machine.step(Input::Joined { failed: true });
     let settled = fixture.view(&machine);
     assert!(settled.as_ref().is_some_and(|view| view.complete));
@@ -725,7 +692,7 @@ fn events_queued_before_a_failed_task_cannot_change_its_settled_display()
             result: Some(true),
         },
     ] {
-        machine.step(fixture.input(&op));
+        machine.step(fixture.input(&op)?);
         assert_eq!(fixture.view(&machine), settled);
     }
     Ok(())

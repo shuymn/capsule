@@ -19,7 +19,7 @@ use capsule_prompt_bench::{
     ACQUISITION_WAIT_SECS, DEFAULT_ITERATIONS, RunMetadata, ScenarioResult, build_path_env,
     resolve_binary, summarize,
 };
-use capsule_protocol::session::{Request, Snapshot};
+use capsule_protocol::session::{self, Request, Snapshot};
 use clap::Parser;
 use serde::Serialize;
 
@@ -371,10 +371,10 @@ struct BenchmarkEnvironment<'a> {
 }
 
 impl BenchmarkEnvironment<'_> {
-    fn snapshot(&self, cwd: &Path) -> Snapshot {
-        Snapshot {
-            cwd: cwd.to_path_buf(),
-            env: vec![
+    fn snapshot(&self, cwd: &Path) -> Result<Snapshot, session::Error> {
+        Snapshot::new(
+            cwd.to_path_buf(),
+            vec![
                 (OsString::from("HOME"), self.home_dir.as_os_str().to_owned()),
                 (
                     OsString::from("XDG_CONFIG_HOME"),
@@ -387,7 +387,7 @@ impl BenchmarkEnvironment<'_> {
                     OsString::from("/dev/null"),
                 ),
             ],
-        }
+        )
     }
 }
 
@@ -595,7 +595,7 @@ async fn run_benchmark(
             generation += 1;
             let sample = worker
                 .measure(
-                    &request(generation, cwd, environment),
+                    &request(generation, cwd, environment)?,
                     environment.probe,
                     usize::from(workload.toolchain),
                 )
@@ -615,7 +615,7 @@ async fn run_benchmark(
     for (name, workload) in workloads {
         eprintln!("capsule same-generation redraw: {name}");
         generation += 1;
-        let mut current = request(generation, &workload.path, environment);
+        let mut current = request(generation, &workload.path, environment)?;
         worker
             .measure(&current, environment.probe, usize::from(workload.toolchain))
             .await
@@ -663,15 +663,19 @@ async fn run_benchmark(
     Ok(results)
 }
 
-fn request(generation: u64, cwd: &Path, environment: &BenchmarkEnvironment<'_>) -> Request {
-    Request {
+fn request(
+    generation: u64,
+    cwd: &Path,
+    environment: &BenchmarkEnvironment<'_>,
+) -> Result<Request, session::Error> {
+    Ok(Request {
         generation,
-        snapshot: environment.snapshot(cwd),
+        snapshot: environment.snapshot(cwd)?,
         cols: 240,
         last_exit_code: 0,
         duration_ms: None,
         keymap: "main".into(),
-    }
+    })
 }
 
 fn worker_result(

@@ -11,6 +11,7 @@ use crate::{
         MAX_FORMAT_DEPTH, MAX_MODULES, MAX_OUTPUT_BYTES, MAX_VALUES_PER_MODULE, MAX_WHEN_ITEMS,
     },
     render::style::Color,
+    test_utils::snapshot,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -24,17 +25,6 @@ fn one_module(format: &str, values: &str) -> Result<ConfigPlan, ConfigError> {
 /// `count` copies of a TOML `item`, comma-separated for an array body.
 fn toml_list(item: &str, count: usize) -> String {
     vec![item; count].join(",")
-}
-
-fn snapshot(cwd: &std::path::Path, env: &[(&str, &str)]) -> Snapshot {
-    Snapshot {
-        cwd: cwd.to_path_buf(),
-        env: env
-            .iter()
-            .map(|(name, value)| (OsString::from(name), OsString::from(value)))
-            .chain(std::env::var_os("PATH").map(|value| (OsString::from("PATH"), value)))
-            .collect(),
-    }
 }
 
 #[test]
@@ -346,13 +336,13 @@ async fn ready_empty_env_stops_fallback_but_unset_env_does_not() -> TestResult {
     let value_plan = &plan.modules[0].values[0];
     let runner = Runner::default();
     let cancel = CancellationToken::new();
-    let input = snapshot(dir.path(), &[("VALUE", "")]);
+    let input = snapshot(dir.path(), &[("VALUE", "")])?;
     assert_eq!(
         acquire_value(value_plan, &input, &runner, &cancel).await?,
         Some(String::new())
     );
     assert!(!dir.path().join("fallback").exists());
-    let input = snapshot(dir.path(), &[]);
+    let input = snapshot(dir.path(), &[])?;
     assert_eq!(
         acquire_value(value_plan, &input, &runner, &cancel).await?,
         Some(String::new())
@@ -366,7 +356,7 @@ async fn empty_file_and_command_are_ready_and_file_text_may_contain_slashes() ->
     let dir = tempfile::tempdir()?;
     std::fs::write(dir.path().join("value"), "")?;
     let plan = one_module("{value}", "value=[{file='value'},{env='FALLBACK'}]")?;
-    let input = snapshot(dir.path(), &[("FALLBACK", "later")]);
+    let input = snapshot(dir.path(), &[("FALLBACK", "later")])?;
     let runner = Runner::default();
     let cancel = CancellationToken::new();
     assert_eq!(
@@ -397,7 +387,7 @@ async fn missing_failed_and_timed_out_candidates_fall_back_in_order() -> TestRes
         "{value}",
         "value=[{file='missing'},{command=['sh','-c','exit 9']},{command=['sleep','2']},{env='GOOD'},{command=['sh','-c','printf ran > forbidden']}]",
     )?;
-    let input = snapshot(dir.path(), &[("GOOD", "ready")]);
+    let input = snapshot(dir.path(), &[("GOOD", "ready")])?;
     assert_eq!(
         acquire_value(
             &plan.modules[0].values[0],
@@ -415,7 +405,7 @@ async fn missing_failed_and_timed_out_candidates_fall_back_in_order() -> TestRes
 #[tokio::test]
 async fn missing_and_failed_terminal_states_remain_distinct() -> TestResult {
     let dir = tempfile::tempdir()?;
-    let input = snapshot(dir.path(), &[]);
+    let input = snapshot(dir.path(), &[])?;
     let runner = Runner::default();
     let cancel = CancellationToken::new();
     let missing = one_module("{value}", "value=[{env='MISSING'},{file='missing'}]")?;
@@ -439,7 +429,7 @@ async fn missing_and_failed_terminal_states_remain_distinct() -> TestResult {
 #[tokio::test]
 async fn regex_extraction_distinguishes_empty_capture_from_missing_capture() -> TestResult {
     let dir = tempfile::tempdir()?;
-    let input = snapshot(dir.path(), &[("VALUE", ""), ("FALLBACK", "later")]);
+    let input = snapshot(dir.path(), &[("VALUE", ""), ("FALLBACK", "later")])?;
     let runner = Runner::default();
     let cancel = CancellationToken::new();
     let empty = one_module(
@@ -476,19 +466,19 @@ async fn conditions_preserve_empty_environment_and_or_and_semantics() -> TestRes
     assert!(
         acquire_condition(
             &when,
-            &snapshot(dir.path(), &[("EMPTY", "")]),
+            &snapshot(dir.path(), &[("EMPTY", "")])?,
             &runner,
             &cancel
         )
         .await?
     );
-    assert!(!acquire_condition(&when, &snapshot(dir.path(), &[]), &runner, &cancel).await?);
+    assert!(!acquire_condition(&when, &snapshot(dir.path(), &[])?, &runner, &cancel).await?);
     std::fs::remove_file(dir.path().join("marker"))?;
     std::fs::create_dir(dir.path().join("marker"))?;
     assert!(
         !acquire_condition(
             &when,
-            &snapshot(dir.path(), &[("EMPTY", "")]),
+            &snapshot(dir.path(), &[("EMPTY", "")])?,
             &runner,
             &cancel
         )
@@ -501,7 +491,7 @@ async fn conditions_preserve_empty_environment_and_or_and_semantics() -> TestRes
 async fn cancellation_does_not_fall_back_to_a_ready_value() -> TestResult {
     let dir = tempfile::tempdir()?;
     let plan = one_module("{value}", "value=[{env='VALUE'}]")?;
-    let input = snapshot(dir.path(), &[("VALUE", "ready")]);
+    let input = snapshot(dir.path(), &[("VALUE", "ready")])?;
     let cancel = CancellationToken::new();
     cancel.cancel();
     let runner = Runner::default();
@@ -521,34 +511,26 @@ async fn cancellation_does_not_fall_back_to_a_ready_value() -> TestResult {
 async fn environment_size_limit_applies_before_copying_and_allows_fallback() -> TestResult {
     let dir = tempfile::tempdir()?;
     let plan = one_module("{value}", "value=[{env='LARGE'},{env='FALLBACK'}]")?;
-    let mut input = snapshot(dir.path(), &[("FALLBACK", "small")]);
-    let large_index = input.env.len();
-    input
-        .env
-        .push(("LARGE".into(), "x".repeat(MAX_OUTPUT_BYTES).into()));
     let runner = Runner::default();
     let cancel = CancellationToken::new();
-    assert_eq!(
-        acquire_value(&plan.modules[0].values[0], &input, &runner, &cancel)
-            .await?
-            .as_ref()
-            .map(String::len),
-        Some(MAX_OUTPUT_BYTES)
-    );
-    input.env[large_index].1.push("x");
-    assert_eq!(
-        acquire_value(&plan.modules[0].values[0], &input, &runner, &cancel).await?,
-        Some("small".to_owned())
-    );
-    input.env[large_index].1 = OsString::from_vec(vec![0xff; MAX_OUTPUT_BYTES]);
-    assert_eq!(
-        acquire_value(&plan.modules[0].values[0], &input, &runner, &cancel).await?,
-        Some("small".to_owned())
-    );
-    assert_eq!(
-        input.env[large_index].1.as_encoded_bytes(),
-        vec![0xff; MAX_OUTPUT_BYTES]
-    );
+    for (large, expected) in [
+        (
+            "x".repeat(MAX_OUTPUT_BYTES).into(),
+            "x".repeat(MAX_OUTPUT_BYTES),
+        ),
+        ("x".repeat(MAX_OUTPUT_BYTES + 1).into(), "small".to_owned()),
+        (
+            OsString::from_vec(vec![0xff; MAX_OUTPUT_BYTES]),
+            "small".to_owned(),
+        ),
+    ] {
+        let env = vec![("FALLBACK".into(), "small".into()), ("LARGE".into(), large)];
+        let input = Snapshot::new(dir.path().to_owned(), env)?;
+        assert_eq!(
+            acquire_value(&plan.modules[0].values[0], &input, &runner, &cancel).await?,
+            Some(expected)
+        );
+    }
     Ok(())
 }
 
