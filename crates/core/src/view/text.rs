@@ -194,7 +194,6 @@ mod tests {
 #[cfg(test)]
 mod properties {
     use proptest::prelude::*;
-    use unicode_segmentation::UnicodeSegmentation as _;
 
     use super::*;
     use crate::{
