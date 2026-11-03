@@ -30,16 +30,24 @@ fn parse(
                 *remaining = &remaining[1..];
             }
             '{' => {
-                flush_literal(&mut parts, &mut literal);
                 let Some(end) = remaining.find('}') else {
                     return Err(ConfigError::invalid(module, "unclosed format variable"));
                 };
-                let name = &remaining[..end];
+                let rest: &str = remaining;
+                let name = &rest[..end];
+                *remaining = &rest[end + 1..];
+                // Value names cannot contain brackets, so `{[}` and `{]}` are
+                // free to escape brackets anywhere, including where `[[` and
+                // `]` would open or close a section.
+                if matches!(name, "[" | "]") {
+                    literal.push_str(name);
+                    continue;
+                }
                 let Some(index) = values.iter().position(|value| value.name == name) else {
                     return Err(ConfigError::invalid(module, "undefined format variable"));
                 };
+                flush_literal(&mut parts, &mut literal);
                 parts.push(FormatPart::Value(index));
-                *remaining = &remaining[end + 1..];
             }
             '[' => {
                 if depth >= MAX_FORMAT_DEPTH {
