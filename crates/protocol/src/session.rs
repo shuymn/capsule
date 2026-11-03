@@ -449,7 +449,7 @@ mod tests {
         encoded.pop();
         assert_eq!(Response::decode(&encoded)?.left1, line);
         assert!(response(0, &line, "x", false).is_err());
-        encoded.insert(2, b'0');
+        encoded.push(b'x');
         assert!(matches!(
             Response::decode(&encoded),
             Err(Error::TooLarge(_))

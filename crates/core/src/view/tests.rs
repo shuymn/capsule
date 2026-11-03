@@ -1,10 +1,9 @@
-use std::fmt::Write as _;
-
 use super::*;
 use crate::{
-    plan::ViewConfig,
+    git::{GitOperationState, GitState},
+    plan::{StyleConfig, TimeFormat, ViewConfig},
     render::style::{Color, ColorMap},
-    test_utils::contains_style_sequence,
+    test_utils::{contains_style_sequence, style_sequence},
 };
 
 fn input() -> ViewInput<'static> {
@@ -124,7 +123,7 @@ fn character_keymap_and_status_use_current_inputs_only() {
     let output = builtins::character(&config, &input).to_zsh(config.color_map);
     assert!(output.contains("❮"));
     assert!(contains_style_sequence(&output, &[1, 31]));
-    config.character.vicmd.style = Some(crate::plan::StyleConfig::fg(Color::Blue));
+    config.character.vicmd.style = Some(StyleConfig::fg(Color::Blue));
     assert!(
         builtins::character(&config, &input)
             .to_zsh(config.color_map)
@@ -269,12 +268,10 @@ values = { value = [{ env = "AFTER" }] }
 
 #[test]
 fn builtins_keep_two_lines_connectors_and_independent_styles() {
-    use crate::git::{GitOperationState, GitState};
-
     let mut plan = ConfigPlan::default();
     plan.view.time.disabled = false;
-    plan.view.time.format = crate::plan::TimeFormat::WithoutSeconds;
-    plan.view.connectors.style = crate::plan::StyleConfig::fg(Color::Blue);
+    plan.view.time.format = TimeFormat::WithoutSeconds;
+    plan.view.connectors.style = StyleConfig::fg(Color::Blue);
     let status = GitStatus {
         head_oid: Some("abcdef012345".into()),
         modified: 1,
@@ -295,47 +292,34 @@ fn builtins_keep_two_lines_connectors_and_independent_styles() {
             ..input()
         },
     );
-    let styled = |codes: &str, text: &str| {
-        let codes = codes.split(';').fold(String::new(), |mut codes, code| {
-            let _ = write!(codes, "\x1b[{code}m");
-            codes
-        });
-        format!("%{{{codes}%}}{text}%{{\x1b[0m%}}")
-    };
+    let styled =
+        |codes: &[u8], text: &str| format!("%{{{}%}}{text}%{{\x1b[0m%}}", style_sequence(codes));
     let left1 = [
-        styled("1;36", "project"),
-        " ".into(),
-        styled("31", "\u{f023}"),
-        " ".into(),
-        styled("34", "on"),
-        " ".into(),
-        styled("1;35", "\u{f418}"),
-        " ".into(),
-        styled("1;35", "HEAD "),
-        styled("1;32", "(abcdef0)"),
-        " ".into(),
-        styled("1;33", "(REBASING 2/5)"),
-        " ".into(),
-        styled("1;31", "[!]"),
-        " ".into(),
-        styled("34", "took"),
-        " ".into(),
-        styled("1;33", "1m5s"),
+        styled(&[1, 36], "project"),
+        styled(&[31], "\u{f023}"),
+        styled(&[34], "on"),
+        styled(&[1, 35], "\u{f418}"),
+        styled(&[1, 35], "HEAD ") + &styled(&[1, 32], "(abcdef0)"),
+        styled(&[1, 33], "(REBASING 2/5)"),
+        styled(&[1, 31], "[!]"),
+        styled(&[34], "took"),
+        styled(&[1, 33], "1m5s"),
     ];
-    assert_eq!(prompt.left1, left1.concat());
+    assert_eq!(prompt.left1, left1.join(" "));
     let left2 = [
-        styled("34", "at"),
-        " ".into(),
-        styled("1;33", "14:05"),
-        " ".into(),
-        styled("1;32", "❯"),
+        styled(&[34], "at"),
+        styled(&[1, 33], "14:05"),
+        styled(&[1, 32], "❯"),
     ];
-    assert_eq!(prompt.left2, left2.concat());
+    assert_eq!(prompt.left2, left2.join(" "));
 }
 
 #[test]
 fn builtins_disabled_and_unavailable_values_stay_absent() {
     let mut plan = ConfigPlan::default();
+    let threshold = plan.view.cmd_duration.threshold_ms;
+    assert!(builtins::duration(&plan.view, Some(threshold)).is_some());
+    assert!(builtins::duration(&plan.view, Some(threshold - 1)).is_none());
     plan.view.directory.disabled = true;
     plan.view.character.disabled = true;
     let output = render(&plan, &input());
@@ -356,9 +340,7 @@ fn builtins_disabled_and_unavailable_values_stay_absent() {
 }
 
 #[test]
-fn partial_git_status_has_no_leading_separator_and_duration_threshold_is_inclusive() {
-    use crate::git::{GitOperationState, GitState};
-
+fn partial_git_status_has_no_leading_separator() {
     let config = ViewConfig::default();
     let git = |status: GitStatus| builtins::git(&config, &status).map(|text| text.plain_text());
     let state = GitOperationState {
@@ -380,9 +362,6 @@ fn partial_git_status_has_no_leading_separator_and_duration_threshold_is_inclusi
         }),
         Some("on \u{f418} [?]".to_owned())
     );
-    let threshold = config.cmd_duration.threshold_ms;
-    assert!(builtins::duration(&config, Some(threshold)).is_some());
-    assert!(builtins::duration(&config, Some(threshold - 1)).is_none());
 }
 
 #[test]

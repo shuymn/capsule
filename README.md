@@ -103,4 +103,4 @@ Capsule is kept small enough for one person to maintain. Tool-specific display i
 
 ## Development
 
-Use stable Rust and mise (`mise install` provides lefthook and uv; `mise run test:mutants` fetches cargo-mutants on first use); tests also require zsh and Git. Read [architecture](docs/architecture.md) for runtime contracts, [tooling](docs/tooling.md) for checks, [benchmarks](docs/benchmarking.md) for measurements, and [release procedures](docs/releasing.md) for publishing.
+Use stable Rust and mise (`mise install` provides lefthook and uv); tests also require zsh and Git. Read [architecture](docs/architecture.md) for runtime contracts, [tooling](docs/tooling.md) for checks, [benchmarks](docs/benchmarking.md) for measurements, and [release procedures](docs/releasing.md) for publishing.

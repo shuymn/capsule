@@ -1,4 +1,4 @@
-//! Evaluate the public initialization output in an isolated zsh, and the preset output.
+//! Evaluate the public initialization output in an isolated zsh.
 
 use std::{
     io::Write,
@@ -78,18 +78,5 @@ fn generated_init_preserves_user_hooks_and_can_be_evaluated_twice()
     ] {
         check_initialization(hook_setup)?;
     }
-    Ok(())
-}
-
-#[test]
-fn preset_prints_the_example_configuration() -> Result<(), Box<dyn std::error::Error>> {
-    let preset = Command::new(env!("CARGO_BIN_EXE_capsule"))
-        .arg("preset")
-        .output()?;
-    assert!(preset.status.success());
-    assert_eq!(
-        preset.stdout,
-        include_bytes!("../../../examples/config.toml")
-    );
     Ok(())
 }

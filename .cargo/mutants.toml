@@ -11,5 +11,5 @@ exclude_re = [
   # The OR'ed open and waitid flags are disjoint bits, so `^` equals `|`.
   'replace \| with \^ in (Runner::file|observe_exit)$',
   # These already return `Poll::Ready(Ok(()))`.
-  'AsyncWrite for Pipe>::poll_(flush|shutdown) ',
+  'Pipe>::poll_(flush|shutdown) -> ',
 ]

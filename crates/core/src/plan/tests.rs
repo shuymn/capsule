@@ -21,6 +21,11 @@ fn one_module(format: &str, values: &str) -> Result<ConfigPlan, ConfigError> {
     ))
 }
 
+/// `count` copies of a TOML `item`, comma-separated for an array body.
+fn toml_list(item: &str, count: usize) -> String {
+    vec![item; count].join(",")
+}
+
 fn snapshot(cwd: &std::path::Path, env: &[(&str, &str)]) -> Snapshot {
     Snapshot {
         cwd: cwd.to_path_buf(),
@@ -169,12 +174,7 @@ fn source_and_regex_validation_happens_before_acquisition() {
     }
     assert!(one_module("{value}", "value = [{ env = \"A\\u0000B\" }]").is_err());
     assert!(one_module("{value}", "value = [{ command = [\"x\", \"\\u0000\"] }]").is_err());
-    let command = |count| {
-        format!(
-            "value = [{{ command = [{}] }}]",
-            vec!["'x'"; count].join(", ")
-        )
-    };
+    let command = |count| format!("value = [{{ command = [{}] }}]", toml_list("'x'", count));
     assert!(one_module("{value}", &command(MAX_COMMAND_ARGS)).is_ok());
     assert!(one_module("{value}", &command(MAX_COMMAND_ARGS + 1)).is_err());
     for path in INVALID_PATHS {
@@ -201,7 +201,7 @@ fn conditions_are_relative_paths_and_bounded() {
         );
     }
     for key in ["files", "env"] {
-        let items = |count| format!("{key} = [{}]", vec!["'x'"; count].join(", "));
+        let items = |count| format!("{key} = [{}]", toml_list("'x'", count));
         assert!(when(&items(MAX_WHEN_ITEMS)).is_ok());
         assert!(when(&items(MAX_WHEN_ITEMS + 1)).is_err(), "accepted {key}");
     }
@@ -310,11 +310,7 @@ fn sized_plan(modules: usize, values: usize, candidates: usize) -> Result<String
             "[[module]]\nname='m{module}'\nformat='literal'\n[module.values]"
         )?;
         for value in 0..values {
-            writeln!(
-                source,
-                "v{value}=[{}]",
-                vec!["{env='X'}"; candidates].join(",")
-            )?;
+            writeln!(source, "v{value}=[{}]", toml_list("{env='X'}", candidates))?;
         }
     }
     Ok(source)

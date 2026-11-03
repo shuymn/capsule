@@ -49,11 +49,15 @@ pub fn contains_style_sequence(text: &str, codes: &[u8]) -> bool {
             .collect::<Vec<_>>()
             .join(";")
     );
-    let mut split = String::with_capacity(codes.len() * 5);
-    for code in codes {
-        let _ = write!(split, "\x1b[{code}m");
-    }
-    text.contains(&combined) || text.contains(&split)
+    text.contains(&combined) || text.contains(&style_sequence(codes))
+}
+
+/// The SGR sequence Capsule emits for `codes`: one escape per code.
+pub fn style_sequence(codes: &[u8]) -> String {
+    codes.iter().fold(String::new(), |mut sequence, code| {
+        let _ = write!(sequence, "\x1b[{code}m");
+        sequence
+    })
 }
 
 /// Characters that stress display width, grapheme segmentation, sanitizing,
