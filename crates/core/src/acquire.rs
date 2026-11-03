@@ -458,21 +458,15 @@ fn check_size(bytes: Vec<u8>) -> Result<Vec<u8>, AcquireError> {
     }
 }
 
-fn terminate_group(
-    group: Pid,
-    #[cfg_attr(
-        not(target_os = "macos"),
-        expect(unused_variables, reason = "only Darwin's zombie-group EPERM needs it")
-    )]
-    observed_exit_and_eof: bool,
-) -> Result<(), AcquireError> {
+fn terminate_group(group: Pid, observed_exit_and_eof: bool) -> Result<(), AcquireError> {
     match kill_process_group(group, Signal::KILL) {
         Ok(()) | Err(rustix::io::Errno::SRCH) => Ok(()),
         // Darwin reports EPERM for a process group containing only zombies.
         // Require both non-reaping exit observation and closed stdout before
         // accepting that result; live same-user descendants remain signalable.
-        #[cfg(target_os = "macos")]
-        Err(rustix::io::Errno::PERM) if observed_exit_and_eof => Ok(()),
+        Err(rustix::io::Errno::PERM) if cfg!(target_os = "macos") && observed_exit_and_eof => {
+            Ok(())
+        }
         Err(error) => Err(io::Error::from(error).into()),
     }
 }

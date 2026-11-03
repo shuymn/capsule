@@ -258,6 +258,7 @@ fn file_distinguishes_missing_empty_oversized_and_non_regular_sources() -> TestR
         assert!(runner.exists(&empty, &cancel).await?);
         assert!(!runner.exists(&directory.path().join("missing"), &cancel).await?);
         assert!(runner.metadata(&empty.join("child"), &cancel).await.is_err());
+        assert!(runner.file(&empty.join("child"), &cancel).await.is_err());
         assert_eq!(runner.file(&full, &cancel).await?.map(|bytes| bytes.len()), Some(MAX_OUTPUT_BYTES));
         assert!(matches!(runner.file(&large, &cancel).await, Err(AcquireError::OutputTooLarge)));
         assert!(matches!(runner.file(&fifo, &cancel).await, Err(AcquireError::Io(error)) if error.kind() == io::ErrorKind::InvalidInput));

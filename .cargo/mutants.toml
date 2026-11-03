@@ -10,6 +10,9 @@ test_workspace = true
 exclude_re = [
   # The OR'ed waitid flags are disjoint bits, so `^` equals `|`.
   'replace \| with \^ in observe_exit$',
+  # Darwin's zombie-group EPERM arm: no other platform returns EPERM there.
+  # On macOS, run once without this entry to check the arm.
+  '(match guard .*|&& with \|\|) in terminate_group$',
   # These already return `Poll::Ready(Ok(()))`.
   'Pipe>::poll_(flush|shutdown) -> ',
 ]
