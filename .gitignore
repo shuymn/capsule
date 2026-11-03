@@ -24,3 +24,9 @@ __pycache__/
 
 # mise local overrides
 mise.local.toml
+
+# bolero fuzzing output; commit only hand-written `seed-*` corpus files
+**/__fuzz__/*/*
+!**/__fuzz__/*/corpus/
+**/__fuzz__/*/corpus/*
+!**/__fuzz__/*/corpus/seed-*

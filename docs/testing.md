@@ -47,6 +47,12 @@ Read this file before writing or modifying tests.
   so pass `--file <path>` or `--in-diff <diff-file>` for the code you changed. A missed
   mutant is a test gap: add the case that kills it. For an equivalent mutant, prefer
   code that cannot produce it; otherwise exclude it there with a comment.
+- Fuzz parsers of untrusted bytes with [bolero](https://camshaft.github.io/bolero/)
+  harnesses. `cargo test` runs each for one second plus its corpus; fuzz one with
+  `mise run test:fuzz <package> <test path> -T 10m`, and the weekly
+  [fuzz workflow](../.github/workflows/fuzz.yml) runs all of them. Commit only
+  hand-written `seed-*` files in `__fuzz__/<target>/corpus/`; to keep a crash from
+  `__fuzz__/<target>/crashes/` as a regression, copy it there as a seed.
 - Keep doctests runnable; use hidden `# ` setup, `no_run` for external resources,
   and `compile_fail` for invalid usage.
 

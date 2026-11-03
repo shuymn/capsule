@@ -403,19 +403,10 @@ mod tests {
     }
 
     mod properties {
-        use std::{
-            collections::VecDeque,
-            io,
-            pin::Pin,
-            task::{Context, Poll, Waker},
-        };
-
         use proptest::{collection::vec, prelude::*, sample::select};
-        use tokio::io::ReadBuf;
 
         use super::*;
 
-        const FRAME_LIMIT: usize = 8;
         const MARKER: &[u8] = b"s3cr3t-marker";
 
         /// Up to `max` values, biased toward `special` ones that the wire format treats specially.
@@ -432,14 +423,6 @@ mod tests {
 
         fn text(max: usize) -> impl Strategy<Value = String> {
             biased(&['\t', '\n', '\r', '\\'], max).prop_map(String::from_iter)
-        }
-
-        /// Frame contents without the LF delimiter, sometimes over the limit.
-        fn payload() -> impl Strategy<Value = Vec<u8>> {
-            vec(
-                any::<u8>().prop_filter("delimiter", |byte| *byte != b'\n'),
-                0..FRAME_LIMIT + 3,
-            )
         }
 
         /// Any request whose snapshot satisfies the wire invariants.
@@ -469,40 +452,6 @@ mod tests {
                     })
                 },
             )
-        }
-
-        /// Yields one chunk per read and reports `Pending` before each one.
-        struct Chunked {
-            chunks: VecDeque<Vec<u8>>,
-            ready: bool,
-        }
-
-        impl AsyncRead for Chunked {
-            fn poll_read(
-                mut self: Pin<&mut Self>,
-                _: &mut Context<'_>,
-                buf: &mut ReadBuf<'_>,
-            ) -> Poll<io::Result<()>> {
-                self.ready = !self.ready;
-                if !self.ready {
-                    return Poll::Pending;
-                }
-                if let Some(mut chunk) = self.chunks.pop_front() {
-                    let taken = chunk.len().min(buf.remaining());
-                    buf.put_slice(&chunk[..taken]);
-                    if taken < chunk.len() {
-                        self.chunks.push_front(chunk.split_off(taken));
-                    }
-                }
-                Poll::Ready(Ok(()))
-            }
-        }
-
-        #[derive(Debug, PartialEq, Eq)]
-        enum End {
-            Clean,
-            FrameLimit,
-            UnterminatedEof,
         }
 
         proptest! {
@@ -536,16 +485,6 @@ mod tests {
                 );
             }
 
-            /// Covers: T08
-            #[test]
-            fn decoders_reject_arbitrary_frames_without_panicking(
-                frame in biased(b"\t\\QR01-", 64),
-            ) {
-                // Only the absence of a panic is asserted here.
-                let _ = Request::decode(&frame);
-                let _ = Response::decode(&frame);
-            }
-
             /// Covers: T06, T08
             #[test]
             fn rejected_frames_do_not_expose_environment_values(
@@ -569,69 +508,166 @@ mod tests {
                     );
                 }
             }
+        }
+    }
 
-            /// Covers: T08
-            #[test]
-            fn framing_is_independent_of_chunking_and_cancellation(
-                frames in vec(payload(), 0..5),
-                tail in payload(),
-                sizes in vec(1..2 * FRAME_LIMIT, 1..8),
-            ) {
-                let mut stream = Vec::new();
-                for frame in &frames {
-                    stream.extend_from_slice(frame);
-                    stream.push(b'\n');
+    /// Coverage-guided targets; see docs/testing.md for fuzzing them.
+    mod fuzz {
+        use std::{
+            collections::VecDeque,
+            io,
+            pin::Pin,
+            task::{Context, Poll, Waker},
+        };
+
+        use tokio::io::ReadBuf;
+
+        use super::*;
+
+        const FRAME_LIMIT: usize = 8;
+
+        /// Yields one chunk per read and reports `Pending` before each one.
+        struct Chunked {
+            chunks: VecDeque<Vec<u8>>,
+            ready: bool,
+        }
+
+        impl AsyncRead for Chunked {
+            fn poll_read(
+                mut self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+                buf: &mut ReadBuf<'_>,
+            ) -> Poll<io::Result<()>> {
+                self.ready = !self.ready;
+                if !self.ready {
+                    return Poll::Pending;
                 }
-                stream.extend_from_slice(&tail);
-                let mut chunks = VecDeque::new();
-                let mut rest = stream.as_slice();
-                for size in sizes.iter().cycle() {
-                    if rest.is_empty() {
-                        break;
+                if let Some(mut chunk) = self.chunks.pop_front() {
+                    let taken = chunk.len().min(buf.remaining());
+                    buf.put_slice(&chunk[..taken]);
+                    if taken < chunk.len() {
+                        self.chunks.push_front(chunk.split_off(taken));
                     }
-                    let (chunk, tail) = rest.split_at((*size).min(rest.len()));
-                    chunks.push_back(chunk.to_vec());
-                    rest = tail;
                 }
-
-                let expected_frames = frames
-                    .iter()
-                    .take_while(|frame| frame.len() <= FRAME_LIMIT)
-                    .cloned()
-                    .collect::<Vec<_>>();
-                let expected_end = if expected_frames.len() < frames.len()
-                    || tail.len() > FRAME_LIMIT
-                {
-                    End::FrameLimit
-                } else if tail.is_empty() {
-                    End::Clean
-                } else {
-                    End::UnterminatedEof
-                };
-
-                let mut reader = FrameReader::new(Chunked { chunks, ready: false }, FRAME_LIMIT);
-                let mut actual_frames = Vec::new();
-                let actual_end = loop {
-                    // Each iteration drops the previous future, cancelling any partial read.
-                    let mut next = std::pin::pin!(reader.next());
-                    match next.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
-                        Poll::Pending => {}
-                        Poll::Ready(Ok(Some(frame))) => actual_frames.push(frame.to_vec()),
-                        Poll::Ready(Ok(None)) => break End::Clean,
-                        Poll::Ready(Err(Error::Invalid("frame limit"))) => break End::FrameLimit,
-                        Poll::Ready(Err(Error::Io(error)))
-                            if error.kind() == io::ErrorKind::UnexpectedEof =>
-                        {
-                            break End::UnterminatedEof;
-                        }
-                        Poll::Ready(Err(error)) => {
-                            return Err(TestCaseError::fail(error.to_string()));
-                        }
-                    }
-                };
-                prop_assert_eq!(actual_frames, expected_frames);
-                prop_assert_eq!(actual_end, expected_end);
+                Poll::Ready(Ok(()))
             }
+        }
+
+        /// Covers: T08
+        #[test]
+        fn accepted_frames_re_encode_to_an_equal_value() {
+            /// Re-decode an accepted frame's canonical encoding.
+            fn canonical<T>(
+                encoded: Result<Vec<u8>, Error>,
+                decode: fn(&[u8]) -> Result<T, Error>,
+            ) -> Option<T> {
+                let encoded = encoded.ok()?;
+                let canonical = &encoded[..encoded.len() - 1];
+                assert!(!canonical.contains(&b'\n'));
+                let decoded = decode(canonical);
+                assert!(decoded.is_ok(), "canonical frame rejected: {canonical:?}");
+                decoded.ok()
+            }
+            bolero::check!().for_each(|frame: &[u8]| {
+                if let Ok(request) = Request::decode(frame) {
+                    assert!(
+                        canonical(request.encode(), Request::decode)
+                            .is_none_or(|decoded| decoded == request)
+                    );
+                }
+                if let Ok(decoded) = Response::decode(frame) {
+                    let Response {
+                        generation,
+                        ref left1,
+                        ref left2,
+                        complete,
+                    } = decoded;
+                    let encoded = response(generation, left1, left2, complete);
+                    assert!(
+                        canonical(encoded, Response::decode).is_none_or(|again| again == decoded)
+                    );
+                }
+            });
+        }
+
+        #[derive(Debug, PartialEq, Eq)]
+        enum End {
+            Clean,
+            FrameLimit,
+            UnterminatedEof,
+            Other(String),
+        }
+
+        /// Framing equals splitting the stream on LF up to the first frame over
+        /// the limit, however reads are chunked and cancelled.
+        ///
+        /// Covers: T08
+        #[test]
+        fn framing_is_independent_of_chunking_and_cancellation() {
+            bolero::check!()
+                .with_type::<(Vec<u8>, Vec<u8>)>()
+                .for_each(|(stream, sizes)| {
+                    // Make one byte in eight a delimiter, so frames are short.
+                    let stream = stream
+                        .iter()
+                        .map(|byte| if byte % 8 == 0 { b'\n' } else { *byte })
+                        .collect::<Vec<_>>();
+                    let mut pieces = stream.split(|byte| *byte == b'\n').collect::<Vec<_>>();
+                    let tail = pieces.pop().unwrap_or_default();
+                    let expected_frames = pieces
+                        .iter()
+                        .take_while(|frame| frame.len() <= FRAME_LIMIT)
+                        .map(|frame| frame.to_vec())
+                        .collect::<Vec<_>>();
+                    let expected_end =
+                        if expected_frames.len() < pieces.len() || tail.len() > FRAME_LIMIT {
+                            End::FrameLimit
+                        } else if tail.is_empty() {
+                            End::Clean
+                        } else {
+                            End::UnterminatedEof
+                        };
+
+                    let mut chunks = VecDeque::new();
+                    let mut rest = stream.as_slice();
+                    for size in sizes.iter().chain([&1]).cycle() {
+                        if rest.is_empty() {
+                            break;
+                        }
+                        let size = usize::from(*size) % (2 * FRAME_LIMIT) + 1;
+                        let (chunk, tail) = rest.split_at(size.min(rest.len()));
+                        chunks.push_back(chunk.to_vec());
+                        rest = tail;
+                    }
+                    let mut reader = FrameReader::new(
+                        Chunked {
+                            chunks,
+                            ready: false,
+                        },
+                        FRAME_LIMIT,
+                    );
+                    let mut actual_frames = Vec::new();
+                    let actual_end = loop {
+                        // Each iteration drops the previous future, cancelling any partial read.
+                        let mut next = std::pin::pin!(reader.next());
+                        match next.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+                            Poll::Pending => {}
+                            Poll::Ready(Ok(Some(frame))) => actual_frames.push(frame.to_vec()),
+                            Poll::Ready(Ok(None)) => break End::Clean,
+                            Poll::Ready(Err(Error::Invalid("frame limit"))) => {
+                                break End::FrameLimit;
+                            }
+                            Poll::Ready(Err(Error::Io(error)))
+                                if error.kind() == io::ErrorKind::UnexpectedEof =>
+                            {
+                                break End::UnterminatedEof;
+                            }
+                            Poll::Ready(Err(error)) => break End::Other(error.to_string()),
+                        }
+                    };
+                    assert_eq!(actual_frames, expected_frames);
+                    assert_eq!(actual_end, expected_end);
+                });
         }
     }
 }

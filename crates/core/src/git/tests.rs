@@ -254,21 +254,9 @@ async fn test_detect_priority_rebase_over_merge() -> Result<(), Box<dyn std::err
 
 #[test]
 fn porcelain_v2_parses_counts_detached_head_and_empty_output() {
-    let output = "\
-# branch.oid abc123def456
-# branch.head main
-# branch.ab +1 -2
-# stash 5
-1 M. N... 000000 000000 abc123 def456 staged.rs
-1 .M N... 000000 000000 abc123 def456 modified.rs
-1 A. N... 000000 100644 000000 def456 added.rs
-1 MM N... 000000 000000 abc123 def456 both.rs
-1 D. N... 100644 000000 000000 abc123 000000 deleted.rs
-1 .D N... 100644 100644 000000 abc123 def456 removed.rs
-2 R. N... 100644 100644 100644 abc123 def456 R100 new.rs\told.rs
-u UU N... 000000 000000 000000 abc123 def456 ghi789 conflict.rs
-? untracked.txt
-";
+    let output = include_str!(
+        "__fuzz__/git__tests__porcelain_counts_match_the_line_prefixes/corpus/seed-fixture"
+    );
     assert_eq!(
         parse_porcelain_v2(output),
         GitStatus {
@@ -290,6 +278,82 @@ u UU N... 000000 000000 000000 abc123 def456 ghi789 conflict.rs
     assert_eq!(detached.branch, None);
     assert_eq!(detached.head_oid, Some("abc123".to_owned()));
     assert_eq!(parse_porcelain_v2(""), GitStatus::default());
+}
+
+#[test]
+fn porcelain_counts_match_the_line_prefixes() {
+    const TOKENS: &[&str] = &[
+        "# branch.oid ",
+        "# branch.head ",
+        "(detached)",
+        "# branch.ab ",
+        "# stash ",
+        "1 ",
+        "2 ",
+        "u ",
+        "? ",
+        "+",
+        "-",
+        ".",
+        "M",
+        "D",
+        "A",
+        "R",
+        " ",
+        "\t",
+        "\n",
+        "\r\n",
+        "0",
+        "7",
+        "18446744073709551616",
+        "x",
+        "é",
+    ];
+    bolero::check!().for_each(|input: &[u8]| {
+        // Also read each byte as a token choice, so random input reaches the
+        // line structure.
+        let tokens = input
+            .iter()
+            .map(|choice| crate::test_utils::pick(*choice, TOKENS));
+        for output in [
+            String::from_utf8_lossy(input).into_owned(),
+            tokens.collect(),
+        ] {
+            let status = parse_porcelain_v2(&output);
+            // Classify each line by its record type and XY field.
+            let mut expected = GitStatus::default();
+            for line in output.lines() {
+                match line.get(..2) {
+                    Some("? ") => expected.untracked += 1,
+                    Some("u ") => expected.conflicted += 1,
+                    Some(kind @ ("1 " | "2 ")) => {
+                        // An entry without its XY field is skipped.
+                        let Some(xy) = line.split_whitespace().nth(1) else {
+                            continue;
+                        };
+                        expected.renamed += usize::from(kind == "2 ");
+                        if let [x, y, ..] = xy.as_bytes() {
+                            expected.staged += usize::from(*x != b'.');
+                            expected.modified += usize::from(*y != b'.');
+                            expected.deleted += usize::from(*x == b'D' || *y == b'D');
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let counts = |status: &GitStatus| {
+                (
+                    status.staged,
+                    status.modified,
+                    status.deleted,
+                    status.renamed,
+                    status.untracked,
+                    status.conflicted,
+                )
+            };
+            assert_eq!(counts(&status), counts(&expected), "{output:?}");
+        }
+    });
 }
 
 // -- acquire_context tests --
