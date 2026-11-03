@@ -271,34 +271,19 @@ fn duplicate_names_and_undefined_or_unclosed_formats_are_rejected() -> TestResul
 }
 
 #[test]
-fn brackets_follow_the_documented_escape_limits() -> TestResult {
-    let literal = |text: &str| FormatPart::Literal(text.to_owned());
-    for (format, expected) in [
-        // `[[` stays an escape right after `[`, so a section cannot start with
-        // a literal `[`.
-        (
-            "[[[x]]",
-            vec![
-                literal("["),
-                FormatPart::Optional(vec![literal("x")]),
-                literal("]"),
-            ],
-        ),
-        // The documented workaround: start the section with other text.
-        ("[ [[x]", vec![FormatPart::Optional(vec![literal(" [x")])]),
-        // `]` always closes a section and is literal only outside every section.
-        (
-            "[x]]",
-            vec![FormatPart::Optional(vec![literal("x")]), literal("]")],
-        ),
-        ("x]", vec![literal("x]")]),
-    ] {
-        assert_eq!(
-            one_module(format, "")?.modules[0].format,
-            Template(expected),
-            "{format}"
-        );
-    }
+fn bracket_escapes_are_literal_inside_and_at_the_start_of_sections() -> TestResult {
+    let plan = one_module("[{[}{value}{]}]{]}", "value=[{env='A'}]")?;
+    assert_eq!(
+        plan.modules[0].format,
+        Template(vec![
+            FormatPart::Optional(vec![
+                FormatPart::Literal("[".to_owned()),
+                FormatPart::Value(0),
+                FormatPart::Literal("]".to_owned()),
+            ]),
+            FormatPart::Literal("]".to_owned()),
+        ])
+    );
     Ok(())
 }
 
@@ -585,48 +570,41 @@ mod template_properties {
             .collect()
     }
 
-    /// A format tree the syntax can express: inside an optional section, a
-    /// literal has no `]` and the section does not start with `[`, as
-    /// docs/extending.md states.
+    /// A format tree the syntax can express: a section does not start with a
+    /// nested section, because `[[` is a literal `[` (docs/extending.md).
     fn tree(depth: u32) -> impl Strategy<Value = Vec<FormatPart>> {
         format_parts(NAMES.len(), depth).prop_map(|parts| normalize(parts, false))
     }
 
     fn normalize(parts: Vec<FormatPart>, nested: bool) -> Vec<FormatPart> {
-        let mut normalized = Vec::<FormatPart>::new();
-        for part in parts {
-            let part = match part {
-                FormatPart::Literal(text) if nested => FormatPart::Literal(text.replace(']', "")),
+        let mut parts: Vec<_> = parts
+            .into_iter()
+            .map(|part| match part {
                 FormatPart::Optional(parts) => FormatPart::Optional(normalize(parts, true)),
                 part => part,
-            };
-            match (normalized.last_mut(), part) {
-                // Merge and drop empty literals, so the first part decides how a
-                // section starts.
-                (_, FormatPart::Literal(text)) if text.is_empty() => {}
-                (Some(FormatPart::Literal(last)), FormatPart::Literal(text)) => {
-                    last.push_str(&text);
-                }
-                (_, part) => normalized.push(part),
-            }
+            })
+            .collect();
+        let first = parts
+            .iter()
+            .find(|part| !matches!(part, FormatPart::Literal(text) if text.is_empty()));
+        if nested && matches!(first, Some(FormatPart::Optional(_))) {
+            parts.insert(0, FormatPart::Literal(" ".into()));
         }
-        if nested {
-            match normalized.first_mut() {
-                Some(FormatPart::Literal(text)) if text.starts_with('[') => text.insert(0, ' '),
-                Some(FormatPart::Optional(_)) => {
-                    normalized.insert(0, FormatPart::Literal(" ".into()));
-                }
-                _ => {}
-            }
-        }
-        normalized
+        parts
     }
 
-    fn print(parts: &[FormatPart], source: &mut String) {
+    /// Prints brackets as `[[` and `]` outside sections, and as `{[}` and
+    /// `{]}` inside them, so both escape forms are exercised.
+    fn print(parts: &[FormatPart], nested: bool, source: &mut String) {
         for part in parts {
             match part {
                 FormatPart::Literal(text) => {
-                    source.push_str(&text.replace('{', "{{").replace('[', "[["));
+                    let text = text.replace('{', "{{");
+                    source.push_str(&if nested {
+                        text.replace('[', "{[}").replace(']', "{]}")
+                    } else {
+                        text.replace('[', "[[")
+                    });
                 }
                 FormatPart::Value(index) => {
                     source.push('{');
@@ -635,7 +613,7 @@ mod template_properties {
                 }
                 FormatPart::Optional(parts) => {
                     source.push('[');
-                    print(parts, source);
+                    print(parts, true, source);
                     source.push(']');
                 }
             }
@@ -651,7 +629,7 @@ mod template_properties {
         #[test]
         fn printed_trees_compile_back_to_themselves(parts in tree(3)) {
             let mut source = String::new();
-            print(&parts, &mut source);
+            print(&parts, false, &mut source);
             let compiled = template::compile(&source, &values(), "test");
             let Ok(Template(compiled)) = compiled else {
                 return Err(TestCaseError::fail(format!("{source:?}: {compiled:?}")));
@@ -659,7 +637,7 @@ mod template_properties {
             // Compare printed forms, so how literals are split is not part of
             // the property.
             let mut reprinted = String::new();
-            print(&compiled, &mut reprinted);
+            print(&compiled, false, &mut reprinted);
             prop_assert_eq!(reprinted, source);
         }
     }

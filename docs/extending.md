@@ -29,8 +29,9 @@ Use `when.files` for regular-file presence and `when.env` for exported-variable 
 | `{name}` | Hide the module while this required value is unavailable |
 | `[text {name}]` | Omit this section while its required value is unavailable; nesting is supported |
 | `{{`, `[[` | Render literal `{`, `[` |
+| `{[}`, `{]}` | Render literal `[`, `]`, also inside a section and at its start |
 
-`[[` is an escape wherever it appears, and `]` closes the innermost optional section. So a section cannot start with a literal `[`: `[[[x]]` reads as a literal `[`, a section `x`, then a literal `]`. Start the section with other text instead, as in `[ [[x]`. A section cannot contain a literal `]` either; place it outside the section or supply it through a value. Outside every section, `]` is literal.
+`[[` is a literal `[` wherever it appears, and `]` closes the innermost section, so use `{[}` and `{]}` inside sections: `[{[}x{]}]` is a section that shows `[x]`. A section cannot start with a nested section; put text before it.
 
 Keep declaration order. The default `slot = "line1"` places modules after Git; `"line2"` places them before time. `arbitration = { group = "runtime", priority = 10 }` chooses one ready module per group across both slots, preferring lower priority then declaration order.
 
