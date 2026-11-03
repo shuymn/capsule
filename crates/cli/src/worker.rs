@@ -279,17 +279,27 @@ fn apply_change(
         }
         Change::Context(Ok(context)) => state.context = context,
         Change::Context(Err(error)) => tracing::debug!(%error, "context unavailable"),
+        // A cancelled generation can drop its Plan event while module tasks
+        // still report against that plan; ignore observations without a slot.
         Change::Condition(index, value) => {
-            state.modules[index].condition = match value {
-                Ok(value) => Observation::Ready(value),
-                Err(error) => Observation::Failed(error),
+            if let Some(module) = state.modules.get_mut(index) {
+                module.condition = match value {
+                    Ok(value) => Observation::Ready(value),
+                    Err(error) => Observation::Failed(error),
+                };
             }
         }
         Change::Value(module, value, result) => {
-            state.modules[module].values[value] = match result {
-                Ok(Some(value)) => Observation::Ready(value),
-                Ok(None) => Observation::Missing,
-                Err(error) => Observation::Failed(error),
+            if let Some(slot) = state
+                .modules
+                .get_mut(module)
+                .and_then(|module| module.values.get_mut(value))
+            {
+                *slot = match result {
+                    Ok(Some(value)) => Observation::Ready(value),
+                    Ok(None) => Observation::Missing,
+                    Err(error) => Observation::Failed(error),
+                };
             }
         }
     }
@@ -491,5 +501,72 @@ async fn write_frames(
         };
         // Do not cancel a partly transmitted response when a newer one arrives.
         tokio::select! { () = stop.cancelled() => return Ok(()), result = output.write_all(&frame) => result? }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state() -> anyhow::Result<State> {
+        let request = Request::decode(b"Q\t1\t0\t\t80\tmain\t/tmp")?;
+        let config = ConfigPlan::parse(
+            r#"
+schema_version = 2
+[[module]]
+name = "tool"
+format = "{value}"
+[module.values]
+value = [{ env = "TOOL" }]
+"#,
+        )?;
+        let plan = Arc::new(LoadedPlan {
+            config,
+            source: None,
+        });
+        Ok(State::new(Arc::new(request), plan, None))
+    }
+
+    #[test]
+    fn observations_without_an_applied_plan_are_ignored() -> anyhow::Result<()> {
+        let mut state = state()?;
+        let mut plan = state.plan.clone();
+        let mut diagnostic = None;
+        // The generation was cancelled before its Plan event was delivered.
+        for change in [
+            Change::Condition(0, Ok(true)),
+            Change::Value(0, 0, Ok(Some("x".to_owned()))),
+            Change::Value(0, 0, Err(AcquireError::Cancelled)),
+            Change::Complete,
+        ] {
+            apply_change(&mut state, change, &mut plan, &mut diagnostic);
+        }
+        assert!(state.complete);
+        assert!(state.modules.is_empty());
+        state.render()?;
+        Ok(())
+    }
+
+    #[test]
+    fn out_of_range_observations_leave_the_applied_plan_unchanged() -> anyhow::Result<()> {
+        let mut state = state()?;
+        let mut plan = state.plan.clone();
+        let mut diagnostic = None;
+        let next = state.plan.clone();
+        for change in [
+            Change::Plan(next, None),
+            Change::Condition(1, Ok(true)),
+            Change::Value(0, 1, Ok(Some("x".to_owned()))),
+            Change::Value(1, 0, Ok(Some("x".to_owned()))),
+        ] {
+            apply_change(&mut state, change, &mut plan, &mut diagnostic);
+        }
+        assert_eq!(state.modules.len(), 1);
+        assert!(matches!(state.modules[0].condition, Observation::Pending));
+        assert!(matches!(
+            state.modules[0].values[..],
+            [Observation::Pending]
+        ));
+        Ok(())
     }
 }
