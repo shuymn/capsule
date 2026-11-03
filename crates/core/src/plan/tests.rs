@@ -529,3 +529,101 @@ async fn environment_size_limit_applies_before_copying_and_allows_fallback() -> 
     );
     Ok(())
 }
+
+mod template_properties {
+    use proptest::prelude::*;
+
+    use super::*;
+    use crate::test_utils::hostile_text;
+
+    const NAMES: [&str; 2] = ["a", "b"];
+
+    fn values() -> Vec<ValuePlan> {
+        NAMES
+            .iter()
+            .map(|name| ValuePlan {
+                name: (*name).to_owned(),
+                candidates: Vec::new(),
+            })
+            .collect()
+    }
+
+    /// A format tree as the compiler produces it, with no empty or adjacent
+    /// literals. Inside an optional section, a literal has no `]` and the
+    /// section does not start with `[`, which the syntax cannot express
+    /// (shuymn/capsule#305).
+    fn tree(depth: u32) -> impl Strategy<Value = Vec<FormatPart>> {
+        let leaf = prop_oneof![
+            hostile_text(6).prop_map(FormatPart::Literal),
+            (0..NAMES.len()).prop_map(FormatPart::Value),
+        ];
+        let part = leaf.prop_recursive(depth, 16, 4, |inner| {
+            prop::collection::vec(inner, 0..4).prop_map(FormatPart::Optional)
+        });
+        prop::collection::vec(part, 0..6).prop_map(|parts| normalize(parts, false))
+    }
+
+    fn normalize(parts: Vec<FormatPart>, nested: bool) -> Vec<FormatPart> {
+        let mut normalized = Vec::<FormatPart>::new();
+        for part in parts {
+            let part = match part {
+                FormatPart::Literal(text) if nested => FormatPart::Literal(text.replace(']', "")),
+                FormatPart::Optional(parts) => FormatPart::Optional(normalize(parts, true)),
+                part => part,
+            };
+            match (normalized.last_mut(), part) {
+                (_, FormatPart::Literal(text)) if text.is_empty() => {}
+                (Some(FormatPart::Literal(last)), FormatPart::Literal(text)) => {
+                    last.push_str(&text);
+                }
+                (_, part) => normalized.push(part),
+            }
+        }
+        if nested {
+            match normalized.first_mut() {
+                Some(FormatPart::Literal(text)) if text.starts_with('[') => text.insert(0, ' '),
+                Some(FormatPart::Optional(_)) => {
+                    normalized.insert(0, FormatPart::Literal(" ".into()));
+                }
+                _ => {}
+            }
+        }
+        normalized
+    }
+
+    fn print(parts: &[FormatPart], source: &mut String) {
+        for part in parts {
+            match part {
+                FormatPart::Literal(text) => {
+                    source.push_str(&text.replace('{', "{{").replace('[', "[["));
+                }
+                FormatPart::Value(index) => {
+                    source.push('{');
+                    source.push_str(NAMES[*index]);
+                    source.push('}');
+                }
+                FormatPart::Optional(parts) => {
+                    source.push('[');
+                    print(parts, source);
+                    source.push(']');
+                }
+            }
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn compiling_arbitrary_source_never_panics(source in hostile_text(128)) {
+            let _ = template::compile(&source, &values(), "test");
+        }
+
+        #[test]
+        fn printed_trees_compile_back_to_themselves(parts in tree(3)) {
+            let mut source = String::new();
+            print(&parts, &mut source);
+            let compiled = template::compile(&source, &values(), "test");
+            prop_assert!(compiled.is_ok(), "{source:?}: {compiled:?}");
+            prop_assert_eq!(compiled.map(|template| template.0).unwrap_or_default(), parts);
+        }
+    }
+}

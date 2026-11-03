@@ -187,3 +187,90 @@ mod tests {
         assert!(!serialized.contains('\x1b'));
     }
 }
+
+#[cfg(test)]
+mod properties {
+    use proptest::prelude::*;
+    use unicode_segmentation::UnicodeSegmentation as _;
+
+    use super::*;
+    use crate::{
+        render::style::Color,
+        test_utils::{bulky_text, displayed_prompt, hostile_text},
+    };
+
+    fn style() -> impl Strategy<Value = Style> {
+        prop::sample::select(vec![
+            Style::new(),
+            Style::new().fg(Color::Red),
+            Style::new().bold(),
+            Style::new().fg(Color::Blue).dimmed(),
+        ])
+    }
+
+    fn styled() -> impl Strategy<Value = StyledText> {
+        prop::collection::vec((bulky_text(), style()), 0..4).prop_map(|spans| {
+            let mut text = StyledText::default();
+            for (span, style) in spans {
+                text.push(&span, style);
+            }
+            text
+        })
+    }
+
+    fn cols() -> impl Strategy<Value = usize> {
+        prop_oneof![0..40usize, Just(usize::from(u16::MAX))]
+    }
+
+    fn is_bidi_control(character: char) -> bool {
+        matches!(character, '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+    }
+
+    proptest! {
+        #[test]
+        fn truncation_fits_the_width(text in styled(), cols in cols()) {
+            prop_assert!(text.truncate(cols).width() <= cols);
+        }
+
+        #[test]
+        fn truncation_keeps_the_text_or_a_grapheme_prefix_with_an_ellipsis(
+            text in styled(),
+            cols in cols(),
+        ) {
+            let original = text.plain_text();
+            let truncated = text.truncate(cols).plain_text();
+            if truncated != original && !(cols == 0 && truncated.is_empty()) {
+                let prefix = truncated.strip_suffix('…');
+                prop_assert!(prefix.is_some(), "{truncated:?} lacks an ellipsis");
+                let prefix = prefix.unwrap_or_default();
+                prop_assert!(original.starts_with(prefix));
+                prop_assert!(
+                    prefix.is_empty() || original.grapheme_indices(true).any(|(index, _)| index == prefix.len()),
+                    "{prefix:?} ends inside a grapheme of {original:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn truncation_bounds_the_line_bytes(text in styled(), cols in cols()) {
+            prop_assert!(text.truncate(cols).plain_text().len() <= MAX_LINE_TEXT_BYTES);
+        }
+
+        #[test]
+        fn sanitizing_is_idempotent_and_removes_controls(text in hostile_text(64)) {
+            let sanitized = sanitize(&text);
+            prop_assert_eq!(sanitize(&sanitized), sanitized.as_str());
+            prop_assert!(!sanitized.chars().any(|character| character.is_control() || is_bidi_control(character)));
+        }
+
+        #[test]
+        fn serialization_displays_the_plain_text_and_hides_escapes_in_style_sequences(
+            text in styled(),
+        ) {
+            let serialized = text.to_zsh(ColorMap::default());
+            let plain = text.plain_text();
+            prop_assert_eq!(displayed_prompt(&serialized), Some(plain.clone()), "{:?}", serialized);
+            prop_assert!(!plain.contains('\x1b'));
+        }
+    }
+}

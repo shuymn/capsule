@@ -433,3 +433,263 @@ fn quoted_backslashes_on_both_lines_fit_the_response_byte_limit()
     assert!(frame.len() <= capsule_protocol::session::MAX_RESPONSE + 1);
     Ok(())
 }
+
+mod properties {
+    use proptest::prelude::*;
+    use unicode_width::UnicodeWidthStr as _;
+
+    use super::*;
+    use crate::{
+        acquire::AcquireError,
+        plan::{Arbitration, ModuleAppearance, ModuleWhen, Template, ValuePlan},
+        test_utils::{bulky_text, displayed_prompt, hostile_text},
+    };
+
+    fn format(values: usize, depth: u32) -> BoxedStrategy<Vec<FormatPart>> {
+        let leaf = if values == 0 {
+            hostile_text(6).prop_map(FormatPart::Literal).boxed()
+        } else {
+            prop_oneof![
+                hostile_text(6).prop_map(FormatPart::Literal),
+                (0..values).prop_map(FormatPart::Value),
+            ]
+            .boxed()
+        };
+        let part = leaf.prop_recursive(depth, 12, 4, |inner| {
+            prop::collection::vec(inner, 0..4).prop_map(FormatPart::Optional)
+        });
+        prop::collection::vec(part, 0..5).boxed()
+    }
+
+    fn module() -> impl Strategy<Value = ModulePlan> {
+        (0..3usize)
+            .prop_flat_map(|values| {
+                (
+                    Just(values),
+                    format(values, 3),
+                    prop::option::of((prop::sample::select(vec!["a", "b"]), 0..3u32)),
+                    prop::bool::ANY,
+                    prop::option::of(hostile_text(4)),
+                    prop::option::of(hostile_text(2)),
+                )
+            })
+            .prop_map(
+                |(values, parts, arbitration, line2, connector, icon)| ModulePlan {
+                    name: String::new(),
+                    when: ModuleWhen::default(),
+                    values: (0..values)
+                        .map(|index| ValuePlan {
+                            name: format!("v{index}"),
+                            candidates: Vec::new(),
+                        })
+                        .collect(),
+                    format: Template(parts),
+                    appearance: ModuleAppearance {
+                        icon,
+                        style: Style::new().fg(Color::Green),
+                        connector,
+                    },
+                    arbitration: arbitration.map(|(group, priority)| Arbitration {
+                        group: group.to_owned(),
+                        priority,
+                    }),
+                    slot: if line2 {
+                        ModuleSlot::Line2
+                    } else {
+                        ModuleSlot::Line1
+                    },
+                },
+            )
+    }
+
+    /// A `Clone` stand-in for [`Observation`], whose failure is not `Clone`.
+    #[derive(Debug, Clone)]
+    enum Seen<T> {
+        Ready(T),
+        Pending,
+        Missing,
+        Failed,
+    }
+
+    impl<T> Seen<T> {
+        fn observe(self) -> Observation<T> {
+            match self {
+                Self::Ready(value) => Observation::Ready(value),
+                Self::Pending => Observation::Pending,
+                Self::Missing => Observation::Missing,
+                Self::Failed => Observation::Failed(AcquireError::TimedOut),
+            }
+        }
+    }
+
+    type Snapshot = Vec<(Seen<bool>, Vec<Seen<String>>)>;
+
+    fn observe(snapshot: Snapshot) -> Vec<ModuleObservation> {
+        snapshot
+            .into_iter()
+            .map(|(condition, values)| ModuleObservation {
+                condition: condition.observe(),
+                values: values.into_iter().map(Seen::observe).collect(),
+            })
+            .collect()
+    }
+
+    fn seen<T: std::fmt::Debug + Clone>(
+        ready: impl Strategy<Value = T>,
+    ) -> impl Strategy<Value = Seen<T>> {
+        prop_oneof![
+            4 => ready.prop_map(Seen::Ready),
+            1 => Just(Seen::Pending),
+            1 => Just(Seen::Missing),
+            1 => Just(Seen::Failed),
+        ]
+    }
+
+    /// A plan of up to six modules, each with one observation snapshot.
+    fn modules() -> impl Strategy<Value = (ConfigPlan, Snapshot)> {
+        prop::collection::vec(module(), 0..6)
+            .prop_flat_map(|modules| {
+                let observed = modules
+                    .iter()
+                    .map(|module| {
+                        (
+                            seen(prop::bool::weighted(0.9)),
+                            prop::collection::vec(seen(bulky_text()), module.values.len()),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                (Just(modules), observed)
+            })
+            .prop_map(|(modules, observed)| {
+                let plan = ConfigPlan {
+                    modules,
+                    ..ConfigPlan::default()
+                };
+                (plan, observed)
+            })
+    }
+
+    /// The format evaluation rule restated: a required value that is not ready
+    /// hides the format, an optional section that cannot be shown is omitted,
+    /// and text beyond the module bound is not shown.
+    fn reference_format(parts: &[FormatPart], values: &[Observation<String>]) -> Option<String> {
+        let mut text = String::new();
+        for part in parts {
+            match part {
+                FormatPart::Literal(literal) => text.push_str(literal),
+                FormatPart::Value(index) => match values.get(*index)? {
+                    Observation::Ready(value) => text.push_str(value),
+                    _ => return None,
+                },
+                FormatPart::Optional(parts) => {
+                    text.push_str(&reference_format(parts, values).unwrap_or_default());
+                }
+            }
+        }
+        (text.len() <= MAX_MODULE_TEXT_BYTES).then_some(text)
+    }
+
+    /// The arbitration rule restated: among displayable modules, each group
+    /// keeps its lowest priority, and the earliest declaration on a tie.
+    fn reference_visible(plan: &ConfigPlan, observed: &[ModuleObservation]) -> Vec<usize> {
+        let displayable = plan
+            .modules
+            .iter()
+            .zip(observed)
+            .enumerate()
+            .filter(|(_, (module, observed))| {
+                matches!(observed.condition, Observation::Ready(true))
+                    && reference_format(&module.format.0, &observed.values)
+                        .is_some_and(|text| !text.is_empty())
+            })
+            .map(|(index, (module, _))| (index, module))
+            .collect::<Vec<_>>();
+        displayable
+            .iter()
+            .filter(|(index, module)| {
+                module.arbitration.as_ref().is_none_or(|rule| {
+                    displayable
+                        .iter()
+                        .filter_map(|(other, module)| {
+                            let other_rule = module.arbitration.as_ref()?;
+                            (other_rule.group == rule.group)
+                                .then_some((other_rule.priority, *other))
+                        })
+                        .min()
+                        == Some((rule.priority, *index))
+                })
+            })
+            .map(|(index, _)| *index)
+            .collect()
+    }
+
+    fn view_input() -> impl Strategy<Value = (String, usize, String, Option<String>)> {
+        (
+            bulky_text(),
+            prop_oneof![0..120usize, Just(usize::from(u16::MAX))],
+            prop_oneof![
+                Just("main".to_owned()),
+                Just("vicmd".to_owned()),
+                hostile_text(8)
+            ],
+            prop::option::of(bulky_text()),
+        )
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        #[test]
+        fn rendered_lines_fit_the_columns_and_the_response_frame(
+            (plan, snapshot) in modules(),
+            (directory, cols, keymap, branch) in view_input(),
+            glyph in bulky_text(),
+        ) {
+            let observed = observe(snapshot);
+            let mut plan = plan;
+            plan.view.character.glyph = glyph;
+            let git = branch.map(|branch| GitStatus { branch: Some(branch), ..GitStatus::default() });
+            let output = render(&plan, &ViewInput {
+                directory: &directory,
+                git: git.as_ref(),
+                modules: &observed,
+                cols,
+                keymap: &keymap,
+                duration_ms: Some(u64::MAX),
+                time: Some((23, 59, 59)),
+                ..input()
+            });
+            for line in [&output.left1, &output.left2] {
+                let displayed = displayed_prompt(line);
+                prop_assert!(displayed.is_some(), "{line:?} has an unexpected escape");
+                prop_assert!(displayed.unwrap_or_default().width() <= cols, "{line:?} exceeds {cols}");
+                if cols == 0 {
+                    prop_assert!(line.is_empty());
+                }
+            }
+            let frame = capsule_protocol::session::response(u64::MAX, &output.left1, &output.left2, true);
+            prop_assert!(frame.is_ok(), "{frame:?}");
+        }
+
+        #[test]
+        fn format_evaluation_matches_the_reference_rule((plan, snapshot) in modules()) {
+            let observed = observe(snapshot);
+            for (module, observed) in plan.modules.iter().zip(&observed) {
+                prop_assert_eq!(
+                    evaluate_format(&module.format.0, &observed.values),
+                    reference_format(&module.format.0, &observed.values)
+                );
+            }
+        }
+
+        #[test]
+        fn arbitration_selects_the_lowest_priority_per_group((plan, snapshot) in modules()) {
+            let observed = observe(snapshot);
+            let visible = visible_modules(&plan, &observed)
+                .into_iter()
+                .filter_map(|(module, _)| plan.modules.iter().position(|candidate| std::ptr::eq(candidate, module)))
+                .collect::<Vec<_>>();
+            prop_assert_eq!(visible, reference_visible(&plan, &observed));
+        }
+    }
+}
