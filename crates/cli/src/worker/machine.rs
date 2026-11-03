@@ -14,7 +14,7 @@ use capsule_core::{
 };
 use capsule_protocol::session::Request;
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub(super) struct LoadedPlan {
     pub(super) config: ConfigPlan,
     // Compare the bounded source rather than compiled regexes. An unchanged
@@ -40,11 +40,11 @@ pub(super) enum Input {
     Request(Request),
     /// An acquisition event from a generation task.
     Event(Event),
-    /// The generation task finished; `failed` when it panicked or was aborted.
+    /// The task of the last [`Effect::Spawn`] finished; `failed` when it
+    /// panicked or was aborted. The shell sends exactly one per spawn.
     Joined { failed: bool },
 }
 
-#[derive(Debug, PartialEq, Eq)]
 pub(super) enum Effect {
     /// Cancel the running generation task, if any.
     Cancel,
@@ -56,15 +56,6 @@ pub(super) enum Effect {
     /// renders.
     Render,
 }
-
-impl PartialEq for LoadedPlan {
-    /// Plans are compared by identity, as reload acceptance is.
-    fn eq(&self, other: &Self) -> bool {
-        std::ptr::eq(self, other)
-    }
-}
-
-impl Eq for LoadedPlan {}
 
 struct Display {
     modules: Vec<ModuleObservation>,
@@ -82,6 +73,8 @@ struct State {
     // observations back into acquisition or turn new Pending states into Ready.
     retained: Option<Display>,
     complete: bool,
+    /// Whether this request's generation task has been spawned.
+    started: bool,
 }
 
 impl State {
@@ -98,14 +91,20 @@ impl State {
                     previous.retained
                 }
             });
+        let local = ContextInfo {
+            directory: local_directory(&request.snapshot),
+            read_only: false,
+            git: None,
+        };
         Self {
-            context: local_context(&request),
-            local: local_context(&request),
+            context: local.clone(),
+            local,
             request,
             plan,
             modules: Vec::new(),
             retained,
             complete: false,
+            started: false,
         }
     }
 
@@ -123,13 +122,57 @@ impl State {
         self.retained = None;
         self.complete = true;
     }
-}
 
-fn local_context(request: &Request) -> ContextInfo {
-    ContextInfo {
-        directory: local_directory(&request.snapshot),
-        read_only: false,
-        git: None,
+    /// Size observations for `plan`, discarding retained display when the
+    /// plan changed.
+    fn load(&mut self, plan: Arc<LoadedPlan>) {
+        if !Arc::ptr_eq(&self.plan, &plan) {
+            self.retained = None;
+        }
+        self.modules = plan
+            .config
+            .modules
+            .iter()
+            .map(ModuleObservation::pending)
+            .collect();
+        self.plan = plan;
+    }
+
+    fn observe(&mut self, change: Change) {
+        match change {
+            // The FIFO event follows all value events; joining the producer can race them.
+            Change::Complete => self.finish(),
+            Change::Plan(plan, _) => self.load(plan),
+            Change::Context(Ok(context)) => self.context = context,
+            Change::Context(Err(error)) => tracing::debug!(%error, "context unavailable"),
+            // A generation sends indexed events only after its Plan sized
+            // `modules`; ignore any other index rather than trust that order.
+            Change::Condition(index, value) => {
+                if let Some(module) = self.modules.get_mut(index) {
+                    module.condition = match value {
+                        Ok(value) => Observation::Ready(value),
+                        Err(error) => Observation::Failed(error),
+                    };
+                } else {
+                    tracing::debug!(index, "condition outside the plan ignored");
+                }
+            }
+            Change::Value(module, value, result) => {
+                if let Some(slot) = self
+                    .modules
+                    .get_mut(module)
+                    .and_then(|observed| observed.values.get_mut(value))
+                {
+                    *slot = match result {
+                        Ok(Some(value)) => Observation::Ready(value),
+                        Ok(None) => Observation::Missing,
+                        Err(error) => Observation::Failed(error),
+                    };
+                } else {
+                    tracing::debug!(module, value, "value outside the plan ignored");
+                }
+            }
+        }
     }
 }
 
@@ -142,29 +185,14 @@ pub(super) struct Shown<'a> {
     pub(super) complete: bool,
 }
 
+#[derive(Default)]
 pub(super) struct Machine {
     state: Option<State>,
-    /// The newest request whose generation has not started.
-    pending: Option<Arc<Request>>,
     /// The worker's current plan: the last one a generation delivered.
     plan: Arc<LoadedPlan>,
     last_diagnostic: Option<String>,
-    /// Whether a generation task runs; at most one does.
-    running: bool,
-    active_generation: u64,
-}
-
-impl Default for Machine {
-    fn default() -> Self {
-        Self {
-            state: None,
-            pending: None,
-            plan: Arc::new(LoadedPlan::default()),
-            last_diagnostic: None,
-            running: false,
-            active_generation: 0,
-        }
-    }
+    /// The generation whose task runs; at most one does.
+    running: Option<u64>,
 }
 
 impl Machine {
@@ -173,39 +201,41 @@ impl Machine {
         let mut render = true;
         match input {
             Input::Request(request) => render = self.accept(request, &mut effects),
-            Input::Event(event) => {
+            Input::Event(Event { generation, change }) => {
                 // A settled generation is final. After a failed task settles it,
                 // events it queued before failing can still arrive.
                 if let Some(current) = self.state.as_mut()
-                    && event.generation == current.request.generation
+                    && generation == current.request.generation
                     && !current.complete
                 {
-                    apply_change(
-                        current,
-                        event.change,
-                        &mut self.plan,
-                        &mut self.last_diagnostic,
-                        &mut effects,
-                    );
+                    if let Change::Plan(plan, diagnostic) = &change {
+                        if *diagnostic != self.last_diagnostic {
+                            effects.extend(diagnostic.clone().map(Effect::Diagnostic));
+                            self.last_diagnostic.clone_from(diagnostic);
+                        }
+                        self.plan = plan.clone();
+                    }
+                    current.observe(change);
                 }
             }
             Input::Joined { failed } => {
-                self.running = false;
+                let finished = self.running.take();
                 if failed
                     && let Some(current) = self.state.as_mut()
-                    && current.request.generation == self.active_generation
+                    && finished == Some(current.request.generation)
                 {
                     current.finish();
                 }
             }
         }
-        // Start the newest pending request once the previous task has ended.
-        if !self.running
-            && let Some(request) = self.pending.take()
+        // Start the newest request once the previous task has ended.
+        if self.running.is_none()
+            && let Some(current) = self.state.as_mut()
+            && !current.started
         {
-            self.running = true;
-            self.active_generation = request.generation;
-            effects.push(Effect::Spawn(request, self.plan.clone()));
+            current.started = true;
+            self.running = Some(current.request.generation);
+            effects.push(Effect::Spawn(current.request.clone(), self.plan.clone()));
         }
         if render && self.state.is_some() {
             effects.push(Effect::Render);
@@ -228,9 +258,11 @@ impl Machine {
             }
             _ => {
                 effects.push(Effect::Cancel);
-                let request = Arc::new(request);
-                self.pending = Some(request.clone());
-                self.state = Some(State::new(request, self.plan.clone(), self.state.take()));
+                self.state = Some(State::new(
+                    Arc::new(request),
+                    self.plan.clone(),
+                    self.state.take(),
+                ));
             }
         }
         true
@@ -254,63 +286,6 @@ impl Machine {
             modules,
             complete: state.complete,
         })
-    }
-}
-
-fn apply_change(
-    state: &mut State,
-    change: Change,
-    plan: &mut Arc<LoadedPlan>,
-    last_diagnostic: &mut Option<String>,
-    effects: &mut Vec<Effect>,
-) {
-    match change {
-        // The FIFO event follows all value events; joining the producer can race them.
-        Change::Complete => state.finish(),
-        Change::Plan(next, diagnostic) => {
-            if diagnostic != *last_diagnostic {
-                if let Some(message) = &diagnostic {
-                    effects.push(Effect::Diagnostic(message.clone()));
-                }
-                *last_diagnostic = diagnostic;
-            }
-            if !Arc::ptr_eq(&state.plan, &next) {
-                state.retained = None;
-            }
-            state.modules = next
-                .config
-                .modules
-                .iter()
-                .map(ModuleObservation::pending)
-                .collect();
-            state.plan = next.clone();
-            *plan = next;
-        }
-        Change::Context(Ok(context)) => state.context = context,
-        Change::Context(Err(error)) => tracing::debug!(%error, "context unavailable"),
-        // A generation sends indexed events only after its Plan sized
-        // `state.modules`; ignore any other index rather than trust that order.
-        Change::Condition(index, value) => {
-            if let Some(module) = state.modules.get_mut(index) {
-                module.condition = match value {
-                    Ok(value) => Observation::Ready(value),
-                    Err(error) => Observation::Failed(error),
-                };
-            }
-        }
-        Change::Value(module, value, result) => {
-            if let Some(slot) = state
-                .modules
-                .get_mut(module)
-                .and_then(|module| module.values.get_mut(value))
-            {
-                *slot = match result {
-                    Ok(Some(value)) => Observation::Ready(value),
-                    Ok(None) => Observation::Missing,
-                    Err(error) => Observation::Failed(error),
-                };
-            }
-        }
     }
 }
 

@@ -9,15 +9,31 @@ use proptest::prelude::*;
 
 use super::*;
 
-/// One input, with generations drawn from a small range so that current,
-/// stale, and future generations all occur.
+/// Request inputs that only re-render: columns, keymap, status, and duration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Local {
+    cols: u16,
+    vicmd: bool,
+    status: i32,
+    duration: Option<u64>,
+}
+
+/// A value acquisition result.
+#[derive(Debug, Clone, Copy)]
+enum Outcome {
+    Ready(u8),
+    Missing,
+    Failed,
+}
+
+/// One input. Generations are generated relative to the current one (see
+/// [`Op::resolve`]) so that current, stale, and future ones all occur often.
 #[derive(Debug, Clone)]
 enum Op {
     Request {
         generation: u64,
         cwd: u8,
-        cols: u16,
-        keymap: bool,
+        local: Local,
     },
     Plan {
         generation: u64,
@@ -47,29 +63,91 @@ enum Op {
     },
 }
 
-/// A value acquisition result.
-#[derive(Debug, Clone, Copy)]
-enum Outcome {
-    Ready(u8),
-    Missing,
-    Failed,
+impl Op {
+    /// Turn the generated relative generation into an absolute one: `0` is the
+    /// current generation, `1` the one before it, and `2` the one after it.
+    fn resolve(&self, current: Option<u64>) -> Self {
+        let current = current.unwrap_or(0);
+        let absolute = |relative: u64| match relative {
+            0 => current,
+            1 => current.saturating_sub(1),
+            _ => current + 1,
+        };
+        let mut op = self.clone();
+        match &mut op {
+            Self::Request { generation, .. }
+            | Self::Plan { generation, .. }
+            | Self::Context { generation, .. }
+            | Self::Condition { generation, .. }
+            | Self::Value { generation, .. }
+            | Self::Complete { generation } => *generation = absolute(*generation),
+            Self::Joined { .. } => {}
+        }
+        op
+    }
+
+    /// The generation an acquisition event belongs to.
+    const fn event_generation(&self) -> Option<u64> {
+        match self {
+            Self::Plan { generation, .. }
+            | Self::Context { generation, .. }
+            | Self::Condition { generation, .. }
+            | Self::Value { generation, .. }
+            | Self::Complete { generation } => Some(*generation),
+            Self::Request { .. } | Self::Joined { .. } => None,
+        }
+    }
 }
 
 fn op() -> impl Strategy<Value = Op> {
-    let generation = 1..5u64;
+    // Relative generations; see `Op::resolve`. Events mostly target the
+    // current generation and requests mostly start the next one.
+    let generation = prop_oneof![6 => Just(0u64), 1 => Just(1), 1 => Just(2)];
+    let request_generation = prop_oneof![2 => Just(0u64), 1 => Just(1), 3 => Just(2)];
+    let local = (0..3u16, any::<bool>(), 0..2i32, prop::option::of(0..2u64)).prop_map(
+        |(cols, vicmd, status, duration)| Local {
+            cols,
+            vicmd,
+            status,
+            duration,
+        },
+    );
+    let outcome = prop_oneof![
+        (0..2u8).prop_map(Outcome::Ready),
+        Just(Outcome::Missing),
+        Just(Outcome::Failed),
+    ];
     prop_oneof![
-        3 => (generation.clone(), 0..2u8, 0..3u16, any::<bool>())
-            .prop_map(|(generation, cwd, cols, keymap)| Op::Request { generation, cwd, cols, keymap }),
+        3 => (request_generation, 0..2u8, local)
+            .prop_map(|(generation, cwd, local)| Op::Request { generation, cwd, local }),
         2 => (generation.clone(), 0..3usize, prop::option::of(0..2u8))
             .prop_map(|(generation, plan, diagnostic)| Op::Plan { generation, plan, diagnostic }),
         1 => (generation.clone(), any::<bool>()).prop_map(|(generation, ok)| Op::Context { generation, ok }),
         3 => (generation.clone(), 0..3usize, prop::option::of(any::<bool>()))
             .prop_map(|(generation, module, result)| Op::Condition { generation, module, result }),
-        3 => (generation.clone(), 0..3usize, 0..3usize, prop_oneof![(0..2u8).prop_map(Outcome::Ready), Just(Outcome::Missing), Just(Outcome::Failed)])
+        3 => (generation.clone(), 0..3usize, 0..3usize, outcome)
             .prop_map(|(generation, module, value, result)| Op::Value { generation, module, value, result }),
         2 => generation.prop_map(|generation| Op::Complete { generation }),
         2 => any::<bool>().prop_map(|failed| Op::Joined { failed }),
     ]
+}
+
+// Encodings shared by the fixture and the model.
+
+fn cwd_path(cwd: u8) -> PathBuf {
+    PathBuf::from(format!("/cwd{cwd}"))
+}
+
+fn keymap_name(vicmd: bool) -> &'static str {
+    if vicmd { "vicmd" } else { "main" }
+}
+
+fn value_text(code: u8) -> String {
+    format!("v{code}")
+}
+
+fn diagnostic_text(code: u8) -> String {
+    format!("invalid {code}")
 }
 
 /// A comparable summary of an observation.
@@ -97,8 +175,7 @@ type Modules = Vec<(Seen, Vec<Seen>)>;
 struct View {
     generation: u64,
     cwd: PathBuf,
-    cols: u16,
-    keymap: String,
+    local: Local,
     plan: usize,
     directory: String,
     acquired: bool,
@@ -159,23 +236,19 @@ impl Fixture {
 
     fn input(&self, op: &Op) -> Input {
         let event = |generation, change| Input::Event(Event { generation, change });
-        match op.clone() {
+        match *op {
             Op::Request {
                 generation,
                 cwd,
-                cols,
-                keymap,
-            } => Input::Request(request(generation, cwd, cols, keymap)),
+                local,
+            } => Input::Request(request(generation, cwd, local)),
             Op::Plan {
                 generation,
                 plan,
                 diagnostic,
             } => event(
                 generation,
-                Change::Plan(
-                    self.plans[plan].clone(),
-                    diagnostic.map(|code| format!("invalid {code}")),
-                ),
+                Change::Plan(self.plans[plan].clone(), diagnostic.map(diagnostic_text)),
             ),
             Op::Context { generation, ok } => event(
                 generation,
@@ -204,7 +277,7 @@ impl Fixture {
                     module,
                     value,
                     match result {
-                        Outcome::Ready(code) => Ok(Some(format!("v{code}"))),
+                        Outcome::Ready(code) => Ok(Some(value_text(code))),
                         Outcome::Missing => Ok(None),
                         Outcome::Failed => Err(AcquireError::TimedOut),
                     },
@@ -229,8 +302,12 @@ impl Fixture {
         Some(View {
             generation: shown.request.generation,
             cwd: shown.request.snapshot.cwd.clone(),
-            cols: shown.request.cols,
-            keymap: shown.request.keymap.clone(),
+            local: Local {
+                cols: shown.request.cols,
+                vicmd: shown.request.keymap == keymap_name(true),
+                status: shown.request.last_exit_code,
+                duration: shown.request.duration_ms,
+            },
             plan: self.index(shown.plan),
             directory: shown.context.directory.clone(),
             acquired: shown.context.read_only,
@@ -249,20 +326,20 @@ impl Fixture {
     }
 }
 
-fn request(generation: u64, cwd: u8, cols: u16, keymap: bool) -> Request {
+fn request(generation: u64, cwd: u8, local: Local) -> Request {
     Request {
         generation,
         snapshot: Snapshot {
-            cwd: PathBuf::from(format!("/cwd{cwd}")),
+            cwd: cwd_path(cwd),
             env: vec![
                 (OsString::from("B"), OsString::new()),
                 (OsString::from("A"), OsString::new()),
             ],
         },
-        cols,
-        last_exit_code: 0,
-        duration_ms: None,
-        keymap: if keymap { "vicmd" } else { "main" }.to_owned(),
+        cols: local.cols,
+        last_exit_code: local.status,
+        duration_ms: local.duration,
+        keymap: keymap_name(local.vicmd).to_owned(),
     }
 }
 
@@ -283,16 +360,24 @@ struct Settled {
     acquired: bool,
 }
 
+fn local_only(cwd: u8) -> Settled {
+    Settled {
+        modules: Vec::new(),
+        directory: cwd_path(cwd).display().to_string(),
+        acquired: false,
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Current {
     generation: u64,
     cwd: u8,
-    cols: u16,
-    keymap: bool,
+    local: Local,
     plan: usize,
     observed: Settled,
     complete: bool,
     retained: Option<Settled>,
+    started: bool,
 }
 
 /// The contract restated, independently of the implementation.
@@ -301,18 +386,9 @@ struct Model {
     current: Option<Current>,
     /// The worker's plan: the last one a generation of this worker delivered.
     plan: usize,
-    pending: Option<(u64, u8, u16, bool)>,
-    running: bool,
-    active: u64,
+    /// The generation whose task runs.
+    running: Option<u64>,
     last_diagnostic: Option<String>,
-}
-
-fn local(cwd: u8) -> Settled {
-    Settled {
-        modules: Vec::new(),
-        directory: format!("/cwd{cwd}"),
-        acquired: false,
-    }
 }
 
 impl Model {
@@ -320,6 +396,10 @@ impl Model {
         let mut did = Vec::new();
         let mut render = true;
         let current_generation = self.current.as_ref().map(|current| current.generation);
+        let settled = self
+            .current
+            .as_ref()
+            .is_some_and(|current| current.complete);
         match *op {
             // WHEN a request is older than the current one, it SHALL be ignored.
             Op::Request { generation, .. }
@@ -329,14 +409,10 @@ impl Model {
             }
             // WHEN a request repeats the current generation, only local inputs SHALL change.
             Op::Request {
-                generation,
-                cols,
-                keymap,
-                ..
+                generation, local, ..
             } if current_generation == Some(generation) => {
                 if let Some(current) = self.current.as_mut() {
-                    current.cols = cols;
-                    current.keymap = keymap;
+                    current.local = local;
                 }
             }
             // WHEN a newer request arrives, the running generation SHALL be cancelled;
@@ -344,8 +420,7 @@ impl Model {
             Op::Request {
                 generation,
                 cwd,
-                cols,
-                keymap,
+                local,
             } => {
                 did.push(Did::Cancel);
                 let retained = self
@@ -362,31 +437,23 @@ impl Model {
                 self.current = Some(Current {
                     generation,
                     cwd,
-                    cols,
-                    keymap,
+                    local,
                     plan: self.plan,
-                    observed: local(cwd),
+                    observed: local_only(cwd),
                     complete: false,
                     retained,
+                    started: false,
                 });
-                self.pending = Some((generation, cwd, cols, keymap));
             }
             // WHEN an event belongs to another generation, or to one that has
             // settled, it SHALL change nothing.
-            Op::Plan { generation, .. }
-            | Op::Context { generation, .. }
-            | Op::Condition { generation, .. }
-            | Op::Value { generation, .. }
-            | Op::Complete { generation }
-                if current_generation != Some(generation)
-                    || self
-                        .current
-                        .as_ref()
-                        .is_some_and(|current| current.complete) => {}
+            _ if op
+                .event_generation()
+                .is_some_and(|generation| current_generation != Some(generation) || settled) => {}
             Op::Plan {
                 plan, diagnostic, ..
             } => {
-                let diagnostic = diagnostic.map(|code| format!("invalid {code}"));
+                let diagnostic = diagnostic.map(diagnostic_text);
                 if diagnostic != self.last_diagnostic {
                     did.extend(diagnostic.clone().map(Did::Diagnostic));
                     self.last_diagnostic = diagnostic;
@@ -433,7 +500,7 @@ impl Model {
                     .and_then(|module| module.1.get_mut(value))
                 {
                     *slot = match result {
-                        Outcome::Ready(code) => Seen::Ready(format!("v{code}")),
+                        Outcome::Ready(code) => Seen::Ready(value_text(code)),
                         Outcome::Missing => Seen::Missing,
                         Outcome::Failed => Seen::Failed,
                     };
@@ -441,19 +508,19 @@ impl Model {
             }
             Op::Complete { .. } => self.settle(),
             Op::Joined { failed } => {
-                self.running = false;
-                if failed && current_generation == Some(self.active) {
+                if self.running.take() == current_generation && failed {
                     self.settle();
                 }
             }
         }
-        // At most one generation SHALL run; the newest pending request starts next.
-        if !self.running
-            && let Some((generation, ..)) = self.pending.take()
+        // At most one generation SHALL run; the newest request starts next.
+        if self.running.is_none()
+            && let Some(current) = self.current.as_mut()
+            && !current.started
         {
-            self.running = true;
-            self.active = generation;
-            did.push(Did::Spawn(generation, self.plan));
+            current.started = true;
+            self.running = Some(current.generation);
+            did.push(Did::Spawn(current.generation, self.plan));
         }
         if render && self.current.is_some() {
             did.push(Did::Render);
@@ -486,13 +553,12 @@ impl Model {
             current
                 .retained
                 .clone()
-                .unwrap_or_else(|| local(current.cwd))
+                .unwrap_or_else(|| local_only(current.cwd))
         };
         Some(View {
             generation: current.generation,
-            cwd: PathBuf::from(format!("/cwd{}", current.cwd)),
-            cols: current.cols,
-            keymap: if current.keymap { "vicmd" } else { "main" }.to_owned(),
+            cwd: cwd_path(current.cwd),
+            local: current.local,
             plan: current.plan,
             directory: shown.directory,
             acquired: shown.acquired,
@@ -502,9 +568,91 @@ impl Model {
     }
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(512))]
+/// Contract rules checked directly, so a failure names the broken rule even
+/// when the model is wrong in the same way as the machine.
+fn check_invariants(
+    op: &Op,
+    before: Option<&View>,
+    after: Option<&View>,
+    did: &[Did],
+) -> Result<(), TestCaseError> {
+    let has_pending = |view: &View| {
+        view.modules.iter().any(|(condition, values)| {
+            *condition == Seen::Pending || values.contains(&Seen::Pending)
+        })
+    };
+    prop_assert!(
+        did.iter()
+            .filter(|did| matches!(did, Did::Spawn(..)))
+            .count()
+            <= 1,
+        "more than one generation started"
+    );
+    if let Some(after) = after {
+        prop_assert!(
+            !has_pending(after),
+            "a response shows Pending: complete observations are settled, and incomplete ones show only retained or local data"
+        );
+    }
+    match (op, before) {
+        (op, Some(before))
+            if op
+                .event_generation()
+                .is_some_and(|generation| generation != before.generation || before.complete) =>
+        {
+            prop_assert_eq!(
+                after,
+                Some(before),
+                "an event for another or a settled generation changed the display"
+            );
+        }
+        (
+            Op::Request {
+                generation, local, ..
+            },
+            Some(before),
+        ) if *generation == before.generation => {
+            prop_assert!(
+                !did.iter()
+                    .any(|did| matches!(did, Did::Spawn(..) | Did::Cancel)),
+                "a same-generation request started or cancelled acquisition"
+            );
+            prop_assert_eq!(
+                after,
+                Some(&View {
+                    local: *local,
+                    ..before.clone()
+                }),
+                "a same-generation request changed more than local inputs"
+            );
+        }
+        (
+            Op::Request {
+                generation, cwd, ..
+            },
+            Some(before),
+        ) if *generation > before.generation && cwd_path(*cwd) != before.cwd => {
+            prop_assert!(
+                after.is_some_and(|after| after.modules.is_empty() && !after.acquired),
+                "a changed snapshot kept retained display"
+            );
+        }
+        (Op::Plan { generation, .. }, Some(before)) if *generation == before.generation => {
+            if let Some(after) = after
+                && after.plan != before.plan
+            {
+                prop_assert!(
+                    after.modules.is_empty() && !after.acquired,
+                    "an accepted plan change kept retained display"
+                );
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
 
+proptest! {
     #[test]
     fn machine_follows_the_reference_model(ops in prop::collection::vec(op(), 0..40)) {
         let mut machine = Machine::default();
@@ -512,70 +660,55 @@ proptest! {
         let mut model = Model::default();
         for op in &ops {
             let before = fixture.view(&machine);
+            let op = &op.resolve(before.as_ref().map(|view| view.generation));
             let did = machine.step(fixture.input(op)).iter().map(|effect| fixture.did(effect)).collect::<Vec<_>>();
             let after = fixture.view(&machine);
+            check_invariants(op, before.as_ref(), after.as_ref(), &did)?;
             prop_assert_eq!(&did, &model.step(op, &fixture), "effects after {:?}", op);
             prop_assert_eq!(&after, &model.view(), "display after {:?}", op);
-
-            // Named invariants, restated so a failure names the broken rule.
-            let current = before.as_ref().map(|view| view.generation);
-            match op {
-                Op::Plan { generation, .. }
-                | Op::Context { generation, .. }
-                | Op::Condition { generation, .. }
-                | Op::Value { generation, .. }
-                | Op::Complete { generation }
-                    if current != Some(*generation) =>
-                {
-                    prop_assert_eq!(&after, &before, "a non-current event changed the display");
-                }
-                Op::Request { generation, .. } if current == Some(*generation) => {
-                    prop_assert!(
-                        !did.iter().any(|did| matches!(did, Did::Spawn(..) | Did::Cancel)),
-                        "a same-generation request started or cancelled acquisition"
-                    );
-                }
-                _ => {}
-            }
-            if let Some(view) = &after
-                && view.complete
-            {
-                prop_assert!(
-                    view.modules.iter().all(|(condition, values)| *condition != Seen::Pending && !values.contains(&Seen::Pending)),
-                    "a complete generation shows Pending"
-                );
-            }
-            prop_assert!(did.iter().filter(|did| matches!(did, Did::Spawn(..))).count() <= 1);
         }
     }
 }
 
 #[test]
 fn environment_order_does_not_change_the_snapshot() {
+    let local = Local {
+        cols: 80,
+        vicmd: false,
+        status: 0,
+        duration: None,
+    };
     let mut machine = Machine::default();
-    let first = machine.step(Input::Request(request(1, 0, 80, false)));
-    let mut reordered = request(2, 0, 80, false);
-    reordered.snapshot.env.reverse();
-    let second = machine.step(Input::Request(reordered));
     let spawned = |effects: &[Effect]| {
         effects.iter().find_map(|effect| match effect {
             Effect::Spawn(request, _) => Some(request.snapshot.clone()),
             _ => None,
         })
     };
-    assert!(spawned(&first).is_some());
+    let first = spawned(&machine.step(Input::Request(request(1, 0, local))));
+    let mut reordered = request(2, 0, local);
+    reordered.snapshot.env.reverse();
     // The second request waits for the first task, but its snapshot is sorted.
-    assert!(spawned(&second).is_none());
-    let joined = machine.step(Input::Joined { failed: false });
-    assert_eq!(spawned(&joined), spawned(&first));
+    assert!(spawned(&machine.step(Input::Request(reordered))).is_none());
+    assert!(first.is_some());
+    assert_eq!(
+        spawned(&machine.step(Input::Joined { failed: false })),
+        first
+    );
 }
 
 #[test]
 fn events_queued_before_a_failed_task_cannot_change_its_settled_display()
 -> Result<(), capsule_core::plan::ConfigError> {
+    let local = Local {
+        cols: 80,
+        vicmd: false,
+        status: 0,
+        duration: None,
+    };
     let mut machine = Machine::default();
     let fixture = Fixture::new(machine.plan.clone())?;
-    machine.step(Input::Request(request(1, 0, 80, false)));
+    machine.step(Input::Request(request(1, 0, local)));
     machine.step(Input::Joined { failed: true });
     let settled = fixture.view(&machine);
     assert!(settled.as_ref().is_some_and(|view| view.complete));

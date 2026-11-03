@@ -101,7 +101,7 @@ async fn serve() -> anyhow::Result<()> {
                     Input::Request(Request::decode(&frame)?)
                 }
                 event = events_rx.recv() => {
-                    // The machine holds a sender, so the channel never closes.
+                    // `serve` holds a sender, so the channel never closes.
                     let Some(event) = event else { continue; };
                     Input::Event(event)
                 }
