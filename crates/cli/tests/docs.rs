@@ -199,6 +199,7 @@ fn source_names() -> Result<(BTreeSet<String>, BTreeSet<String>), Box<dyn std::e
         all_words.extend(words(&text).map(str::to_owned));
         if path.extension().is_some_and(|extension| extension == "rs") {
             let crate_name = crate_name(&path)?;
+            all_words.extend(crate_name.clone());
             for function in impl_functions(&text) {
                 if let Some(crate_name) = &crate_name {
                     functions.insert(format!("{crate_name}::{function}"));
@@ -252,163 +253,84 @@ fn cited_identifier(span: &str) -> Option<&str> {
     resolvable.then_some(span)
 }
 
-/// Whether `text` holds a `delimiter` run that can open emphasis followed by
-/// one that can close it. An underscore cannot open or close inside a word,
-/// and a backslash-escaped delimiter is literal.
-fn has_emphasis(text: &str, delimiter: char) -> bool {
-    let mut open = false;
-    for (index, character) in text.char_indices() {
-        if character != delimiter {
-            continue;
-        }
-        let before = text[..index].chars().next_back();
-        let after = text[index + delimiter.len_utf8()..].chars().next();
-        if before == Some('\\') {
-            continue;
-        }
-        let word = |neighbor: Option<char>| {
-            delimiter == '_' && neighbor.is_some_and(char::is_alphanumeric)
-        };
-        if open && before.is_some_and(|before| !before.is_whitespace()) && !word(after) {
-            return true;
-        }
-        open |= after.is_some_and(|after| !after.is_whitespace()) && !word(before);
-    }
-    false
-}
-
-/// The text of an ATX heading line, without its optional closing `#`
-/// sequence. Headings with markup that GitHub renders before slugging (code,
-/// links, emphasis, HTML) are rejected, so a heading this check would slug
-/// differently fails loudly.
-fn atx_heading(line: &str) -> Result<Option<&str>, String> {
-    let indented = line.trim_start_matches(' ');
-    let text = indented.trim_start_matches('#');
-    let level = indented.len() - text.len();
-    if line.len() - indented.len() > 3
-        || !(1..=6).contains(&level)
-        || !(text.is_empty() || text.starts_with([' ', '\t']))
-    {
-        return Ok(None);
-    }
-    let text = text.trim();
-    let unclosed = text.trim_end_matches('#');
-    let text = if unclosed.is_empty() || unclosed.ends_with([' ', '\t']) {
-        unclosed.trim_end()
-    } else {
-        text
-    };
-    if text.contains(['`', '[', '<']) || has_emphasis(text, '*') || has_emphasis(text, '_') {
-        return Err(format!("unsupported markup in heading: {line}"));
-    }
-    Ok(Some(text))
-}
-
-/// Whether `line` opens a list item: `-`, `*`, or `+`, or one to nine digits
-/// and `.` or `)`, followed by a space or the end of the line.
-fn is_list_item(line: &str) -> bool {
-    let digits = line.trim_start_matches(|character: char| character.is_ascii_digit());
-    let rest = match line.len() - digits.len() {
-        0 => line.strip_prefix(['-', '*', '+']),
-        1..=9 => digits.strip_prefix(['.', ')']),
-        _ => None,
-    };
-    rest.is_some_and(|rest| rest.is_empty() || rest.starts_with([' ', '\t']))
-}
-
-/// Whether `line` underlines the previous prose line as a Setext heading,
-/// rather than following a blank line, a heading, a table, a quote, or a list
-/// item.
-fn is_setext_underline(line: &str, previous: Option<&str>) -> bool {
-    let underline = line.trim();
-    // A lone `-` is an empty list item, not an underline.
-    let marker = underline.chars().all(|character| character == '=')
-        || (underline.len() > 1 && underline.chars().all(|character| character == '-'));
-    let paragraph = previous.is_some_and(|previous| {
-        let previous = previous.trim_start();
-        !previous.is_empty()
-            && !matches!(atx_heading(previous), Ok(Some(_)))
-            && !previous.starts_with(['|', '>'])
-            && !is_list_item(previous)
-    });
-    !underline.is_empty() && line.len() - line.trim_start().len() <= 3 && marker && paragraph
-}
-
 /// GitHub heading anchors of a Markdown document, including duplicate
-/// suffixes. Leading YAML front matter is skipped, and Setext headings are
-/// rejected because no document uses them.
+/// suffixes: each heading's rendered text, lowercased, without punctuation,
+/// and with whitespace as `-`. Headings with HTML or images are rejected,
+/// because GitHub sanitizes them before slugging.
 fn anchors(document: &str) -> Result<BTreeSet<String>, String> {
+    use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+
     let mut seen = BTreeMap::<String, usize>::new();
     let mut anchors = BTreeSet::new();
-    let lines = prose_lines(document);
-    let front_matter = match lines.as_slice() {
-        [(1, "---"), rest @ ..] => rest
-            .iter()
-            .position(|(_, line)| *line == "---")
-            .map_or(0, |end| end + 2),
-        _ => 0,
-    };
-    // The previous source line, unless a fenced block separates them.
-    let mut previous = None::<(usize, &str)>;
-    for &(number, line) in &lines[front_matter..] {
-        let adjacent = previous
-            .filter(|(previous, _)| previous + 1 == number)
-            .map(|(_, line)| line);
-        if is_setext_underline(line, adjacent) {
-            return Err(format!("line {number}: Setext heading; use `#` instead"));
+    let mut heading = None::<String>;
+    let parser = Parser::new_ext(document, Options::ENABLE_YAML_STYLE_METADATA_BLOCKS);
+    for event in parser {
+        match (&mut heading, event) {
+            (None, Event::Start(Tag::Heading { .. })) => heading = Some(String::new()),
+            (Some(text), Event::Text(part) | Event::Code(part)) => text.push_str(&part),
+            (Some(text), Event::Html(markup) | Event::InlineHtml(markup)) => {
+                return Err(format!("unsupported HTML {markup:?} in heading: {text}"));
+            }
+            (Some(text), Event::Start(Tag::Image { .. })) => {
+                return Err(format!("unsupported image in heading: {text}"));
+            }
+            (Some(text), Event::End(TagEnd::Heading(_))) => {
+                let slug = text
+                    .to_lowercase()
+                    .chars()
+                    .filter(|character| {
+                        character.is_alphanumeric()
+                            || character.is_whitespace()
+                            || matches!(character, '-' | '_')
+                    })
+                    .map(|character| {
+                        if character.is_whitespace() {
+                            '-'
+                        } else {
+                            character
+                        }
+                    })
+                    .collect::<String>();
+                let count = seen.entry(slug.clone()).or_default();
+                anchors.insert(if *count == 0 {
+                    slug
+                } else {
+                    format!("{slug}-{count}")
+                });
+                *count += 1;
+                heading = None;
+            }
+            _ => {}
         }
-        previous = Some((number, line));
-        let Some(heading) = atx_heading(line).map_err(|error| format!("line {number}: {error}"))?
-        else {
-            continue;
-        };
-        let slug = heading
-            .to_lowercase()
-            .chars()
-            .filter(|character| character.is_alphanumeric() || matches!(character, ' ' | '-' | '_'))
-            .map(|character| if character == ' ' { '-' } else { character })
-            .collect::<String>();
-        let count = seen.entry(slug.clone()).or_default();
-        anchors.insert(if *count == 0 {
-            slug
-        } else {
-            format!("{slug}-{count}")
-        });
-        *count += 1;
     }
     Ok(anchors)
 }
 
 #[test]
-fn anchors_slug_plain_atx_headings_and_reject_other_forms() -> TestResult {
-    let document = "---\nstatus: accepted\n---\n\
-        # Setup\n## MAX_REQUEST bound\n   ### Setup ##\n## Option_\n## 2 * 3\n\
-        #NotAHeading\nText\n\n---\n- item\n---\n1. step\n---\n\
-        ## \\*Important\\*\nIntro\n-\nIntro\n```\ncode\n```\n---\n";
+fn anchors_slug_rendered_heading_text() -> TestResult {
+    let document = "---\ntitle: x\n---\n\
+        # Setup\n## MAX_REQUEST bound\n   ### Setup ##\n\
+        ## [Install](setup.md) `cargo_add`\n## *Emphasis* and **strong**\n\
+        ## Type \\[T\\] \\*literal\\*\n## A &amp; B\n## **Unmatched\n\
+        Setext title\n============\n\
+        Intro\n```\n# not a heading\n```\n---\nIntro\n\t---\n";
     assert_eq!(
         anchors(document)?,
         [
             "setup",
             "max_request-bound",
             "setup-1",
-            "option_",
-            "2--3",
-            "important"
+            "install-cargo_add",
+            "emphasis-and-strong",
+            "type-t-literal",
+            "a--b",
+            "unmatched",
+            "setext-title",
         ]
         .map(str::to_owned)
         .into()
     );
-    for unsupported in [
-        "Title\n=====\n",
-        "Intro\nTitle\n---\n",
-        "2026 Plan\n---\n",
-        "  ## *Setup*\n",
-        "## [Setup](setup.md)\n",
-        "## `code`\n",
-        "## *Emphasis*\n",
-        "## _Emphasis_\n",
-        "## <em>HTML</em>\n",
-    ] {
+    for unsupported in ["## <em>HTML</em>\n", "## ![Logo](logo.png) Name\n"] {
         assert!(anchors(unsupported).is_err(), "{unsupported}");
     }
     Ok(())
@@ -570,6 +492,14 @@ fn resolves(identifier: &str, words: &BTreeSet<String>, functions: &BTreeSet<Str
         }
         _ => defined,
     }
+}
+
+#[test]
+fn crate_names_come_from_member_manifests() -> TestResult {
+    let cli = crate_name(&root().join("crates/cli/tests/docs.rs"))?;
+    assert_eq!(cli.as_deref(), Some("capsule_cli"));
+    assert_eq!(crate_name(&root().join("scripts/x"))?, None);
+    Ok(())
 }
 
 #[test]
