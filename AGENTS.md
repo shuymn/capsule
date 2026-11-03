@@ -23,3 +23,4 @@
 - Read `docs/tooling.md` when working with build, CI, hooks, or adding tools.
 - Read `docs/review.md` when performing code review.
 - Read `docs/adr/` only when historical rationale matters.
+- Add or change a Behavioral contract clause in `docs/architecture.md` property first: write the named property (or, for process/shell behavior, the contract or PTY test), then cite it in the clause's `Spec:`.

@@ -573,6 +573,65 @@ fn coverage_tags(
     }
 }
 
+/// Names a clause may cite: Rust tests, the clause checks that take a model
+/// `Step`, and the records quoted in the PTY contract registry.
+fn specification_names() -> Result<BTreeSet<String>, std::io::Error> {
+    let mut names = BTreeSet::new();
+    for (path, text) in source_texts()? {
+        if path.ends_with("scripts/pty_suite/contracts.py") {
+            let quoted = text.split('"').skip(1).step_by(2);
+            names.extend(
+                quoted
+                    .filter(|name| is_identifier(name) && name.contains('_'))
+                    .map(str::to_owned),
+            );
+        }
+        let mut is_test = false;
+        let mut rest = text.as_str();
+        while let Some((line, tail)) = rest.split_once('\n') {
+            rest = tail;
+            if let Some(body) = comment_body(line) {
+                is_test |= body == "[test]" || body.starts_with("[tokio::test");
+                continue;
+            }
+            // A wrapped signature continues up to the body's opening brace.
+            let wrapped = tail.split_once('{').filter(|_| !line.contains('{'));
+            let is_clause = format!("{line}{}", wrapped.map_or("", |(signature, _)| signature))
+                .contains("step: &Step");
+            if let Some(name) = declared_function(line).filter(|_| is_test || is_clause) {
+                names.insert(name.to_owned());
+            }
+            is_test = false;
+        }
+    }
+    Ok(names)
+}
+
+#[test]
+fn behavioral_contract_clauses_cite_declared_tests() -> TestResult {
+    let names = specification_names()?;
+    let document = read("docs/architecture.md")?;
+    let section = document
+        .split_once("## Behavioral contract\n")
+        .and_then(|(_, rest)| rest.split("\n## ").next())
+        .ok_or("missing Behavioral contract section")?;
+    let mut problems = Vec::new();
+    for clause in section.lines().filter(|line| line.starts_with("- ")) {
+        let cited: Vec<_> = clause
+            .split_once(" Spec: ")
+            .map(|(_, spec)| code_spans(spec).collect())
+            .unwrap_or_default();
+        if cited.is_empty() {
+            problems.push(format!("cites no test: {clause}"));
+        }
+        for name in cited.into_iter().filter(|name| !names.contains(*name)) {
+            problems.push(format!("not a test, clause check, or PTY record: {name}"));
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+    Ok(())
+}
+
 /// Function names listed in the PTY suite's run-order `SCENARIOS` tuple.
 fn registered_scenarios(source: &str) -> BTreeSet<&str> {
     source
