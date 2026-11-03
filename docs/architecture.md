@@ -12,7 +12,7 @@ Run one worker per interactive zsh session on Tokio's current-thread runtime. Th
 | [worker.rs](../crates/cli/src/worker.rs) | One active acquisition generation, newest pending replacement, reload, fresh observations, settled display snapshot, response writer |
 | [plan.rs](../crates/core/src/plan.rs) | Immutable schema-v2 ConfigPlan: validated sources, conditions, indexed formats, display settings |
 | [acquire.rs](../crates/core/src/acquire.rs), [plan/acquire.rs](../crates/core/src/plan/acquire.rs), [git.rs](../crates/core/src/git.rs) | Bounded env/file/argv acquisition, sequential fallback, Git CLI and directory facts |
-| [view.rs](../crates/core/src/view.rs) | Pure evaluation, arbitration, structured text/style, grapheme layout, final zsh serialization |
+| [view.rs](../crates/core/src/view.rs), [render/style.rs](../crates/core/src/render/style.rs) | Pure evaluation, arbitration, structured text/style, grapheme layout, final zsh serialization and prompt-escape quoting |
 | [session.rs](../crates/protocol/src/session.rs) | Authoritative byte-frame grammar and persistent cancellation-safe framing |
 
 Use generic configuration for tool-specific values; see [extending.md](extending.md). Presets embed [examples/config.toml](../examples/config.toml). Keep acquisition I/O outside View.

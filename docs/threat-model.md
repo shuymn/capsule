@@ -4,10 +4,10 @@ Read this document before changing the trust boundaries of shell integration, co
 
 ## 1. Scope and Treatment of Evidence
 
-- Baseline implementation: `280378d718d9b61a16ef02b5cd9c350ff6b94e2f` plus the prompt-quoting and PTY regression changes, workspace version `1.0.3`, schema v2, interactive zsh on macOS / Linux, and per-session workers. The only upstream differences since `6d84750`, where static review began, are dependency and release-workflow updates.
+- Subject: schema v2, interactive zsh on macOS / Linux, and per-session workers.
 - In scope: `init zsh` / `preset`, the internal `worker` / `fd-config`, the pipes between shell and worker, acquisition of config, environment, files, Git, and commands, prompt rendering, Nix integration, and the CI and release distribution path.
 - Out of scope: vulnerability research on the OS, zsh, terminals, or Git themselves; audits of external package-management infrastructure; individual audits of benchmark and development scripts.
-- The evidence is static review of the design documents and source, plus the verification record in section 8. Items absent from the verification record only note where tests live; for those items, no attack reproduction or check of external configuration was performed.
+- Each current mitigation cites its implementation; section 8 maps each threat to its regressions. A threat without a listed regression is covered by source review only.
 - Keep "current mitigation" (implementation confirmed in the source), "assumption" (a condition the runtime environment satisfies), and "residual risk" (a path that may remain after mitigation) distinct. Do not treat a threat scenario as a confirmed vulnerability or a severity rating.
 
 ## 2. Assets, Actors, and Assumptions
@@ -95,7 +95,7 @@ STRIDE is used as a classification label. `E` includes not only escalation to ro
 - **Actor and conditions:** A repository provider or a source-output provider puts `$()`, backticks, `%{...%}`, ESC / OSC, newlines, or bidirectional control characters into a directory, branch, file, env, or stdout.
 - **Expected impact:** Code execution during prompt expansion, terminal manipulation, spoofed display, and corruption of the input position.
 - **Current mitigation:** `StyledText` makes controls and the targeted Unicode control characters visible via `escape_default`. `Style::paint_with` turns `%` into `%%` and quotes `$`, backtick, and `\` as `%1<<\$%<<`. With `PROMPT_SUBST` enabled, the substitution removes the backslash; with it disabled, the single-digit truncation hides the backslash, so either option setting displays the same literal. Style is kept separate from data and generated after width fitting. The shell also uses a single level of `${_CAPSULE_RENDERED}` reference when `PROMPT_SUBST` is enabled, and the `always` clause of the saved `precmd_functions` hooks reconciles the retained prompt with the final option (the implementation of B3·B4).
-- **Paths examined:** A named `precmd()` runs before `precmd_functions`, and a genuine shell error in it skips all Capsule hooks. The subsequent prompt expansion uses the retained prompt assigned while `PROMPT_SUBST` was disabled, and a matching response arriving after the error is likewise assigned under the option captured before the error. On both paths, even after this hook enables the option and then fails, file-source `$()` and backticks stayed literal and created no marker; this was confirmed in macOS / Linux PTYs (section 8). The quoting depends on neither the option state nor hook order. The same property also protects prompt expansion after the option is changed by a hook added directly to the head of the array, `periodic` / `sched`, or a ZLE widget, but individual PTY reproductions were not performed.
+- **Paths covered:** A named `precmd()` runs before `precmd_functions`, and a genuine shell error in it skips all Capsule hooks. The subsequent prompt expansion uses the retained prompt assigned while `PROMPT_SUBST` was disabled, and a matching response arriving after the error is assigned under the option captured before the error. On both paths, file-source `$()` and backticks stay literal and create no marker even after the hook enables the option and then fails; `run_named_hook_error` in [session_pty.py](../scripts/session_pty.py) covers this on macOS and Linux. Because the quoting depends on neither the option state nor hook order, it also protects prompt expansion after the option is changed by a hook added directly to the head of the array, `periodic` / `sched`, or a ZLE widget; those paths have no dedicated PTY regression.
 - **Residual risk and handling:** The shell does not re-sanitize responses and trusts the worker. Compromise of the worker, the binary, or a hook is not prevented by this mitigation. The quoting depends on zsh's prompt truncation and `PROMPT_SUBST` backslash handling, and in a shell with `PROMPT_PERCENT` disabled the display breaks, as with style (but nothing is evaluated). Unicode homoglyphs and ordinary lying display are not fully prevented, and truncation can hide important context. Do not use the prompt as a basis for authentication or authorization.
 
 ### T02 — Execution via executable selection, conditions, and fallbacks (S / E / I, B5, A1·A2)
@@ -193,9 +193,9 @@ The following is the order of work for maintaining the trust boundaries, not vul
 | 3: Communication and availability | T07·T08·T09 | Keep the frame / generation / timeout / cleanup / hook-option regressions on macOS and Linux, and never use a stale display for authorization | Whether OS-level resource isolation is needed. How to handle worker count, uninterruptible I/O, and freshness |
 | 4: Publishing infrastructure | T10 | Verify the candidate-to-tag correspondence, assets / attestations, secret scope, and package consumption | Where to enforce external rulesets, approvals, and attestation verification |
 
-[.github/infra.yaml](../.github/infra.yaml) declares required signatures and PR / status-check gates on the default branch, release immutability, SHA pinning of Actions, read-only default permissions, and approval for external forks. However, the required number of approving reviews is `0`, and a tag ruleset is not in this declaration. Whether the declaration has been applied, and any separately configured protections, are unverified. Promotion itself does not confirm CI success through the API, so do not confuse the review and CI-wait practice with automated enforcement.
+[.github/infra.yaml](../.github/infra.yaml) declares required signatures and PR / status-check gates on the default branch, release immutability, SHA pinning of Actions, read-only default permissions, and approval for external forks. However, the required number of approving reviews is `0`, and a tag ruleset is not in this declaration. The repository source does not establish whether the declaration is applied or which other protections exist. Promotion itself does not confirm CI success through the API, so do not confuse the review and CI-wait practice with automated enforcement.
 
-Configuration outside the source is unverified. Have the repository administrator confirm the following, and do not record a mitigation as in place until evidence is obtained.
+The repository administrator owns the following configuration outside the source. Do not list any of it as a current mitigation without evidence from the administrator.
 
 - The applied state of GitHub branch / tag rulesets and the infra declaration, required CI, the review and merge method for Release PRs, permissions for workflow dispatch / callers / execution refs, the App's install scope / permissions, secret protection, and runner trustworthiness.
 - The contents and results of the reusable Security checks workflow. Do not conclude that dependency audits or secret detection passed merely because the local [security.yml](../.github/workflows/security.yml) references it.
@@ -204,7 +204,7 @@ Configuration outside the source is unverified. Have the repository administrato
 
 ## 8. Verification Plan and Update Conditions
 
-Reuse the following regressions. Only the results listed in the "verification record" may be treated as executed. Run additional verification with an independent temporary home / cwd, dummy environment values, and local fixtures, and never touch real user secrets or real services. Run untrusted execution targets in an OS sandbox with external network blocked, an empty environment with only an explicit allowlist set, source / toolchain read-only, and writes limited to a dedicated scratch. Set low explicit limits on CPU / memory / process / file size / disk / wall time, and if the required controls are unavailable, do not run and record it as unverified. Keep as evidence only the commands, dummy inputs, sandbox limits, and safe allowlisted environment values needed for reproduction.
+Reuse the following regressions. Run additional verification with an independent temporary home / cwd, dummy environment values, and local fixtures, and never touch real user secrets or real services. Run untrusted execution targets in an OS sandbox with external network blocked, an empty environment with only an explicit allowlist set, source / toolchain read-only, and writes limited to a dedicated scratch. Set low explicit limits on CPU / memory / process / file size / disk / wall time, and do not run the check when the required controls are unavailable. Keep as evidence only the commands, dummy inputs, sandbox limits, and safe allowlisted environment values needed for reproduction.
 
 | Threat / condition | Existing verification | Additional checks and evidence |
 | --- | --- | --- |
@@ -217,20 +217,5 @@ Reuse the following regressions. Only the results listed in the "verification re
 | T08 / G4·G5 | [session.rs](../crates/protocol/src/session.rs): fragmentation / cancellation / EOF / frame limit / invalid env; [shell_contract.rs](../crates/cli/tests/shell_contract.rs): `responses_must_match_exact_generation`, partial reads; [scripts/session_pty.py](../scripts/session_pty.py) | Check backpressure, worker failure, exit / exec, and multiple shells in a real PTY, recording macOS / Linux results separately |
 | T09 / G4 | [worker_contract.rs](../crates/cli/tests/worker_contract.rs): `same_snapshot_retains_all_pending_frames_and_commits_external_changes_together`, `changed_environment_cwd_and_valid_config_clear_retained_information` | Check retention during revalidation and removal of failures and omissions at completion. Do not cite as evidence of continuous filesystem monitoring or atomic reads |
 | T10 / G6 | [scripts/release/check_test.sh](../scripts/release/check_test.sh), [releasing.md](releasing.md) | Separate the local contract test from the administrator's check of external publishing settings. Confirm rejection of an existing tag at a different SHA and the identity of candidate, archive, and attestation. Obtain separate approval for publishing, tag pushes, and external permission changes |
-
-### Verification record
-
-| Item | Contents |
-| --- | --- |
-| Source | A working tree of `280378d` with the prompt-quoting and PTY regression changes made alongside this document |
-| Dependencies | `Cargo.lock` is unchanged. The 101 registry packages were verified against the lockfile sha256 and vendored, then built with `--locked` and offline |
-| macOS | arm64, zsh 5.9.1, rustc 1.96.0, Python 3.15. Network was denied with `sandbox-exec`, and only the PTY driver's `/bin/ps` was launched outside the sandbox. No resource limits were set |
-| Linux | aarch64 container, zsh 5.9, rustc 1.99.0, Python 3.11. No network, read-only root, all capabilities dropped, `no-new-privileges`, memory 4 GiB, CPU 2, PID 192, writes only to a 3 GiB tmpfs, wall time 900 s |
-
-| Verification | macOS | Linux |
-| --- | --- | --- |
-| `run_named_hook_error` | 3 records passed, no marker | Same |
-| `task fmt:check` / `lint` / `test` / `doc` / `build` | Passed | Passed |
-| `scripts/session_pty.py` as a whole | 34 records passed (`non_utf8_fixture_supported = false`) | 34 records passed (`non_utf8_fixture_supported = true`) |
 
 Update this document whenever any of the following changes: the CLI / IPC public surface, adding a shared worker or socket, config discovery or symlink policy, selection of execution targets or environment, Git argv, sanitize / style / prompt expansion, retained display and generation, limits and cleanup, and the trust model of dependencies, Actions, and the publishing path. For each changed boundary, always map the actor, input, asset, impact, current mitigation, residual risk, and verification location.

@@ -8,7 +8,7 @@
 - `mise run release:check` validates a checked-out release candidate without side effects; `mise run release:test` exercises the release contract (see [docs/releasing.md](docs/releasing.md))
 - Rust-native equivalents work without mise: `cargo build`, `cargo test`, `cargo fmt --all`, `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` (same as `mise run lint`; see [docs/tooling.md](docs/tooling.md) for Clippy policy details)
 - Prefer `cargo add` / editing `Cargo.toml` for dependencies; run `cargo build` or `mise run build` after manifest changes
-- `unsafe_code` is **forbidden** and `unwrap`/`expect`/`todo`/`dbg!` are **denied** via `Cargo.toml` `[lints]` — applies to all code including tests
+- `unsafe_code` is **forbidden** and `unwrap`/`expect`/`panic!`/`todo!`/`unimplemented!`/`dbg!` are **denied** via `Cargo.toml` `[lints]` — applies to all code including tests
 
 ## Git Conventions
 

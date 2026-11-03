@@ -37,7 +37,7 @@ Read this file when changing build, CI, hooks, or tool dependencies.
 ## Clippy policy
 
 - [Cargo.toml](../Cargo.toml) defines workspace lint levels, including forbidden
-  unsafe code and denied `unwrap`/`expect`/`todo`/`dbg!` use in all code and tests.
+  unsafe code and denied `unwrap`/`expect`/`panic!`/`todo!`/`unimplemented!`/`dbg!` use in all code and tests.
 - [clippy.toml](../clippy.toml) defines complexity/size thresholds. Enable
   `#![warn(clippy::pedantic, clippy::nursery, clippy::cargo)]` in each crate root;
   `mise run lint` promotes these warnings to errors.
