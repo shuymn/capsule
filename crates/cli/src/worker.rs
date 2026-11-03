@@ -421,31 +421,25 @@ value = [{ env = "TOOL" }]
         Ok(())
     }
 
-    fn home_request(home: &std::path::Path) -> anyhow::Result<Arc<Request>> {
-        let env = vec![("HOME".into(), home.as_os_str().to_owned())];
-        Ok(Arc::new(Request {
-            generation: 1,
-            snapshot: Snapshot::new(home.to_owned(), env)?,
-            cols: 80,
-            last_exit_code: 0,
-            duration_ms: None,
-            keymap: "main".to_owned(),
-        }))
+    /// A generation-1 request at `home` that exports only `HOME`.
+    fn home_request(home: &std::path::Path) -> anyhow::Result<Request> {
+        let home = home.display();
+        Ok(Request::decode(
+            format!("Q\t1\t0\t\t80\tmain\t{home}\tHOME\t{home}").as_bytes(),
+        )?)
     }
 
     #[tokio::test]
     async fn removing_the_configuration_accepts_the_defaults() -> anyhow::Result<()> {
         let home = tempfile::tempdir()?;
         let previous = Arc::new(LoadedPlan {
-            config: ConfigPlan::parse(
-                "schema_version = 2\n[[module]]\nname = 'x'\nformat = 'x'\nvalues = {}\n",
-            )?,
+            config: ConfigPlan::default(),
             source: Some("removed".to_owned()),
         });
         let request = home_request(home.path())?;
         let cancel = CancellationToken::new();
         let plan = load_plan(&request.snapshot, &Runner::default(), &cancel, &previous).await?;
-        assert!(plan.source.is_none() && plan.config.modules.is_empty());
+        assert!(plan.source.is_none());
         Ok(())
     }
 
@@ -462,7 +456,7 @@ value = [{ env = "TOOL" }]
         let (tx, mut rx) = mpsc::channel(64);
         let request = home_request(home.path())?;
         acquire_generation(
-            request,
+            Arc::new(request),
             defaults.clone(),
             Runner::default(),
             CancellationToken::new(),

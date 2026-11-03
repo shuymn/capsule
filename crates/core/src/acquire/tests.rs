@@ -83,10 +83,12 @@ fn command_uses_direct_argv_and_replaces_the_environment() -> TestResult {
         assert_eq!(output, b"CAPSULE_VALUE=raw\xff\n\t\\\0");
         // Arguments reach the program unsplit and unexpanded.
         let hostile = ["a b", "$CAPSULE_VALUE", "*", "; exit 1", "'q'\"", "`id`"];
-        let mut args = vec!["printf", "%s\\0"];
-        args.extend(hostile);
         let output = Runner::default()
-            .command(&argv(&args)?, &input, &CancellationToken::new())
+            .command(
+                &argv(&[&["printf", "%s\\0"][..], &hostile].concat())?,
+                &input,
+                &CancellationToken::new(),
+            )
             .await?;
         assert_eq!(
             output,

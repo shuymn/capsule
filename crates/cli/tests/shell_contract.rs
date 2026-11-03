@@ -27,7 +27,7 @@ fn spawn_zsh(script: &str, home: &std::path::Path) -> Result<tokio::process::Chi
 }
 
 /// Run `script` in a clean zsh with an empty home and require success.
-fn run_zsh(script: &str, check: &str) -> Result {
+fn run_zsh(script: &str) -> Result {
     let home = tempfile::tempdir()?;
     let result = Command::new("zsh")
         .args(["-f", "-c", script])
@@ -38,7 +38,7 @@ fn run_zsh(script: &str, check: &str) -> Result {
         .output()?;
     assert!(
         result.status.success(),
-        "{check} failed ({}): {}",
+        "zsh failed ({}): {}",
         result.status,
         String::from_utf8_lossy(&result.stderr)
     );
@@ -68,7 +68,7 @@ fn responses_must_match_exact_generation() -> Result {
         [[ $PROMPT == $'current\\ncharacter ' ]]",
         functions()
     );
-    run_zsh(&script, "generation check failed")
+    run_zsh(&script)
 }
 
 #[test]
@@ -96,7 +96,7 @@ fn unchanged_display_skips_redraw_but_restores_fallback() -> Result {
         done",
         functions()
     );
-    run_zsh(&script, "redraw check failed")
+    run_zsh(&script)
 }
 
 #[test]
@@ -120,7 +120,7 @@ for hook_status in 0 7; do
 done
 "#
     );
-    run_zsh(&script, "hook dispatch check failed")
+    run_zsh(&script)
 }
 
 /// Covers: T01
@@ -422,7 +422,7 @@ fn failed_redraw_write_selects_fallback_after_transport_cleanup() -> Result {
         (( redraw == 1 )) || exit 13",
         functions()
     );
-    run_zsh(&script, "failed write check failed")
+    run_zsh(&script)
 }
 
 /// Covers: T07
@@ -430,8 +430,6 @@ fn failed_redraw_write_selects_fallback_after_transport_cleanup() -> Result {
 fn oversized_snapshot_omits_the_request_and_selects_fallback() -> Result {
     let script = format!(
         "{}\n\
-        _capsule_start_coproc() {{ :; }}\n\
-        _capsule_refresh_retained_prompt() {{ :; }}\n\
         _capsule_async_callback() {{ :; }}\n\
         requests=$HOME/requests\n\
         exec {{_CAPSULE_FD_IN}}>$requests {{_CAPSULE_FD_OUT}}</dev/null\n\
@@ -446,7 +444,7 @@ fn oversized_snapshot_omits_the_request_and_selects_fallback() -> Result {
         [[ $PROMPT == fallback ]] || exit 14",
         functions()
     );
-    run_zsh(&script, "oversized snapshot check")
+    run_zsh(&script)
 }
 
 /// Covers: T08
@@ -478,7 +476,7 @@ fn backpressured_frame_completes_before_the_newest_pending_request() -> Result {
         [[ $actual == \"$first$newest\" ]] || exit 12",
         functions()
     );
-    run_zsh(&script, "backpressured replacement check")
+    run_zsh(&script)
 }
 
 /// Covers: T08
