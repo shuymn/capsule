@@ -6,7 +6,8 @@ use capsule_core::{
     acquire::{AcquireError, Runner},
     git::{ContextInfo, acquire_context, local_directory},
     limits::{
-        GENERATION_DRAIN_TIMEOUT, GENERATION_TIMEOUT, MAX_FILE_JOBS, RUNTIME_SHUTDOWN_TIMEOUT,
+        EVENT_QUEUE_CAPACITY, GENERATION_DRAIN_TIMEOUT, GENERATION_TIMEOUT, MAX_FILE_JOBS,
+        RUNTIME_SHUTDOWN_TIMEOUT,
     },
     plan::{ConfigPlan, ModuleObservation, Observation, acquire_condition, acquire_value},
     view::{self, ViewInput},
@@ -172,7 +173,7 @@ async fn serve() -> anyhow::Result<()> {
     let stop = CancellationToken::new();
     let (render_tx, render_rx) = watch::channel(None);
     let mut writer = tokio::spawn(write_frames(output, render_rx, credit, stop.clone()));
-    let (events_tx, mut events_rx) = mpsc::channel(16);
+    let (events_tx, mut events_rx) = mpsc::channel(EVENT_QUEUE_CAPACITY);
     let runner = Runner::default();
     let mut generations = JoinSet::new();
     let mut active_cancel = CancellationToken::new();

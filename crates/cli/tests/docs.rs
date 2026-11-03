@@ -329,10 +329,8 @@ fn threat_model_limits_table_matches_the_limits_module() -> TestResult {
 #[test]
 fn relative_links_in_docs_resolve() -> TestResult {
     let documents = documents()?;
-    let mut anchors_by_path = BTreeMap::new();
-    for path in &documents {
-        anchors_by_path.insert(path.canonicalize()?, anchors(&fs::read_to_string(path)?));
-    }
+    // Headings of every Markdown target, loaded once; other files may name lines.
+    let mut anchors_by_path = BTreeMap::<PathBuf, BTreeSet<String>>::new();
     let mut broken = Vec::new();
     for path in &documents {
         let document = fs::read_to_string(path)?;
@@ -347,13 +345,20 @@ fn relative_links_in_docs_resolve() -> TestResult {
                 } else {
                     directory.join(file).canonicalize().ok()
                 };
-                // Anchors are checked in documents; links into other files may name lines.
-                let valid = resolved.is_some_and(|resolved| {
-                    anchor.is_empty()
-                        || anchors_by_path
+                let valid = match resolved {
+                    None => false,
+                    Some(_) if anchor.is_empty() => true,
+                    Some(resolved) if is_markdown(&resolved) => {
+                        if !anchors_by_path.contains_key(&resolved) {
+                            let headings = anchors(&fs::read_to_string(&resolved)?);
+                            anchors_by_path.insert(resolved.clone(), headings);
+                        }
+                        anchors_by_path
                             .get(&resolved)
-                            .is_none_or(|anchors| anchors.contains(anchor))
-                });
+                            .is_some_and(|anchors| anchors.contains(anchor))
+                    }
+                    Some(_) => true,
+                };
                 if !valid {
                     broken.push(format!("{}:{number}: {target}", path.display()));
                 }
@@ -365,11 +370,13 @@ fn relative_links_in_docs_resolve() -> TestResult {
 }
 
 /// Whether a cited identifier names something defined in the sources: a
-/// `Type::function` must be defined in that type's `impl` block.
+/// `Type::function` must be defined in that type's `impl` block, while other
+/// paths, such as enum variants and associated constants, need each segment.
 fn resolves(identifier: &str, words: &BTreeSet<String>, functions: &BTreeSet<String>) -> bool {
     match identifier.split_once("::") {
         Some((type_name, function))
             if type_name.starts_with(|first: char| first.is_ascii_uppercase())
+                && function.starts_with(|first: char| first.is_ascii_lowercase())
                 && !function.contains("::") =>
         {
             functions.contains(identifier)

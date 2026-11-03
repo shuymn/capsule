@@ -65,6 +65,8 @@ limits! {
     /// Maximum concurrent blocking filesystem jobs per worker; also the size of
     /// the worker runtime's blocking thread pool.
     Count MAX_FILE_JOBS: usize = 2;
+    /// Acquisition events queued for the worker loop before producers wait.
+    Count EVENT_QUEUE_CAPACITY: usize = 16;
 
     /// Deadline for one acquisition I/O operation, including the wait for capacity.
     Time ACQUISITION_TIMEOUT: Duration = Duration::from_millis(500);

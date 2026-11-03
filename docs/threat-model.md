@@ -177,6 +177,7 @@ Operation audit logs and user identification for repudiation (R) are not securit
 | Config file | 64 KiB | `MAX_CONFIG_BYTES` |
 | Concurrent subprocesses | 4 | `MAX_PROCESSES` |
 | Concurrent blocking file jobs, and the worker runtime's blocking threads | 2 | `MAX_FILE_JOBS` |
+| Acquisition events queued for the worker loop before producers wait | 16 | `EVENT_QUEUE_CAPACITY` |
 | One I/O operation, including the wait for capacity | 500 ms | `ACQUISITION_TIMEOUT` |
 | Acquisition generation | 2 s | `GENERATION_TIMEOUT` |
 | Process-group cleanup grace | 100 ms | `CLEANUP_TIMEOUT` |
