@@ -172,15 +172,39 @@ fn impl_functions(source: &str) -> BTreeSet<String> {
     functions
 }
 
+/// The Rust crate name of the workspace member whose directory holds `path`.
+fn crate_name(path: &Path) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let crates = root().join("crates");
+    let Some(member) = path
+        .strip_prefix(&crates)
+        .ok()
+        .and_then(|relative| relative.components().next())
+    else {
+        return Ok(None);
+    };
+    let manifest = fs::read_to_string(crates.join(member).join("Cargo.toml"))?;
+    let name = manifest.parse::<toml::Table>()?["package"]["name"]
+        .as_str()
+        .map(|name| name.replace('-', "_"));
+    Ok(name)
+}
+
 /// Names that cited identifiers may resolve to: every word, and every
-/// `Type::function` defined in an `impl` block.
-fn source_names() -> Result<(BTreeSet<String>, BTreeSet<String>), std::io::Error> {
+/// `Type::function` defined in an `impl` block, also qualified by the name of
+/// the crate that defines it.
+fn source_names() -> Result<(BTreeSet<String>, BTreeSet<String>), Box<dyn std::error::Error>> {
     let mut all_words = BTreeSet::new();
     let mut functions = BTreeSet::new();
     for (path, text) in source_texts()? {
         all_words.extend(words(&text).map(str::to_owned));
         if path.extension().is_some_and(|extension| extension == "rs") {
-            functions.extend(impl_functions(&text));
+            let crate_name = crate_name(&path)?;
+            for function in impl_functions(&text) {
+                if let Some(crate_name) = &crate_name {
+                    functions.insert(format!("{crate_name}::{function}"));
+                }
+                functions.insert(function);
+            }
         }
     }
     Ok((all_words, functions))
@@ -229,7 +253,8 @@ fn cited_identifier(span: &str) -> Option<&str> {
 }
 
 /// Whether `text` holds a `delimiter` run that can open emphasis followed by
-/// one that can close it. An underscore cannot open or close inside a word.
+/// one that can close it. An underscore cannot open or close inside a word,
+/// and a backslash-escaped delimiter is literal.
 fn has_emphasis(text: &str, delimiter: char) -> bool {
     let mut open = false;
     for (index, character) in text.char_indices() {
@@ -238,6 +263,9 @@ fn has_emphasis(text: &str, delimiter: char) -> bool {
         }
         let before = text[..index].chars().next_back();
         let after = text[index + delimiter.len_utf8()..].chars().next();
+        if before == Some('\\') {
+            continue;
+        }
         let word = |neighbor: Option<char>| {
             delimiter == '_' && neighbor.is_some_and(char::is_alphanumeric)
         };
@@ -293,8 +321,9 @@ fn is_list_item(line: &str) -> bool {
 /// item.
 fn is_setext_underline(line: &str, previous: Option<&str>) -> bool {
     let underline = line.trim();
+    // A lone `-` is an empty list item, not an underline.
     let marker = underline.chars().all(|character| character == '=')
-        || underline.chars().all(|character| character == '-');
+        || (underline.len() > 1 && underline.chars().all(|character| character == '-'));
     let paragraph = previous.is_some_and(|previous| {
         let previous = previous.trim_start();
         !previous.is_empty()
@@ -319,12 +348,16 @@ fn anchors(document: &str) -> Result<BTreeSet<String>, String> {
             .map_or(0, |end| end + 2),
         _ => 0,
     };
-    let mut previous = None;
+    // The previous source line, unless a fenced block separates them.
+    let mut previous = None::<(usize, &str)>;
     for &(number, line) in &lines[front_matter..] {
-        if is_setext_underline(line, previous) {
+        let adjacent = previous
+            .filter(|(previous, _)| previous + 1 == number)
+            .map(|(_, line)| line);
+        if is_setext_underline(line, adjacent) {
             return Err(format!("line {number}: Setext heading; use `#` instead"));
         }
-        previous = Some(line);
+        previous = Some((number, line));
         let Some(heading) = atx_heading(line).map_err(|error| format!("line {number}: {error}"))?
         else {
             continue;
@@ -350,12 +383,20 @@ fn anchors(document: &str) -> Result<BTreeSet<String>, String> {
 fn anchors_slug_plain_atx_headings_and_reject_other_forms() -> TestResult {
     let document = "---\nstatus: accepted\n---\n\
         # Setup\n## MAX_REQUEST bound\n   ### Setup ##\n## Option_\n## 2 * 3\n\
-        #NotAHeading\nText\n\n---\n- item\n---\n1. step\n---\n";
+        #NotAHeading\nText\n\n---\n- item\n---\n1. step\n---\n\
+        ## \\*Important\\*\nIntro\n-\nIntro\n```\ncode\n```\n---\n";
     assert_eq!(
         anchors(document)?,
-        ["setup", "max_request-bound", "setup-1", "option_", "2--3"]
-            .map(str::to_owned)
-            .into()
+        [
+            "setup",
+            "max_request-bound",
+            "setup-1",
+            "option_",
+            "2--3",
+            "important"
+        ]
+        .map(str::to_owned)
+        .into()
     );
     for unsupported in [
         "Title\n=====\n",
@@ -503,7 +544,8 @@ fn relative_links_in_docs_resolve() -> TestResult {
 
 /// Whether a cited identifier names something defined in the sources: every
 /// segment must occur, and a trailing `Type::function` must be defined in that
-/// type's `impl` block.
+/// type's `impl` block, inside the named crate when the path starts with one.
+/// Module segments are checked only as words.
 fn resolves(identifier: &str, words: &BTreeSet<String>, functions: &BTreeSet<String>) -> bool {
     let segments = identifier.split("::").collect::<Vec<_>>();
     let defined = segments.iter().all(|segment| words.contains(*segment));
@@ -512,7 +554,19 @@ fn resolves(identifier: &str, words: &BTreeSet<String>, functions: &BTreeSet<Str
             if type_name.starts_with(|first: char| first.is_ascii_uppercase())
                 && function.starts_with(|first: char| first.is_ascii_lowercase()) =>
         {
-            defined && functions.contains(&format!("{type_name}::{function}"))
+            let method = format!("{type_name}::{function}");
+            let method = match segments.as_slice() {
+                [crate_name, _, _, ..]
+                    if functions
+                        .range(format!("{crate_name}::")..)
+                        .next()
+                        .is_some_and(|first| first.starts_with(&format!("{crate_name}::"))) =>
+                {
+                    format!("{crate_name}::{method}")
+                }
+                _ => method,
+            };
+            defined && functions.contains(&method)
         }
         _ => defined,
     }
@@ -528,16 +582,28 @@ fn method_paths_resolve_by_their_final_type_and_function() {
         "render",
         "Limit",
         "Count",
+        "capsule_prompt_bench",
+        "worker",
+        "Worker",
+        "measure",
     ]
     .map(str::to_owned)
     .into();
-    let functions = BTreeSet::from(["ConfigPlan::parse".to_owned()]);
+    let functions = [
+        "ConfigPlan::parse",
+        "capsule_core::ConfigPlan::parse",
+        "Worker::measure",
+        "capsule_prompt_bench::Worker::measure",
+    ]
+    .map(str::to_owned)
+    .into();
     for cited in [
         "ConfigPlan::parse",
         "capsule_core::ConfigPlan::parse",
         "capsule_core::plan::ConfigPlan::parse",
         "Limit::Count",
         "capsule_core::Limit::Count",
+        "capsule_prompt_bench::worker::Worker::measure",
     ] {
         assert!(resolves(cited, &words, &functions), "{cited}");
     }
@@ -546,6 +612,8 @@ fn method_paths_resolve_by_their_final_type_and_function() {
         "capsule_core::ConfigPlan::render",
         "missing::ConfigPlan::parse",
         "capsule_core::Limit::Bytes",
+        // Defined in another crate.
+        "capsule_core::worker::Worker::measure",
     ] {
         assert!(!resolves(cited, &words, &functions), "{cited}");
     }
