@@ -60,6 +60,11 @@ pub fn style_sequence(codes: &[u8]) -> String {
     })
 }
 
+/// `text` as Capsule paints it: its SGR codes and a reset, each in a zsh `%{%}`.
+pub fn styled(codes: &[u8], text: &str) -> String {
+    format!("%{{{}%}}{text}%{{\x1b[0m%}}", style_sequence(codes))
+}
+
 /// Characters that stress display width, grapheme segmentation, sanitizing,
 /// and prompt quoting: ASCII, CJK, combining marks, ZWJ emoji parts, regional
 /// indicators, variation selectors, a lam-alef pair, controls, bidi controls,

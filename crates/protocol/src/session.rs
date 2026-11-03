@@ -343,8 +343,6 @@ fn unescape(input: &[u8]) -> Result<Vec<u8>, Error> {
 
 #[cfg(test)]
 mod tests {
-    use std::future::Future;
-
     use super::*;
 
     /// Covers: T06, T08

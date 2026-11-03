@@ -253,7 +253,7 @@ async fn test_detect_priority_rebase_over_merge() -> Result<(), Box<dyn std::err
 }
 
 #[test]
-fn porcelain_v2_counts_every_entry_kind() {
+fn porcelain_v2_parses_counts_detached_head_and_empty_output() {
     let output = "\
 # branch.oid abc123def456
 # branch.head main
@@ -261,23 +261,22 @@ fn porcelain_v2_counts_every_entry_kind() {
 # stash 5
 1 M. N... 000000 000000 abc123 def456 staged.rs
 1 .M N... 000000 000000 abc123 def456 modified.rs
-1 .M N... 000000 000000 abc123 def456 edited.rs
+1 A. N... 000000 100644 000000 def456 added.rs
 1 MM N... 000000 000000 abc123 def456 both.rs
 1 D. N... 100644 000000 000000 abc123 000000 deleted.rs
 1 .D N... 100644 100644 000000 abc123 def456 removed.rs
 2 R. N... 100644 100644 100644 abc123 def456 R100 new.rs\told.rs
 u UU N... 000000 000000 000000 abc123 def456 ghi789 conflict.rs
 ? untracked.txt
-? other.txt
 ";
     assert_eq!(
         parse_porcelain_v2(output),
         GitStatus {
             branch: Some("main".to_owned()),
             head_oid: Some("abc123def456".to_owned()),
-            staged: 4,
-            modified: 4,
-            untracked: 2,
+            staged: 5,
+            modified: 3,
+            untracked: 1,
             conflicted: 1,
             stashed: 5,
             deleted: 2,

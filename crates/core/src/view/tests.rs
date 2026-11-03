@@ -3,7 +3,7 @@ use crate::{
     git::{GitOperationState, GitState},
     plan::{StyleConfig, TimeFormat, ViewConfig},
     render::style::{Color, ColorMap},
-    test_utils::{contains_style_sequence, style_sequence},
+    test_utils::{contains_style_sequence, displayed_prompt, styled},
 };
 
 fn input() -> ViewInput<'static> {
@@ -134,8 +134,6 @@ fn builtins_keep_two_lines_connectors_and_independent_styles() {
             ..input()
         },
     );
-    let styled =
-        |codes: &[u8], text: &str| format!("%{{{}%}}{text}%{{\x1b[0m%}}", style_sequence(codes));
     let left1 = [
         styled(&[1, 36], "project"),
         styled(&[31], "\u{f023}"),
@@ -248,6 +246,72 @@ fn repeated_references_cannot_amplify_bounded_values() {
     let observed = [Observation::Ready(value)];
     assert!(evaluate_format(&[FormatPart::Value(0)], &observed).is_some());
     assert!(evaluate_format(&[FormatPart::Value(0), FormatPart::Value(0)], &observed).is_none());
+}
+
+/// Covers: T07
+#[test]
+fn quoted_backslashes_on_both_lines_fit_the_response_byte_limit()
+-> Result<(), Box<dyn std::error::Error>> {
+    // A backslash has the largest prompt-quoting and wire-escaping expansion.
+    let data = "\\".repeat(32_000);
+    let mut plan = ConfigPlan::default();
+    plan.view.character.glyph.clone_from(&data);
+    let output = render(
+        &plan,
+        &ViewInput {
+            directory: &data,
+            cols: usize::from(u16::MAX),
+            ..input()
+        },
+    );
+    assert!(output.left1.contains('…') && output.left2.contains('…'));
+    let frame = capsule_protocol::session::response(u64::MAX, &output.left1, &output.left2, true)?;
+    assert!(frame.len() <= capsule_protocol::session::MAX_RESPONSE + 1);
+    Ok(())
+}
+
+#[test]
+fn custom_modules_render_on_their_slot_in_declaration_order_between_builtins()
+-> Result<(), Box<dyn std::error::Error>> {
+    let plan = ConfigPlan::parse(
+        r#"
+schema_version = 2
+[directory]
+disabled = true
+[character]
+disabled = true
+[[module]]
+name = "first"
+values = { value = [{ env = "A" }] }
+[[module]]
+name = "second"
+slot = "line2"
+values = { value = [{ env = "B" }] }
+[[module]]
+name = "third"
+values = { value = [{ env = "C" }] }
+"#,
+    )?;
+    let observations = [observed("first"), observed("second"), observed("third")];
+    let status = GitStatus {
+        branch: Some("main".into()),
+        ..GitStatus::default()
+    };
+    let output = render(
+        &plan,
+        &ViewInput {
+            git: Some(&status),
+            modules: &observations,
+            duration_ms: Some(65_000),
+            ..input()
+        },
+    );
+    assert_eq!(
+        displayed_prompt(&output.left1).as_deref(),
+        Some("on \u{f418} main first third took 1m5s")
+    );
+    assert_eq!(displayed_prompt(&output.left2).as_deref(), Some("second"));
+    Ok(())
 }
 
 mod properties {

@@ -229,7 +229,7 @@ fn quote_prompt_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{contains_style_sequence, style_sequence};
+    use crate::test_utils::{contains_style_sequence, styled};
 
     #[test]
     fn paint_wraps_styled_text_in_zsh_escapes_and_quotes_percent() {
@@ -242,8 +242,7 @@ mod tests {
             (Style::new().fg(Color::Cyan).dimmed(), &[2, 36]),
             (Style::new().fg(Color::BrightBlack), &[90]),
         ] {
-            let expected = format!("%{{{}%}}100%%B%{{\x1b[0m%}}", style_sequence(codes));
-            assert_eq!(style.paint("100%B"), expected);
+            assert_eq!(style.paint("100%B"), styled(codes, "100%%B"));
         }
     }
 
