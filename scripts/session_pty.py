@@ -311,6 +311,10 @@ class Shell:
                 })
         return result
 
+    def finalized(self, mark, generation):
+        """Transitions recorded when precmd finalization submitted the generation."""
+        return [item for item in self.transitions(mark, generation) if item["event"] == b"precmd"]
+
     def renders(self, mark, generation):
         result = []
         prefix = f"R\t{generation}\t".encode()
@@ -828,7 +832,7 @@ def run_hook_errors(shell, record):
         assert not (shell.home / "late-hook").exists(), "hook error did not stop subsequent user hooks"
         shell.pump()
         assert b"division by zero" in (shell.home / "terminal.log").read_bytes()
-        finalized = [item for item in shell.transitions(mark, generation) if item["event"] == b"precmd"]
+        finalized = shell.finalized(mark, generation)
         assert finalized[-1]["status"] == 7 and int(finalized[-1]["duration"]) >= 3000, finalized
         if generation == 3:
             shell.signal_worker(worker, signal.SIGCONT)
@@ -875,7 +879,7 @@ def run_named_hook_error(shell, record):
     assert retained == (shell.home / "rendered").read_bytes(), "option-off prompt must hold retained text"
     shell.pump()
     before = log.stat().st_size
-    shell.command("_capsule_test_named_error=1")
+    shell.command("_capsule_test_named_error=1; _CAPSULE_CMD_START=$((EPOCHREALTIME-3))")
     eventually(lambda: (shell.home / "named-error").exists(), "named precmd hook", shell.pump)
     eventually(lambda: b"division by zero" in log.read_bytes()[before:], "genuine named hook error", shell.pump)
     state = shell.state(wait_ready=False)
@@ -898,11 +902,16 @@ def run_named_hook_error(shell, record):
     assert not any(marker.exists() for marker in markers)
     record("response_after_named_precmd_error_stays_literal")
 
-    mark = shell.mark()
-    shell.command("_capsule_test_named_error=0; (exit 7)")
-    shell.complete(3, mark)
-    finalized = [item for item in shell.transitions(mark, 3) if item["event"] == b"precmd"]
-    assert finalized and finalized[-1]["status"] == 7, finalized
+    # The skipped prompt never consumed the command start; the next prompt must
+    # not attribute it, plus the time spent at that prompt, to empty Enter.
+    generation, mark = shell.run_line("")
+    finalized = shell.finalized(mark, generation)
+    assert generation == 3 and finalized and finalized[-1]["duration"] == b"", finalized
+    record("empty_enter_after_named_precmd_error_omits_stale_duration")
+
+    generation, mark = shell.run_line("_CAPSULE_CMD_START=$((EPOCHREALTIME-2)); (exit 7)")
+    finalized = shell.finalized(mark, generation)
+    assert finalized and finalized[-1]["status"] == 7 and int(finalized[-1]["duration"]) >= 2000, finalized
     assert shell.state()["worker"] == worker
     assert not any(marker.exists() for marker in markers)
     record("named_precmd_recovery_keeps_command_status_and_worker")
@@ -943,7 +952,7 @@ def run_empty_enter(shell, record):
     worker = shell.state()["worker"]
     (shell.home / ".capsule/config.toml").write_text("schema_version = 2\n")
     generation, mark = shell.run_line("git init -q && git symbolic-ref HEAD refs/heads/ENTER_BEFORE; _CAPSULE_CMD_START=$((EPOCHREALTIME-3)); (exit 7)")
-    first = [item for item in shell.transitions(mark, generation) if item["event"] == b"precmd"][-1]["duration"]
+    first = shell.finalized(mark, generation)[-1]["duration"]
     shell.state()
     assert b"ENTER_BEFORE" in (shell.home / "rendered").read_bytes()
 
@@ -953,7 +962,7 @@ def run_empty_enter(shell, record):
         rendered = (shell.home / "rendered").read_bytes()
         assert b"ENTER_AFTER" in rendered and b"ENTER_BEFORE" not in rendered, rendered
         # Empty Enter is an ordinary prompt: zsh leaves $? unchanged and no command ran.
-        finalized = [item for item in shell.transitions(mark, generation) if item["event"] == b"precmd"]
+        finalized = shell.finalized(mark, generation)
         assert finalized[-1]["status"] == 7 and finalized[-1]["duration"] == b"", finalized
 
     # Another terminal changes Git state; an empty line must show it.
@@ -977,10 +986,20 @@ def run_empty_enter(shell, record):
 
     # The next command reports its own duration under the threshold rule again.
     generation, mark = shell.run_line("_CAPSULE_CMD_START=$((EPOCHREALTIME-2)); (exit 4)")
-    finalized = [item for item in shell.transitions(mark, generation) if item["event"] == b"precmd"]
+    finalized = shell.finalized(mark, generation)
     # Measured from this command's start, not carried over from the first one.
     assert finalized[-1]["status"] == 4 and int(finalized[-1]["duration"]) >= 2000 and finalized[-1]["duration"] != first, finalized
     record("command_after_empty_enter_reports_its_own_status_and_duration")
+
+    # A nested line editor inside the command must not discard its start time.
+    generation = shell.next_generation()
+    mark = shell.mark()
+    shell.command("_CAPSULE_CMD_START=$((EPOCHREALTIME-2)); vared -c _capsule_test_vared; (exit 6)")
+    shell.send(b"\n")
+    shell.complete(generation, mark)
+    finalized = shell.finalized(mark, generation)
+    assert finalized[-1]["status"] == 6 and int(finalized[-1]["duration"]) >= 2000, finalized
+    record("command_using_nested_line_editor_keeps_its_duration")
 
 
 MATRIX_PAYLOAD = "$(print -n x > ~/dollar) `print -n x > ~/backtick`"
@@ -1036,7 +1055,7 @@ def run_hook_matrix(shell, record):
         assert (shell.home / "cwd").read_bytes() == os.fsencode(cwd.resolve()) + b"\n", case
         assert (shell.home / "value").read_bytes() == value, case
 
-        finalized = [item for item in shell.transitions(mark, generation) if item["event"] == b"precmd"][-1]
+        finalized = shell.finalized(mark, generation)[-1]
         if trigger == "command":
             assert finalized["status"] == exit_code and int(finalized["duration"]) >= 3000, (case, finalized)
             status = finalized["status"]
@@ -1271,6 +1290,7 @@ def run(binary: Path, output: Path):
         shell = start("named-hook-error", precmd_setup=(
             "precmd() {\n"
             "  if (( _capsule_test_named_error )); then\n"
+            "    _capsule_test_named_error=0\n"
             "    setopt promptsubst\n"
             "    print -r -- reached > \"$HOME/named-error\"\n"
             "    : $((1/0))\n"
