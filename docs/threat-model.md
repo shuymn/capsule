@@ -109,14 +109,14 @@ STRIDE is used as a classification label. `E` includes not only escalation to ro
 
 - **Actor and conditions:** A provider's TOML is selected through a relative or empty `XDG_CONFIG_HOME`, a relative `HOME`, a writable config path, a symlink, or an unverified copy of the configuration.
 - **Expected impact:** A schema-valid, attacker-specified argv runs with the user's privileges. Even when an invalid edit was meant to stop execution, the command from the last valid plan remains.
-- **Current mitigation:** Reads a regular file of at most 64 KiB and validates UTF-8, schema v2, unknown fields, sources, regexes, formats, and counts. Parsing performs no I/O or command execution, and a failed new plan is rejected as a whole (`load_plan`, `ConfigPlan::parse`).
+- **Current mitigation:** Reads a regular file of at most `MAX_CONFIG_BYTES` ([§6](#6-current-resource-limits)) and validates UTF-8, schema v2, unknown fields, sources, regexes, formats, and counts. Parsing performs no I/O or command execution, and a failed new plan is rejected as a whole (`load_plan`, `ConfigPlan::parse`).
 - **Residual risk and handling:** Validation checks syntax and resources, not trustworthiness. Ownership, permissions, symlinks, and trusted roots are not checked. Last-valid retention on an invalid reload is an availability contract, not a fail-closed policy that stops execution. Use a managed absolute config path; to stop execution, remove the command from a valid configuration and confirm its adoption, or terminate the target shell / worker.
 
 ### T04 — Git external processing and environment steering (E / I / D, B2·B5, A1·A2·A4)
 
 - **Actor and conditions:** The local Git configuration of a supplied repository, or the user's `GIT_*` environment, changes the behavior of the Git that is launched. Depending on Git version and configuration, an external helper such as `core.fsmonitor` may be started.
 - **Expected impact:** The `git status` run for branch display proceeds to code execution, secret access, or excessive processing. The displayed repository may also differ from the actual cwd.
-- **Current mitigation:** Runs the fixed argv `git --no-optional-locks status --porcelain=v2 --branch --show-stash` through the shared Runner, and shows no Git display on failure. The ancestor search from the cwd goes at most 128 levels, and metadata reads also use the Runner's limits (`acquire_context`, `find_repository`).
+- **Current mitigation:** Runs the fixed argv `git --no-optional-locks status --porcelain=v2 --branch --show-stash` through the shared Runner, and shows no Git display on failure. The ancestor search from the cwd goes at most `MAX_REPOSITORY_DEPTH` levels ([§6](#6-current-resource-limits)), and metadata reads also use the Runner's limits (`acquire_context`, `find_repository`).
 - **Residual risk and handling:** `--no-optional-locks` is neither a sandbox nor helper disabling. Git configuration and environment are not isolated, and the built-in Git also receives all exported environment. Verify the actual helper launch conditions against the deployed Git and its configuration. In deployments that must not allow code execution in untrusted repositories, set `git.disabled = true` and review custom commands separately.
 
 ### T05 — Read-scope expansion through symlinks and Git metadata (I / T, B2, A2·A3)
