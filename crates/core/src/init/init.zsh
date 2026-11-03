@@ -280,8 +280,7 @@ _capsule_finalize_prompt() {
 _capsule_line_init() {
     # precmd consumes the command start. When a named precmd error skipped
     # Capsule's hooks, drop it before the next command line is edited.
-    [[ $CONTEXT == start ]] && _CAPSULE_CMD_START=''
-    return 0
+    [[ $CONTEXT != start ]] || _CAPSULE_CMD_START=''
 }
 
 _capsule_redraw() {
