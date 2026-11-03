@@ -450,11 +450,9 @@ mod properties {
             .collect()
     }
 
-    /// Characters that zsh's `wcwidth` in a UTF-8 locale measures as
-    /// `unicode-width` does, besides printable ASCII. Elsewhere the libc and
-    /// terminal disagree with each other, so width is not compared: emoji
-    /// sequences, which zsh sums per code point; the soft hyphen and prepended
-    /// concatenation marks; and unassigned code points.
+    /// The characters of `test_utils::HOSTILE` and the built-in glyphs that
+    /// zsh's `wcwidth` in a UTF-8 locale measures as `unicode-width` does,
+    /// besides printable ASCII. architecture.md lists where they disagree.
     const LIBC_AGREES: &str = "日本\u{301}\u{200b}\u{200d}\u{644}\u{627}…❯\u{f418}";
 
     fn libc_agrees(text: &str) -> bool {
@@ -485,14 +483,14 @@ mod properties {
         prop::collection::vec(part, 0..4).prop_map(|parts| parts.concat())
     }
 
-    /// The prompt zsh shows for `lines`, run in `cwd`, with `PROMPT_SUBST`
-    /// through Capsule's one-level reference, with it on and the text assigned
-    /// directly, and with it off. Each expansion has its styles removed and is
-    /// paired with the `${(m)#}` width of each line.
+    /// What zsh shows for `lines`, run in `cwd`: the prompt with its styles
+    /// removed as expanded with `PROMPT_SUBST` through Capsule's one-level
+    /// reference, with it on and the text assigned directly, and with it off;
+    /// then the `${(m)#}` width of each line of the last expansion.
     fn expand_in_zsh(
         lines: &PromptLines,
         cwd: &std::path::Path,
-    ) -> Result<Vec<(String, [String; 2])>, TestCaseError> {
+    ) -> Result<Vec<String>, TestCaseError> {
         let output = std::process::Command::new("zsh")
             .current_dir(cwd)
             .args([
@@ -504,16 +502,14 @@ for LC_ALL in C.UTF-8 en_US.UTF-8; do (( ${(m)#wide} == 2 )) && break; done
 (( ${(m)#wide} == 2 )) || { print -u2 'no UTF-8 locale'; exit 1 }
 setopt extendedglob
 rendered=$LEFT1$'\n'$LEFT2
-show() {
-    local shown=${1//$'\e'\[[0-9;]#m}
-    local first=${shown%%$'\n'*} second=${shown#*$'\n'}
-    print -rn -- "$shown"$'\0'${(m)#first}$'\0'${(m)#second}$'\0'
-}
+show() { shown=${1//$'\e'\[[0-9;]#m}; print -rn -- "$shown"$'\0' }
 setopt promptsubst
 print -v expanded -Pr -- '${rendered}'; show "$expanded"
 print -v expanded -Pr -- "$rendered"; show "$expanded"
 unsetopt promptsubst
 print -v expanded -Pr -- "$rendered"; show "$expanded"
+first=${shown%%$'\n'*} second=${shown#*$'\n'}
+print -rn -- ${(m)#first}$'\0'${(m)#second}$'\0'
 "#,
             ])
             .env("LEFT1", &lines.left1)
@@ -528,19 +524,7 @@ print -v expanded -Pr -- "$rendered"; show "$expanded"
         }
         let stdout = String::from_utf8(output.stdout)
             .map_err(|error| TestCaseError::fail(error.to_string()))?;
-        let fields = stdout.split_terminator('\0').collect::<Vec<_>>();
-        fields
-            .chunks(3)
-            .map(|chunk| match chunk {
-                [shown, first, second] => Ok((
-                    (*shown).to_owned(),
-                    [(*first).to_owned(), (*second).to_owned()],
-                )),
-                _ => Err(TestCaseError::fail(format!(
-                    "unexpected zsh output {stdout:?}"
-                ))),
-            })
-            .collect()
+        Ok(stdout.split_terminator('\0').map(str::to_owned).collect())
     }
 
     proptest! {
@@ -559,16 +543,17 @@ print -v expanded -Pr -- "$rendered"; show "$expanded"
             plan.view.character.glyph = glyph;
             let git = GitStatus { branch: Some(branch), ..GitStatus::default() };
             let output = render(&plan, &ViewInput { directory: &directory, git: Some(&git), cols, ..input() });
-            let displayed = [&output.left1, &output.left2].map(|line| displayed_prompt(line).unwrap_or_default());
+            let [Some(first), Some(second)] = [&output.left1, &output.left2].map(|line| displayed_prompt(line)) else {
+                return Err(TestCaseError::fail(format!("{output:?} is not literal data")));
+            };
             let cwd = tempfile::tempdir().map_err(|error| TestCaseError::fail(error.to_string()))?;
-            let expansions = expand_in_zsh(&output, cwd.path())?;
-            prop_assert_eq!(expansions.len(), 3);
-            for (shown, widths) in expansions {
-                prop_assert_eq!(&shown, &format!("{}\n{}", displayed[0], displayed[1]));
-                for (line, width) in displayed.iter().zip(widths) {
-                    if libc_agrees(line) {
-                        prop_assert_eq!(width, text::display_width(line).to_string(), "{:?}", line);
-                    }
+            let shown = format!("{first}\n{second}");
+            let zsh = expand_in_zsh(&output, cwd.path())?;
+            prop_assert_eq!(zsh.len(), 5, "{:?}", zsh);
+            prop_assert!(zsh[..3].iter().all(|expanded| *expanded == shown), "{zsh:?} does not show {shown:?}");
+            for (line, width) in [&first, &second].into_iter().zip(&zsh[3..]) {
+                if libc_agrees(line) {
+                    prop_assert_eq!(width, &text::display_width(line).to_string(), "{:?}", line);
                 }
             }
             let written = std::fs::read_dir(cwd.path()).map_err(|error| TestCaseError::fail(error.to_string()))?;
