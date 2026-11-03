@@ -17,22 +17,20 @@ only. See docs/benchmarking.md for the measurement boundary and publication rule
 from __future__ import annotations
 
 import argparse
-import fcntl
 import json
 import os
 import platform
-import pty
 import random
 import select
 import shlex
 import shutil
 import statistics
-import struct
 import subprocess
 import sys
-import termios
 import time
 from pathlib import Path
+
+from pty_suite.terminal import set_window_size, spawn_zsh, utf8_locale
 
 READY = b"\x1b]1337;BENCH-READY\x07"
 TIMEOUT = 10.0
@@ -95,16 +93,9 @@ class Session:
         self.buffer = bytearray()
         self.stamps: list[tuple[int, float]] = []  # (buffer length, read time)
         env = {"HOME": str(home), "ZDOTDIR": str(home), "PATH": path, "TERM": "xterm-256color",
-               "LC_ALL": "en_US.UTF-8" if sys.platform == "darwin" else "C.UTF-8",
-               "GIT_CONFIG_NOSYSTEM": "1"}
-        zsh = shutil.which("zsh")
-        if zsh is None:
-            raise RuntimeError("zsh is required")
-        self.pid, self.fd = pty.fork()
-        if self.pid == 0:
-            os.chdir(cwd)
-            os.execve(zsh, [zsh, "-d", "-i"], env)
-        fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 160, 0, 0))
+               "LC_ALL": utf8_locale(), "GIT_CONFIG_NOSYSTEM": "1"}
+        self.pid, self.fd = spawn_zsh(cwd, env)
+        set_window_size(self.fd, 40, 160)
 
     def pump(self, wait: float) -> None:
         if select.select([self.fd], [], [], wait)[0]:
