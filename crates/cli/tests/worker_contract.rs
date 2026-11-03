@@ -335,6 +335,20 @@ async fn identical_commands_run_once_per_generation_across_values_and_modules() 
 
 /// Covers: T03
 #[tokio::test]
+async fn a_fresh_worker_with_an_invalid_configuration_renders_defaults() -> Result {
+    let home = tempfile::tempdir()?;
+    write_config(home.path(), "schema_version = 2\nunknown = true\n")?;
+    let mut worker = Worker::start(home.path())?;
+    assert!(
+        worker
+            .render(&request(home.path(), 1)?)
+            .await?
+            .contains('❯')
+    );
+    worker.close().await
+}
+
+#[tokio::test]
 async fn failed_reload_preserves_last_valid_plan_then_accepts_fixed_configuration() -> Result {
     let home = tempfile::tempdir()?;
     write_config(home.path(), CONFIG)?;

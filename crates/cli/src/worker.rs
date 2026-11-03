@@ -439,12 +439,12 @@ value = [{ env = "TOOL" }]
         let request = home_request(home.path())?;
         let cancel = CancellationToken::new();
         let plan = load_plan(&request.snapshot, &Runner::default(), &cancel, &previous).await?;
-        assert!(plan.source.is_none());
+        assert!(!Arc::ptr_eq(&plan, &previous) && plan.source.is_none());
         Ok(())
     }
 
     #[tokio::test]
-    async fn a_fresh_worker_keeps_defaults_and_reports_an_invalid_configuration()
+    async fn invalid_configuration_keeps_the_previous_plan_and_reports_the_reason()
     -> anyhow::Result<()> {
         let home = tempfile::tempdir()?;
         std::fs::create_dir(home.path().join(".capsule"))?;
@@ -452,12 +452,12 @@ value = [{ env = "TOOL" }]
             home.path().join(".capsule/config.toml"),
             "schema_version = 2\nunknown = true\n",
         )?;
-        let defaults = Arc::new(LoadedPlan::default());
+        let previous = Arc::new(LoadedPlan::default());
         let (tx, mut rx) = mpsc::channel(64);
         let request = home_request(home.path())?;
         acquire_generation(
             Arc::new(request),
-            defaults.clone(),
+            previous.clone(),
             Runner::default(),
             CancellationToken::new(),
             tx,
@@ -470,7 +470,7 @@ value = [{ env = "TOOL" }]
         else {
             anyhow::bail!("the first event is not a Plan with a diagnostic");
         };
-        assert!(Arc::ptr_eq(&plan, &defaults));
+        assert!(Arc::ptr_eq(&plan, &previous));
         assert!(reason.contains("unknown"), "{reason}");
         Ok(())
     }
