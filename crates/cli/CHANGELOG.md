@@ -7,6 +7,129 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0](https://github.com/shuymn/capsule/compare/v1.1.1...v1.2.0) - 2026-11-03
+
+### Added
+
+- *(plan)* add `{[}` and `{]}` format escapes for literal brackets
+- *(bench)* compare user-visible prompt latency
+
+### Fixed
+
+- *(test)* resolve crate prefixes by library name and slug only ASCII spaces
+- *(test)* scope methods to library crates and keep all Unicode marks
+- *(test)* match github-slugger duplicates and keep combining marks
+- *(test)* scope methods to their crate and refine Setext and emphasis
+- *(test)* parse ATX closing sequences, indentation, and emphasis pairs
+- *(test)* tighten fuzz oracles and the fuzz build
+- *(view)* escape U+061C ARABIC LETTER MARK as a bidi control
+- *(docs)* credit only harness tests and registered PTY scenarios
+- *(docs)* check anchors in any Markdown target and accept variant paths
+- *(limits)* register shutdown deadlines and check shell response bounds
+- *(worker)* stop a generation whose Plan event was not delivered
+- *(worker)* ignore observations without a matching module slot
+- *(protocol)* reject requests in encode that decode would reject
+- *(prompt)* discard a command start that precmd never consumed
+- *(prompt)* treat empty enter as an ordinary prompt
+- *(cli)* allow deprecated AsyncFd::new
+
+### Other
+
+- drop the fixture setup timeout value and link limits to §6
+- cite limit constants instead of restating their values
+- *(test)* slug headings from pulldown-cmark's rendered text
+- *(test)* reject heading markup instead of rendering it
+- *(testing)* cite a real module path in the method path example
+- *(docs)* check qualified method paths, rendered headings, and shell I/O bounds
+- *(extending)* document format bracket escape limits
+- *(deps)* update dependency jdx/mise to v2026.10.25 (#320)
+- *(deps)* update dependency jdx/mise to v2026.10.25
+- *(test)* share fuzz helpers and derive the fuzz matrix
+- add bolero fuzz targets for frames, config, and Git status
+- *(view)* simplify the zsh differential check
+- *(view)* compare rendered prompts with real zsh expansion and width
+- check the invalid-configuration diagnostic on the worker's stderr
+- model backpressure with partial writes instead of a stubbed ERRNO
+- keep the T03 tag on the failed-reload test
+- check a fresh worker with invalid configuration end to end
+- simplify the new contract test helpers
+- specify the partly covered behavioral contract clauses
+- *(architecture)* cite recovery, fallback, and in-flight cancellation specs
+- *(architecture)* cite existing control, grapheme, Git, abort, and regex specs
+- *(architecture)* cite the worker model for observation arrival order
+- *(testing)* point PTY rows that restate contract clauses at the index
+- tighten clause citations to tests, clause checks, and PTY records
+- *(architecture)* index behavioral contract clauses to their tests
+- share the core snapshot helper and filter invalid snapshots once
+- *(protocol)* validate snapshots only in Snapshot::new
+- exclude the Darwin-only EPERM guard and pin open errors
+- share the nonblocking open and the FIFO helper
+- kill or remove the process-cleanup survivors
+- keep the slot-layout and worst-case frame witnesses
+- make the porcelain counts distinguish swapped status bytes
+- fold one-assert git and style tests into tables
+- remove example tests that property and model tests cover
+- paint every accepted color-map code
+- apply review cleanups to the mutation-testing change
+- add opt-in mutation testing and close the baseline gaps
+- *(worker)* simplify the machine and state invariants up front
+- *(worker)* extract a sans-IO state machine with a model test
+- *(view)* keep default proptest cases and tag threat properties
+- *(view)* drop an import the parent glob already provides
+- *(core)* add property tests for view layout and serialization bounds
+- *(core)* write dummy executables without a local writable descriptor
+- *(core)* add tagged regressions for the T04 and T05 mitigations
+- *(docs)* regenerate threat coverage per threat with an update mode
+- *(docs)* derive threat-model coverage from Covers tags on tests
+- *(pty)* simplify the harness after review
+- *(pty)* split session_pty.py into a pty_suite package with a scenario DSL
+- *(docs)* resolve method paths, same-page anchors, and lint inheritance
+- *(protocol)* share biased input strategies in property tests
+- *(docs)* derive the limit registry from limits.rs and tighten checks
+- *(docs)* check links, cited identifiers, and lint policy in docs
+- *(limits)* define every resource limit once and check the docs
+- *(deps)* update dependency jdx/mise to v2026.10.24 (#291)
+- *(deps)* update dependency jdx/mise to v2026.10.24
+- *(threat-model)* state current rules instead of a review log
+- align lint list, ownership table, and ADR naming with the code
+- *(test)* share precmd transition lookup in the PTY driver
+- *(prompt)* state the prompt input rule directly
+- *(deps)* update rust crate unicode-width to v0.2.3
+- *(build)* simplify mise tasks, pins, and helper image
+- *(deps)* update taiki-e/install-action action to v2.88.1 (#277)
+- *(deps)* update taiki-e/install-action action to v2.88.1
+- pin mise 2026.10.17
+- *(renovate)* update pinned mise version in CI and helper image
+- migrate task runner from Task to mise
+- *(deps)* update taiki-e/install-action action to v2.88.0 (#276)
+- *(deps)* update taiki-e/install-action action to v2.88.0
+- *(deps)* update taiki-e/install-action action to v2.87.33 (#275)
+- *(deps)* update taiki-e/install-action action to v2.87.33
+- *(deps)* update rust crate rustix to v1.1.6 (#273)
+- *(deps)* update rust crate rustix to v1.1.6
+- *(deps)* update taiki-e/install-action action to v2.87.32 (#272)
+- *(deps)* update taiki-e/install-action action to v2.87.32
+- *(deps)* update taiki-e/install-action action to v2.87.31 (#270)
+- *(deps)* update taiki-e/install-action action to v2.87.31
+- *(deps)* update rust crate tokio to v1.54.1
+- *(deps)* update cachix/install-nix-action action to v31.11.3 (#269)
+- *(deps)* update cachix/install-nix-action action to v31.11.3
+- *(deps)* update taiki-e/install-action action to v2.87.30 (#267)
+- *(deps)* update taiki-e/install-action action to v2.87.30
+- *(deps)* update python docker tag to v3.15 (#266)
+- *(deps)* update python docker tag to v3.15
+- *(deps)* update taiki-e/install-action action to v2.87.29 (#265)
+- *(deps)* update taiki-e/install-action action to v2.87.29
+- *(deps)* update shuymn/github-actions digest to 7fdaa03 (#264)
+- *(deps)* update shuymn/github-actions digest to 7fdaa03
+- *(deps)* update cachix/install-nix-action action to v31.11.2 (#263)
+- *(deps)* update cachix/install-nix-action action to v31.11.2
+- *(threat-model)* translate to English
+- *(readme)* chart the measured prompt latency
+- *(bench)* keep published results in the repository
+- install uv from install-action's manifest
+- *(readme)* lead with why and measured latency
+
 ## [1.1.1](https://github.com/shuymn/capsule/compare/v1.1.0...v1.1.1) - 2026-10-17
 
 ### Other
