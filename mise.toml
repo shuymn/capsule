@@ -60,6 +60,11 @@ description = "Run the real-PTY zsh/worker contract (requires zsh, git, and ps)"
 depends = ["build"]
 run = "uv run --no-project scripts/session_pty.py"
 
+[tasks."test:mutants"]
+description = "Run mutation testing; pass cargo-mutants options such as --in-diff or --file after the task name"
+tools = { "github:sourcefrog/cargo-mutants" = "27.1.0" }
+run = "cargo mutants"
+
 [tasks.doc]
 description = "Build documentation without dependency docs"
 run = "cargo doc --workspace --no-deps"

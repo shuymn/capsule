@@ -476,3 +476,17 @@ async fn repository_search_stops_after_the_depth_limit() -> Result<(), Box<dyn s
     assert!(find_repository(&deepest, &runner, &cancel).await?.is_none());
     Ok(())
 }
+
+#[test]
+fn local_directory_abbreviates_only_a_nonempty_home() {
+    let directory = |cwd: &str, home: &str| {
+        local_directory(&Snapshot {
+            cwd: cwd.into(),
+            env: vec![("HOME".into(), home.into())],
+        })
+    };
+    assert_eq!(directory("/home/u", "/home/u"), "~");
+    assert_eq!(directory("/home/u/src", "/home/u"), "~/src");
+    assert_eq!(directory("/home/user", "/home/u"), "/home/user");
+    assert_eq!(directory("/home/u/src", ""), "/home/u/src");
+}

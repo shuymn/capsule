@@ -40,6 +40,14 @@ Read this file before writing or modifying tests.
   `docs.rs` rejects unknown threat IDs and stray tags and checks the §8
   "Existing verification" column; regenerate it with
   `CAPSULE_UPDATE_DOCS=1 cargo test -p capsule-cli --test docs`.
+- Measure test strength with `mise run test:mutants` ([cargo-mutants](https://mutants.rs/),
+  configured in [.cargo/mutants.toml](../.cargo/mutants.toml)). It is opt-in, not part
+  of `check`: a full run takes tens of minutes, so add `--jobs <n>`, and pass `--file <path>` or
+  `--in-diff <diff-file>` for the code you changed. A missed mutant is a test gap:
+  add the case that kills it. For an equivalent mutant, prefer code that cannot
+  produce it; otherwise exclude it there with a comment. Before deleting a test,
+  check that the missed set stays the same. On Linux, the macOS-only cleanup
+  branches in `terminate_group` and `observe_exit` survive by design.
 - Keep doctests runnable; use hidden `# ` setup, `no_run` for external resources,
   and `compile_fail` for invalid usage.
 

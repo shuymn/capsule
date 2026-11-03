@@ -177,8 +177,7 @@ fn compile_candidate(raw: RawCandidate, context: &str) -> Result<Candidate, Conf
             Source::File(path)
         }
         (None, None, Some(args)) => {
-            if args.is_empty()
-                || args.len() > MAX_COMMAND_ARGS
+            if args.len() > MAX_COMMAND_ARGS
                 || args.first().is_none_or(String::is_empty)
                 || args.iter().any(|arg| arg.contains('\0'))
             {

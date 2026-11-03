@@ -140,4 +140,27 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn request_header_estimate_is_the_widest_header() -> Result<(), capsule_protocol::session::Error>
+    {
+        use capsule_protocol::session::{Request, Snapshot};
+
+        let widest = Request {
+            generation: u64::MAX,
+            snapshot: Snapshot {
+                cwd: "/".into(),
+                env: Vec::new(),
+            },
+            cols: u16::MAX,
+            last_exit_code: i32::MIN,
+            duration_ms: Some(u64::MAX),
+            keymap: "k".repeat(1024),
+        };
+        assert_eq!(
+            widest.encode()?.len() - "/\n".len(),
+            MAX_REQUEST_HEADER_BYTES
+        );
+        Ok(())
+    }
 }

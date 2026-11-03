@@ -7,8 +7,8 @@ use super::*;
 use crate::{
     acquire::Runner,
     limits::{
-        MAX_CANDIDATES_PER_VALUE, MAX_CONFIG_BYTES, MAX_FORMAT_BYTES, MAX_FORMAT_DEPTH,
-        MAX_MODULES, MAX_OUTPUT_BYTES, MAX_VALUES_PER_MODULE,
+        MAX_CANDIDATES_PER_VALUE, MAX_COMMAND_ARGS, MAX_CONFIG_BYTES, MAX_FORMAT_BYTES,
+        MAX_FORMAT_DEPTH, MAX_MODULES, MAX_OUTPUT_BYTES, MAX_VALUES_PER_MODULE, MAX_WHEN_ITEMS,
     },
     render::style::Color,
 };
@@ -169,6 +169,14 @@ fn source_and_regex_validation_happens_before_acquisition() {
     }
     assert!(one_module("{value}", "value = [{ env = \"A\\u0000B\" }]").is_err());
     assert!(one_module("{value}", "value = [{ command = [\"x\", \"\\u0000\"] }]").is_err());
+    let command = |count| {
+        format!(
+            "value = [{{ command = [{}] }}]",
+            vec!["'x'"; count].join(", ")
+        )
+    };
+    assert!(one_module("{value}", &command(MAX_COMMAND_ARGS)).is_ok());
+    assert!(one_module("{value}", &command(MAX_COMMAND_ARGS + 1)).is_err());
     for path in INVALID_PATHS {
         assert!(
             one_module("{value}", &format!("value = [{{ file = {path} }}]")).is_err(),
@@ -179,15 +187,23 @@ fn source_and_regex_validation_happens_before_acquisition() {
 
 /// Covers: T05
 #[test]
-fn condition_paths_are_lexically_relative() {
-    let when = |files: &str| {
+fn conditions_are_relative_paths_and_bounded() {
+    let when = |table: &str| {
         ConfigPlan::parse(&format!(
-            "schema_version = 2\n[[module]]\nname = 'x'\nformat = 'x'\nvalues = {{}}\nwhen = {{ files = [{files}] }}"
+            "schema_version = 2\n[[module]]\nname = 'x'\nformat = 'x'\nvalues = {{}}\nwhen = {{ {table} }}"
         ))
     };
-    assert!(when("'Cargo.toml', 'nested/marker'").is_ok());
+    assert!(when("files = ['Cargo.toml', 'nested/marker']").is_ok());
     for path in INVALID_PATHS {
-        assert!(when(path).is_err(), "accepted condition {path}");
+        assert!(
+            when(&format!("files = [{path}]")).is_err(),
+            "accepted condition {path}"
+        );
+    }
+    for key in ["files", "env"] {
+        let items = |count| format!("{key} = [{}]", vec!["'x'"; count].join(", "));
+        assert!(when(&items(MAX_WHEN_ITEMS)).is_ok());
+        assert!(when(&items(MAX_WHEN_ITEMS + 1)).is_err(), "accepted {key}");
     }
 }
 
@@ -228,6 +244,15 @@ fn duplicate_names_and_undefined_or_unclosed_formats_are_rejected() -> TestResul
     let source = "schema_version=2\n[[module]]\nname='x'\nvalues={value=[{env='A'}]}\n[[module]]\nname='x'\nvalues={value=[{env='B'}]}";
     assert!(ConfigPlan::parse(source).is_err());
     assert!(one_module("{value}", "value=[{env='A'}]\nvalue=[{env='B'}]").is_err());
+    let named = |name: &str| {
+        ConfigPlan::parse(&format!(
+            "schema_version=2\n[[module]]\nname={name}\nformat='x'\nvalues={{}}"
+        ))
+    };
+    assert!(named("'a b'").is_ok());
+    for name in ["''", "' x'", "\"x\\u0007\"", "'a{b'"] {
+        assert!(named(name).is_err(), "accepted name {name}");
+    }
     for format in ["{missing}", "{", "{value", "[optional", "[{value}", "{}"] {
         assert!(one_module(format, "value=[{env='A'}]").is_err());
     }
@@ -463,6 +488,7 @@ async fn conditions_preserve_empty_environment_and_or_and_semantics() -> TestRes
     );
     assert!(!acquire_condition(&when, &snapshot(dir.path(), &[]), &runner, &cancel).await?);
     std::fs::remove_file(dir.path().join("marker"))?;
+    std::fs::create_dir(dir.path().join("marker"))?;
     assert!(
         !acquire_condition(
             &when,

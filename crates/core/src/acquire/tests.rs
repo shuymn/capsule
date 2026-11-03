@@ -225,9 +225,11 @@ fn dropped_command_future_retains_its_slot_until_the_child_is_reaped() -> TestRe
 fn file_distinguishes_missing_empty_oversized_and_non_regular_sources() -> TestResult {
     let directory = tempfile::tempdir()?;
     let empty = directory.path().join("empty");
+    let full = directory.path().join("full");
     let large = directory.path().join("large");
     let fifo = directory.path().join("fifo");
     std::fs::write(&empty, [])?;
+    std::fs::write(&full, vec![0; MAX_OUTPUT_BYTES])?;
     std::fs::write(&large, vec![0; MAX_OUTPUT_BYTES + 1])?;
     assert!(
         std::process::Command::new("mkfifo")
@@ -242,6 +244,8 @@ fn file_distinguishes_missing_empty_oversized_and_non_regular_sources() -> TestR
         assert_eq!(runner.file(&directory.path().join("missing"), &cancel).await?, None);
         assert!(runner.exists(&empty, &cancel).await?);
         assert!(!runner.exists(&directory.path().join("missing"), &cancel).await?);
+        assert!(runner.metadata(&empty.join("child"), &cancel).await.is_err());
+        assert_eq!(runner.file(&full, &cancel).await?.map(|bytes| bytes.len()), Some(MAX_OUTPUT_BYTES));
         assert!(matches!(runner.file(&large, &cancel).await, Err(AcquireError::OutputTooLarge)));
         assert!(matches!(runner.file(&fifo, &cancel).await, Err(AcquireError::Io(error)) if error.kind() == io::ErrorKind::InvalidInput));
         Ok::<_, AcquireError>(())

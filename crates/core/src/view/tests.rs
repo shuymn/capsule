@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use super::*;
 use crate::{
     plan::ViewConfig,
@@ -99,6 +101,8 @@ fn line_fitting_truncates_first_segment_then_drops_the_rightmost() {
         20,
     );
     assert_eq!(dropped.to_zsh(ColorMap::default()), "dir segment-aaa");
+    let no_room = fit_line(&[segment("dir"), segment("main")], 5);
+    assert_eq!(no_room.to_zsh(ColorMap::default()), "dir");
     assert!(fit_line(&[segment("abc")], 0).is_empty());
 }
 
@@ -269,6 +273,8 @@ fn builtins_keep_two_lines_connectors_and_independent_styles() {
 
     let mut plan = ConfigPlan::default();
     plan.view.time.disabled = false;
+    plan.view.time.format = crate::plan::TimeFormat::WithoutSeconds;
+    plan.view.connectors.style = crate::plan::StyleConfig::fg(Color::Blue);
     let status = GitStatus {
         head_oid: Some("abcdef012345".into()),
         modified: 1,
@@ -289,36 +295,42 @@ fn builtins_keep_two_lines_connectors_and_independent_styles() {
             ..input()
         },
     );
-    for text in [
-        "project",
-        "\u{f023}",
-        "on",
-        "\u{f418}",
-        "HEAD ",
-        "(abcdef0)",
-        "(REBASING 2/5)",
-        "[!]",
-        "took",
-        "1m5s",
-    ] {
-        assert!(
-            prompt.left1.contains(text),
-            "missing {text}: {}",
-            prompt.left1
-        );
-    }
-    assert!(contains_style_sequence(&prompt.left1, &[1, 36]));
-    assert!(contains_style_sequence(&prompt.left1, &[1, 35]));
-    assert!(contains_style_sequence(&prompt.left1, &[1, 32]));
-    assert!(contains_style_sequence(&prompt.left1, &[1, 33]));
-    assert!(contains_style_sequence(&prompt.left1, &[1, 31]));
-    for text in ["at", "14:05:09", "❯"] {
-        assert!(
-            prompt.left2.contains(text),
-            "missing {text}: {}",
-            prompt.left2
-        );
-    }
+    let styled = |codes: &str, text: &str| {
+        let codes = codes.split(';').fold(String::new(), |mut codes, code| {
+            let _ = write!(codes, "\x1b[{code}m");
+            codes
+        });
+        format!("%{{{codes}%}}{text}%{{\x1b[0m%}}")
+    };
+    let left1 = [
+        styled("1;36", "project"),
+        " ".into(),
+        styled("31", "\u{f023}"),
+        " ".into(),
+        styled("34", "on"),
+        " ".into(),
+        styled("1;35", "\u{f418}"),
+        " ".into(),
+        styled("1;35", "HEAD "),
+        styled("1;32", "(abcdef0)"),
+        " ".into(),
+        styled("1;33", "(REBASING 2/5)"),
+        " ".into(),
+        styled("1;31", "[!]"),
+        " ".into(),
+        styled("34", "took"),
+        " ".into(),
+        styled("1;33", "1m5s"),
+    ];
+    assert_eq!(prompt.left1, left1.concat());
+    let left2 = [
+        styled("34", "at"),
+        " ".into(),
+        styled("1;33", "14:05"),
+        " ".into(),
+        styled("1;32", "❯"),
+    ];
+    assert_eq!(prompt.left2, left2.concat());
 }
 
 #[test]
@@ -341,6 +353,36 @@ fn builtins_disabled_and_unavailable_values_stay_absent() {
         ),
         PromptLines::default()
     );
+}
+
+#[test]
+fn partial_git_status_has_no_leading_separator_and_duration_threshold_is_inclusive() {
+    use crate::git::{GitOperationState, GitState};
+
+    let config = ViewConfig::default();
+    let git = |status: GitStatus| builtins::git(&config, &status).map(|text| text.plain_text());
+    let state = GitOperationState {
+        state: GitState::Merge,
+        step: None,
+        total: None,
+    };
+    assert_eq!(
+        git(GitStatus {
+            state: Some(state),
+            ..GitStatus::default()
+        }),
+        Some("on \u{f418} (MERGING)".to_owned())
+    );
+    assert_eq!(
+        git(GitStatus {
+            untracked: 1,
+            ..GitStatus::default()
+        }),
+        Some("on \u{f418} [?]".to_owned())
+    );
+    let threshold = config.cmd_duration.threshold_ms;
+    assert!(builtins::duration(&config, Some(threshold)).is_some());
+    assert!(builtins::duration(&config, Some(threshold - 1)).is_none());
 }
 
 #[test]
