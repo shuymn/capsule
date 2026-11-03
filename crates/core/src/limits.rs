@@ -72,6 +72,11 @@ limits! {
     Time GENERATION_TIMEOUT: Duration = Duration::from_secs(2);
     /// Grace period for terminating and reaping a command's process group.
     Time CLEANUP_TIMEOUT: Duration = Duration::from_millis(100);
+    /// Wait for cancelled generations to finish after the worker stops serving,
+    /// before aborting their tasks.
+    Time GENERATION_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
+    /// Wait for blocking tasks when the worker runtime shuts down.
+    Time RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(500);
 
     /// Maximum number of custom modules in a plan.
     Count MAX_MODULES: usize = 64;
@@ -117,10 +122,14 @@ mod tests {
 
     #[test]
     fn zsh_bounds_match_the_limits_module() {
-        // The pending frame includes its LF delimiter; MAX_REQUEST excludes it.
+        // The pending request includes its LF delimiter; MAX_REQUEST excludes it.
+        // A received line excludes its LF, and the receive buffer holds at most
+        // one unterminated frame.
         for bound in [
             format!("(( ${{#_CAPSULE_SNAPSHOT}} > {MAX_SNAPSHOT_BYTES} ))"),
             format!("(( ${{#_CAPSULE_PENDING}} > {} ))", MAX_REQUEST + 1),
+            format!("(( ${{#_capsule_line}} > {MAX_RESPONSE} ))"),
+            format!("(( ${{#_CAPSULE_RX}} > {MAX_RESPONSE} ))"),
         ] {
             assert_eq!(
                 include_str!("init/init.zsh").matches(&bound).count(),

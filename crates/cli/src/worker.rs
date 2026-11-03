@@ -1,11 +1,13 @@
 //! One shell owns one worker, one current generation and one pending replacement.
 
-use std::{io, os::fd::AsFd, path::PathBuf, sync::Arc, time::Duration};
+use std::{io, os::fd::AsFd, path::PathBuf, sync::Arc};
 
 use capsule_core::{
     acquire::{AcquireError, Runner},
     git::{ContextInfo, acquire_context, local_directory},
-    limits::{GENERATION_TIMEOUT, MAX_FILE_JOBS},
+    limits::{
+        GENERATION_DRAIN_TIMEOUT, GENERATION_TIMEOUT, MAX_FILE_JOBS, RUNTIME_SHUTDOWN_TIMEOUT,
+    },
     plan::{ConfigPlan, ModuleObservation, Observation, acquire_condition, acquire_value},
     view::{self, ViewInput},
 };
@@ -28,7 +30,7 @@ pub fn run() -> anyhow::Result<()> {
         .max_blocking_threads(MAX_FILE_JOBS)
         .build()?;
     let result = runtime.block_on(serve());
-    runtime.shutdown_timeout(Duration::from_millis(500));
+    runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
     result
 }
 
@@ -234,7 +236,7 @@ async fn serve() -> anyhow::Result<()> {
     }.await;
     active_cancel.cancel();
     stop.cancel();
-    if tokio::time::timeout(Duration::from_secs(1), async {
+    if tokio::time::timeout(GENERATION_DRAIN_TIMEOUT, async {
         while generations.join_next().await.is_some() {}
     })
     .await

@@ -255,12 +255,22 @@ fn anchors(document: &str) -> BTreeSet<String> {
     anchors
 }
 
-/// Inline link targets, `](target)`, on one line.
+/// Link targets on one line: Markdown `](target)` and HTML `src="target"` or
+/// `href="target"`.
 fn link_targets(line: &str) -> impl Iterator<Item = &str> {
-    line.split("](")
+    let markdown = line
+        .split("](")
         .skip(1)
         .filter_map(|rest| rest.split_once(')').map(|(target, _)| target))
-        .map(|target| target.split_once(' ').map_or(target, |(path, _)| path))
+        .map(|target| target.split_once(' ').map_or(target, |(path, _)| path));
+    let html = [" src=\"", " href=\""]
+        .into_iter()
+        .flat_map(move |attribute| {
+            line.split(attribute)
+                .skip(1)
+                .filter_map(|rest| rest.split_once('"').map(|(target, _)| target))
+        });
+    markdown.chain(html)
 }
 
 fn parse_limit(text: &str) -> Option<Limit> {

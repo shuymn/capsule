@@ -180,6 +180,8 @@ Operation audit logs and user identification for repudiation (R) are not securit
 | One I/O operation, including the wait for capacity | 500 ms | `ACQUISITION_TIMEOUT` |
 | Acquisition generation | 2 s | `GENERATION_TIMEOUT` |
 | Process-group cleanup grace | 100 ms | `CLEANUP_TIMEOUT` |
+| Draining cancelled generations after the worker stops serving | 1 s | `GENERATION_DRAIN_TIMEOUT` |
+| Blocking tasks at worker runtime shutdown | 500 ms | `RUNTIME_SHUTDOWN_TIMEOUT` |
 | Modules | 64 | `MAX_MODULES` |
 | Values across all modules | 256 | `MAX_TOTAL_VALUES` |
 | Candidates across all values | 1024 | `MAX_TOTAL_CANDIDATES` |
