@@ -452,16 +452,14 @@ fn oversized_snapshot_omits_the_request_and_selects_fallback() -> Result {
 fn backpressured_frame_completes_before_the_newest_pending_request() -> Result {
     let script = format!(
         "{}\n\
-        # Accept at most $limit bytes per write, then report EAGAIN.\n\
+        # Accept at most $limit bytes per write, as a nearly full pipe does.\n\
         syswrite() {{\n\
             local -a fd count; zparseopts -D o:=fd c:=count\n\
             local -i written=$(( limit < ${{#1}} ? limit : ${{#1}} ))\n\
             print -rn -- \"${{1[1,written]}}\" >>$sent\n\
             : ${{(P)count[2]::=$written}}\n\
-            (( written == ${{#1}} )) && return 0\n\
-            ERRNO=${{errnos[(i)EAGAIN]}}; return 2\n\
         }}\n\
-        sent=$HOME/sent limit=5 _CAPSULE_FD_IN=9\n\
+        sent=$HOME/sent limit=2 _CAPSULE_FD_IN=9\n\
         for _CAPSULE_GENERATION in 1 2 3; do\n\
             _CAPSULE_SNAPSHOT=snapshot$_CAPSULE_GENERATION\n\
             _capsule_send\n\
