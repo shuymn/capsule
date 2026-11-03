@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 import signal
 
 from .. import fixtures
@@ -49,8 +50,8 @@ def run_hook_matrix(suite):
             elif case.kind == "setopt":
                 subst = not subst
             # Acquisition sees cwd and exports after every hook ran or aborted.
-            shell.assert_acquired_cwd(cwd)
-            assert shell.acquired("value") == value, case
+            assert shell.acquired_cwd == os.fsencode(cwd.resolve()), case
+            assert shell.read("value") == value, case
 
             finalized = prompt.last_finalized()
             if case.trigger == "command":
@@ -118,129 +119,127 @@ def run_preloaded_hook_helper(suite):
 def run_hook_status(suite):
     with suite.session("hook-status", precmd_setup=fixtures.HOOK_STATUS_SETUP) as shell:
         shell.complete(1)
-        shell.command("(exit 9)")
-        shell.complete(2)
+        shell.run_line("(exit 9)")
         assert shell.read("first-status") == b"9\n"
         assert shell.read("last-status") == b"9\n"
         assert shell.count() == 2
     suite.record("user_precmd_hooks_receive_original_command_status_after_nonzero_hook_returns")
 
 
+HOOK_ERROR_PAYLOAD = b"$(>~/dollar) `>~/backtick`"
+HOOK_ERROR_DISPLAY = HOOK_ERROR_PAYLOAD + b"\ncharacter "
+
+
+def submit_withheld_hook_error(shell, worker, command):
+    """Stop the worker, show a payload display, then submit `command` whose hook errors.
+
+    Requires PROMPT_SUBST off, so the payload display is the literal prompt.
+    """
+    shell.signal_worker(worker, signal.SIGSTOP)
+    current = shell.state()["generation"]
+    shell.inject_frame(current, HOOK_ERROR_PAYLOAD, "character")
+    shell.state()
+    assert shell.prompt == HOOK_ERROR_DISPLAY
+    shell.path("late-hook").unlink()
+    prompt = shell.submit(command, generation=current + 1)
+    eventually(prompt.finalized, "finalization after hook error", shell.pump)
+    state = shell.state(wait_ready=False)
+    assert state["generation"] == prompt.generation and state["worker"] == worker
+    assert shell.prompt == SUBST_PROMPT
+    assert shell.rendered == HOOK_ERROR_DISPLAY
+    shell.assert_no_injection(*INJECTION_MARKERS)
+    assert shell.exists("error-hook"), "failing user hook was not reached"
+    assert not shell.exists("late-hook"), "hook error did not stop subsequent user hooks"
+    shell.pump()
+    assert b"division by zero" in shell.output()
+    finalized = prompt.last_finalized()
+    assert finalized["status"] == 7 and int(finalized["duration"]) >= 3000, finalized
+    return prompt
+
+
 def run_hook_errors(suite):
     with suite.session("hook-errors", precmd_setup=fixtures.HOOK_ERROR_SETUP) as shell:
-        _hook_errors(shell, suite.record)
+        shell.complete(1)
+        shell.run_line("unsetopt promptsubst")
+        worker = shell.state()["worker"]
 
-
-def _hook_errors(shell, record):
-    shell.complete(1)
-    shell.command("unsetopt promptsubst")
-    shell.complete(2)
-    worker = shell.state()["worker"]
-    payload = b"$(>~/dollar) `>~/backtick`"
-    displayed = payload + b"\ncharacter "
-
-    # Withhold all new responses while a command changes PROMPT_SUBST and a
-    # preserved hook raises a genuine shell error (not merely `return 1`).
-    for generation, command in (
-        (3, "_capsule_test_hook_error=1; setopt promptsubst; _CAPSULE_CMD_START=$((EPOCHREALTIME-3)); (exit 7)"),
-        (5, "_capsule_test_hook_error=1; _capsule_test_hook_subst=on; _CAPSULE_CMD_START=$((EPOCHREALTIME-3)); (exit 7)"),
-    ):
-        if generation == 5:
-            shell.command("_capsule_test_hook_error=0; unsetopt promptsubst")
-            shell.complete(4)
-        shell.signal_worker(worker, signal.SIGSTOP)
-        shell.inject_frame(generation - 1, payload, "character")
-        shell.state()
-        assert shell.prompt == displayed
-        shell.path("late-hook").unlink()
-        prompt = shell.submit(command, generation=generation)
-        eventually(
-            lambda: any(item["event"] == b"precmd" for item in prompt.transitions()),
-            "finalization after hook error", shell.pump,
+        # Withhold all new responses while a command changes PROMPT_SUBST and a
+        # preserved hook raises a genuine shell error (not merely `return 1`).
+        prompt = submit_withheld_hook_error(
+            shell, worker,
+            "_capsule_test_hook_error=1; setopt promptsubst; _CAPSULE_CMD_START=$((EPOCHREALTIME-3)); (exit 7)",
         )
-        state = shell.state(wait_ready=False)
-        assert state["generation"] == generation and state["worker"] == worker
-        assert shell.prompt == SUBST_PROMPT
-        assert shell.rendered == displayed
-        shell.assert_no_injection(*INJECTION_MARKERS)
-        assert shell.exists("error-hook"), "failing user hook was not reached"
-        assert not shell.exists("late-hook"), "hook error did not stop subsequent user hooks"
-        shell.pump()
-        assert b"division by zero" in shell.output()
-        finalized = prompt.last_finalized()
-        assert finalized["status"] == 7 and int(finalized["duration"]) >= 3000, finalized
-        if generation == 3:
-            shell.signal_worker(worker, signal.SIGCONT)
-            prompt.complete()
-    record("command_and_hook_promptsubst_transitions_remain_literal_after_genuine_hook_errors")
-    record("hook_errors_skip_later_user_hooks_but_submit_generations_with_command_status_and_duration")
+        shell.signal_worker(worker, signal.SIGCONT)
+        prompt.complete()
+        # The hook error skipped the line-init witness, so do not wait for it.
+        shell.run_line("_capsule_test_hook_error=0; unsetopt promptsubst", wait_ready=False)
+        # Now the hook itself enables PROMPT_SUBST before raising; keep the worker stopped.
+        submit_withheld_hook_error(
+            shell, worker,
+            "_capsule_test_hook_error=1; _capsule_test_hook_subst=on; _CAPSULE_CMD_START=$((EPOCHREALTIME-3)); (exit 7)",
+        )
+        suite.record("command_and_hook_promptsubst_transitions_remain_literal_after_genuine_hook_errors")
+        suite.record("hook_errors_skip_later_user_hooks_but_submit_generations_with_command_status_and_duration")
 
-    shell.signal_worker(worker, signal.SIGKILL)
-    eventually(lambda: shell.state(wait_ready=False)["read_fd"] == 0, "worker failure after hook error", shell.pump)
-    assert shell.prompt == FALLBACK_PROMPT
-    shell.path("work/other").mkdir()
-    shell.submit("cd other; export CAP_VALUE=recovered", generation=6).complete()
-    restarted = shell.state(wait_ready=False)
-    assert restarted["generation"] == 6 and restarted["worker"] != worker
-    assert shell.acquired("value") == b"recovered"
-    shell.assert_acquired_cwd(shell.path("work/other"))
-    assert not shell.exists("late-hook")
-    record("hook_errors_do_not_prevent_snapshot_invalidation_or_replacement_worker_startup")
-    shell.command("_capsule_test_hook_error=0")
-    shell.complete(7)
-    shell.ready(7)
-    assert shell.exists("late-hook")
+        shell.signal_worker(worker, signal.SIGKILL)
+        eventually(lambda: shell.state(wait_ready=False)["read_fd"] == 0, "worker failure after hook error", shell.pump)
+        assert shell.prompt == FALLBACK_PROMPT
+        shell.path("work/other").mkdir()
+        prompt = shell.run_line("cd other; export CAP_VALUE=recovered", wait_ready=False)
+        restarted = shell.state(wait_ready=False)
+        assert restarted["generation"] == prompt.generation and restarted["worker"] != worker
+        assert shell.read("value") == b"recovered"
+        assert shell.acquired_cwd == os.fsencode(shell.path("work/other").resolve())
+        assert not shell.exists("late-hook")
+        suite.record("hook_errors_do_not_prevent_snapshot_invalidation_or_replacement_worker_startup")
+        prompt = shell.run_line("_capsule_test_hook_error=0", wait_ready=False)
+        shell.ready(prompt.generation)
+        assert shell.exists("late-hook")
 
 
 def run_named_hook_error(suite):
-    with suite.session("named-hook-error", precmd_setup=fixtures.NAMED_HOOK_ERROR_SETUP) as shell:
-        _named_hook_error(shell, suite.record)
-
-
-def _named_hook_error(shell, record):
     # zsh runs a named precmd() before precmd_functions, so its genuine shell
     # error skips every Capsule hook before the worker-rendered prompt expands.
-    payload = b"$(printf x > ~/dollar) `printf x > ~/backtick` \\"
-    shell.complete(1)
-    shell.write("work/data", payload)
-    shell.write_config(fixtures.DATA_FILE_CONFIG)
-    shell.command("unsetopt promptsubst")
-    shell.complete(2)
-    worker = shell.state()["worker"]
-    retained = shell.prompt
-    assert retained == shell.rendered, "option-off prompt must hold retained text"
-    before = shell.output_offset()
-    shell.command("_capsule_test_named_error=1; _CAPSULE_CMD_START=$((EPOCHREALTIME-3))")
-    eventually(lambda: shell.exists("named-error"), "named precmd hook", shell.pump)
-    eventually(lambda: b"division by zero" in shell.output(before), "genuine named hook error", shell.pump)
-    state = shell.state(wait_ready=False)
-    assert state["generation"] == 2 and state["worker"] == worker, "named hook error did not skip Capsule hooks"
-    expanded = shell.output(before)
-    assert payload in expanded[expanded.index(b"division by zero"):], "expanded prompt did not show the payload"
-    assert shell.prompt == retained
-    shell.assert_no_injection(*INJECTION_MARKERS)
-    record("named_precmd_error_expands_worker_display_literally")
+    with suite.session("named-hook-error", precmd_setup=fixtures.NAMED_HOOK_ERROR_SETUP) as shell:
+        payload = b"$(printf x > ~/dollar) `printf x > ~/backtick` \\"
+        shell.complete(1)
+        shell.write("work/data", payload)
+        shell.write_config(fixtures.DATA_FILE_CONFIG)
+        settled = shell.run_line("unsetopt promptsubst")
+        worker = shell.state()["worker"]
+        retained = shell.prompt
+        assert retained == shell.rendered, "option-off prompt must hold retained text"
+        before = shell.output_offset()
+        shell.command("_capsule_test_named_error=1; _CAPSULE_CMD_START=$((EPOCHREALTIME-3))")
+        eventually(lambda: shell.exists("named-error"), "named precmd hook", shell.pump)
+        eventually(lambda: b"division by zero" in shell.output(before), "genuine named hook error", shell.pump)
+        state = shell.state(wait_ready=False)
+        assert state["generation"] == settled.generation and state["worker"] == worker, "named hook error did not skip Capsule hooks"
+        expanded = shell.output(before)
+        assert payload in expanded[expanded.index(b"division by zero"):], "expanded prompt did not show the payload"
+        assert shell.prompt == retained
+        shell.assert_no_injection(*INJECTION_MARKERS)
+        suite.record("named_precmd_error_expands_worker_display_literally")
 
-    # A matching response after the error still sees the option captured before it.
-    line1 = shell.frames(2)[-1][0]
-    mark = shell.mark()
-    shell.inject_frame(2, line1, "injected")
-    eventually(lambda: any(item["event"] == b"apply" for item in shell.transitions(mark, 2)), "late response", shell.pump)
-    shell.state(wait_ready=False)
-    rendered = shell.rendered
-    assert rendered.endswith(b"\ninjected ") and shell.prompt == rendered
-    shell.assert_no_injection(*INJECTION_MARKERS)
-    record("response_after_named_precmd_error_stays_literal")
+        # A matching response after the error still sees the option captured before it.
+        late = settled.from_now()
+        shell.inject_frame(settled.generation, shell.frames(settled.generation)[-1][0], "injected")
+        eventually(late.applied, "late response", shell.pump)
+        shell.state(wait_ready=False)
+        rendered = shell.rendered
+        assert rendered.endswith(b"\ninjected ") and shell.prompt == rendered
+        shell.assert_no_injection(*INJECTION_MARKERS)
+        suite.record("response_after_named_precmd_error_stays_literal")
 
-    # The skipped prompt never consumed the command start; the next prompt must
-    # not attribute it, plus the time spent at that prompt, to empty Enter.
-    prompt = shell.run_line("")
-    finalized = prompt.finalized()
-    assert prompt.generation == 3 and finalized and finalized[-1]["duration"] == b"", finalized
-    record("empty_enter_after_named_precmd_error_omits_stale_duration")
+        # The skipped prompt never consumed the command start; the next prompt must
+        # not attribute it, plus the time spent at that prompt, to empty Enter.
+        prompt = shell.run_line("")
+        assert prompt.generation == settled.generation + 1
+        assert prompt.last_finalized()["duration"] == b"", prompt.finalized()
+        suite.record("empty_enter_after_named_precmd_error_omits_stale_duration")
 
-    finalized = shell.run_line("_CAPSULE_CMD_START=$((EPOCHREALTIME-2)); (exit 7)").last_finalized()
-    assert finalized["status"] == 7 and int(finalized["duration"]) >= 2000, finalized
-    assert shell.state()["worker"] == worker
-    shell.assert_no_injection(*INJECTION_MARKERS)
-    record("named_precmd_recovery_keeps_command_status_and_worker")
+        finalized = shell.run_line("_CAPSULE_CMD_START=$((EPOCHREALTIME-2)); (exit 7)").last_finalized()
+        assert finalized["status"] == 7 and int(finalized["duration"]) >= 2000, finalized
+        assert shell.state()["worker"] == worker
+        shell.assert_no_injection(*INJECTION_MARKERS)
+        suite.record("named_precmd_recovery_keeps_command_status_and_worker")

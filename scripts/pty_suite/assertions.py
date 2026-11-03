@@ -22,17 +22,18 @@ def display_width(line: bytes) -> int:
     return len(re.sub(rb"%\{.*?%\}", b"", line).decode())
 
 
-def assert_history(shell, mark, generation, pending, settled=None):
+def assert_history(prompt, pending, settled=None):
     """Check every emitted render and actual prompt, including precmd fallback."""
-    renders = shell.renders(mark, generation)
-    transitions = shell.transitions(mark, generation)
-    assert renders and any(item["event"] == b"precmd" for item in transitions)
+    renders = prompt.renders()
+    transitions = prompt.transitions()
+    generation = prompt.generation
+    assert renders and prompt.finalized()
     if settled is not None:
-        assert any(item["event"] == b"apply" and item["complete"] == b"1" for item in transitions), ("missing accepted completion", generation, transitions)
+        assert prompt.applied(complete=True), ("missing accepted completion", generation, transitions)
     settled = pending if settled is None else settled
-    for prompt, complete in renders:
+    for text, complete in renders:
         expected = settled if complete else pending
-        assert external(prompt) == expected, ("render", generation, complete, expected, prompt)
+        assert external(text) == expected, ("render", generation, complete, expected, text)
     for transition in transitions:
         if transition["event"] == b"apply":
             expected = settled if transition["complete"] == b"1" else pending
@@ -42,8 +43,20 @@ def assert_history(shell, mark, generation, pending, settled=None):
             assert external(transition["effective"]) in (pending, settled), ("prompt transition", generation, pending, transition)
 
 
-def wait_pending(shell, mark, generation, predicate):
+def wait_pending(prompt, predicate):
     eventually(
-        lambda: any(not complete and predicate(prompt) for prompt, complete in shell.renders(mark, generation)),
-        "local state rendered while acquisition is pending", shell.pump, timeout=0.2,
+        lambda: any(not complete and predicate(text) for text, complete in prompt.renders()),
+        "local state rendered while acquisition is pending", prompt.shell.pump, timeout=0.2,
     )
+
+
+def rerender(prompt, action, predicate):
+    """Run a local display `action`, probe ZLE, and wait for a matching pending render.
+
+    Returns the probe's state and the prompt scoped to records from before `action`.
+    """
+    redraw = prompt.from_now()
+    action()
+    state = prompt.shell.state()  # Also triggers zsh's line-pre-redraw hook.
+    wait_pending(redraw, predicate)
+    return state, redraw

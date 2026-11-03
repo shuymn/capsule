@@ -39,6 +39,16 @@ def acquire_config(script: Path) -> str:
     )
 
 
+# Keys (bindkey caret notation) bound to the test widgets in both vi keymaps.
+STATE_KEY = "^O"  # dump BUFFER, PROMPT, and Capsule state to probe files
+INJECT_KEY = "^P"  # feed $HOME/inject to _capsule_frame
+CLEAR_KEY = "^U"  # clear the buffer and select viins
+TEST_WIDGETS = (
+    (STATE_KEY, "_capsule_test_state"),
+    (INJECT_KEY, "_capsule_test_inject"),
+    (CLEAR_KEY, "_capsule_test_clear"),
+)
+
 # Test instrumentation sourced after Capsule: transition logs, the ^O state
 # probe, the ^P frame injector, the ^U line reset, and a line-init witness.
 INSTRUMENTATION = (
@@ -95,15 +105,10 @@ INSTRUMENTATION = (
     "}\n"
     "add-zle-hook-widget line-init _capsule_test_line_init\n"
     "_capsule_test_clear() { BUFFER=''; CURSOR=0; zle -K viins; }\n"
-    "zle -N _capsule_test_state\n"
-    "zle -N _capsule_test_inject\n"
-    "zle -N _capsule_test_clear\n"
-    "bindkey -M viins '^U' _capsule_test_clear\n"
-    "bindkey -M vicmd '^U' _capsule_test_clear\n"
-    "bindkey -M viins '^O' _capsule_test_state\n"
-    "bindkey -M vicmd '^O' _capsule_test_state\n"
-    "bindkey -M viins '^P' _capsule_test_inject\n"
-    "bindkey -M vicmd '^P' _capsule_test_inject\n"
+    + "".join(
+        f"zle -N {widget}\nbindkey -M viins '{key}' {widget}\nbindkey -M vicmd '{key}' {widget}\n"
+        for key, widget in TEST_WIDGETS
+    )
 )
 
 

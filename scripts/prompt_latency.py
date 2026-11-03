@@ -30,7 +30,7 @@ import sys
 import time
 from pathlib import Path
 
-from pty_suite.terminal import set_window_size, spawn_zsh, utf8_locale
+from pty_suite.terminal import set_window_size, spawn_zsh, zsh_env
 
 READY = b"\x1b]1337;BENCH-READY\x07"
 TIMEOUT = 10.0
@@ -92,8 +92,7 @@ class Session:
         self.tool = tool
         self.buffer = bytearray()
         self.stamps: list[tuple[int, float]] = []  # (buffer length, read time)
-        env = {"HOME": str(home), "ZDOTDIR": str(home), "PATH": path, "TERM": "xterm-256color",
-               "LC_ALL": utf8_locale(), "GIT_CONFIG_NOSYSTEM": "1"}
+        env = zsh_env(home, path, GIT_CONFIG_NOSYSTEM="1")
         self.pid, self.fd = spawn_zsh(cwd, env)
         set_window_size(self.fd, 40, 160)
 

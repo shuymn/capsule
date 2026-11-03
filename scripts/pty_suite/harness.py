@@ -24,10 +24,17 @@ import time
 
 from . import contracts, fixtures, terminal
 
-# Key bindings installed by fixtures.INSTRUMENTATION and vi-mode zsh.
-KEY_STATE = b"\x0f"  # ^O: dump ZLE state to probe files
-KEY_INJECT = b"\x10"  # ^P: feed $HOME/inject to _capsule_frame
-KEY_CLEAR = b"\x15"  # ^U: clear the buffer and select viins
+
+
+def control(caret: str) -> bytes:
+    """The byte zsh's `bindkey` caret notation (`^O`) names."""
+    return bytes([ord(caret[1].upper()) - 64])
+
+
+# Test widgets bound by fixtures.INSTRUMENTATION, plus vi-mode zsh keys.
+KEY_STATE = control(fixtures.STATE_KEY)
+KEY_INJECT = control(fixtures.INJECT_KEY)
+KEY_CLEAR = control(fixtures.CLEAR_KEY)
 KEY_ESCAPE = b"\x1b"
 KEY_LEFT = b"\x1b[D"
 
@@ -96,12 +103,21 @@ def parse_state(text: str) -> dict:
     return result
 
 
+def effective(prompt: bytes, rendered: bytes) -> bytes:
+    """What zsh displays: the rendered text when PROMPT expands it, else PROMPT."""
+    return rendered if prompt == SUBST_PROMPT else prompt
+
+
+def transition_generation(line: bytes) -> int:
+    return int(line.split(b"\t", 2)[1])
+
+
 def parse_transition(line: bytes) -> dict:
     event, gen, prompt, rendered, status, duration, cols, keymap, complete = line.split(b"\t")
     prompt, rendered = unescape(prompt), unescape(rendered)
     return {
         "event": event, "generation": int(gen), "prompt": prompt, "rendered": rendered,
-        "effective": rendered if prompt == SUBST_PROMPT else prompt,
+        "effective": effective(prompt, rendered),
         "status": int(status), "duration": duration,
         "cols": int(cols), "keymap": keymap, "complete": complete,
     }
@@ -115,8 +131,24 @@ class Prompt:
     generation: int
     mark: tuple[int, int]
 
+    def from_now(self) -> Prompt:
+        """The same generation, scoped to log records written from now on."""
+        return Prompt(self.shell, self.generation, self.shell.mark())
+
+    def applied(self, complete=False) -> bool:
+        """Whether an apply transition (an accepted complete one, if `complete`) was logged."""
+        return any(
+            item["event"] == b"apply" and (not complete or item["complete"] == b"1")
+            for item in self.transitions()
+        )
+
     def complete(self, timeout=8):
-        self.shell.complete(self.generation, self.mark, timeout)
+        # Only apply records witness acceptance, including unchanged prompts.
+        # The raw frame log also contains rejected stale/future responses.
+        eventually(
+            lambda: self.applied(complete=True),
+            f"generation {self.generation} complete", self.shell.pump, timeout=timeout,
+        )
 
     def transitions(self):
         return self.shell.transitions(self.mark, self.generation)
@@ -157,12 +189,7 @@ class Shell:
         init = subprocess.run([str(binary), "init", "zsh"], capture_output=True, check=True)
         self.write("init.zsh", init.stdout)
         self.write(".zshrc", fixtures.zshrc(path, precmd_setup))
-        env = {
-            "HOME": str(self.home), "ZDOTDIR": str(self.home),
-            "PATH": path, "TERM": "xterm-256color",
-            "LC_ALL": terminal.utf8_locale(),
-            "CAP_REMOVE": "worker-start-value",
-        }
+        env = terminal.zsh_env(self.home, path, CAP_REMOVE="worker-start-value")
         if hold:
             env["CAP_HOLD"] = "1"
         self.pid, self.fd = terminal.spawn_zsh(self.home / "work", env)
@@ -205,14 +232,9 @@ class Shell:
 
     @property
     def effective_prompt(self) -> bytes:
-        """What zsh displays: the rendered text when PROMPT expands it, else PROMPT."""
-        prompt = self.prompt
-        return self.rendered if prompt == SUBST_PROMPT else prompt
+        return effective(self.prompt, self.rendered)
 
     # Values recorded by the most recent acquisition fixture run.
-
-    def acquired(self, name: str) -> bytes:
-        return self.read(name)
 
     @property
     def acquired_cwd(self) -> bytes:
@@ -275,20 +297,20 @@ class Shell:
         self.write("inject", frame_record(generation, line1, line2, complete))
         self.send(KEY_INJECT)
 
+    def press_enter(self, times: int = 1, source: str = ""):
+        """Type `source`, then press Enter `times` times in one write."""
+        self.path("zle-ready").unlink(missing_ok=True)
+        self.send(source.encode() + b"\n" * times)
+
     def command(self, source: str):
-        self.path("zle-ready").unlink(missing_ok=True)
-        self.send(source.encode() + b"\n")
+        self.press_enter(source=source)
 
-    def press_enter(self, times: int = 1):
-        self.path("zle-ready").unlink(missing_ok=True)
-        self.send(b"\n" * times)
-
-    def submit(self, source: str, generation=None, wait_ready=True) -> Prompt:
-        """Submit one input line without waiting; `generation` defaults to the next one."""
+    def submit(self, source: str, generation=None, wait_ready=True, enters=1) -> Prompt:
+        """Submit an input line without waiting; `generation` defaults to the next one."""
         if generation is None:
             generation = self.next_generation(wait_ready)
         prompt = Prompt(self, generation, self.mark())
-        self.command(source)
+        self.press_enter(enters, source)
         return prompt
 
     def run_line(self, source, wait_ready=True) -> Prompt:
@@ -335,14 +357,7 @@ class Shell:
         return result
 
     def complete(self, generation: int, mark=(0, 0), timeout=8):
-        def found():
-            # Only apply records witness acceptance, including unchanged prompts.
-            # The raw frame log also contains rejected stale/future responses.
-            return any(
-                item["event"] == b"apply" and item["complete"] == b"1"
-                for item in self.transitions(mark, generation)
-            )
-        eventually(found, f"generation {generation} complete", self.pump, timeout=timeout)
+        Prompt(self, generation, mark).complete(timeout)
 
     def next_generation(self, wait_ready=True):
         # Every prompt that reaches Capsule finalization starts a generation.
@@ -364,9 +379,6 @@ class Shell:
         for name in marker_names:
             assert not self.exists(name), f"injection marker {name!r} was created"
 
-    def assert_acquired_cwd(self, directory: Path) -> None:
-        assert self.acquired_cwd == os.fsencode(directory.resolve()), (self.acquired_cwd, directory)
-
     # Transition and frame logs.
 
     def log_lines(self, name):
@@ -379,8 +391,8 @@ class Shell:
 
     def transitions(self, mark, generation):
         return [
-            item for item in map(parse_transition, self.log_lines("transitions")[mark[0]:])
-            if item["generation"] == generation
+            parse_transition(line) for line in self.log_lines("transitions")[mark[0]:]
+            if transition_generation(line) == generation
         ]
 
     def finalized(self, mark, generation):
@@ -425,19 +437,21 @@ class Shell:
             os.close(self.fd)
             self.transcript.close()
 
-    def worker_gone(self, pid):
+    def _identified(self, pid):
+        """The live process matching a remembered worker identity; forget the worker otherwise."""
         identity = self.live_workers.get(pid)
         process = worker_process(pid)
         if identity is None or process is None or process[1] != identity:
             self.live_workers.pop(pid, None)
-            return True
-        return False
+            return None
+        return process
+
+    def worker_gone(self, pid):
+        return self._identified(pid) is None
 
     def signal_worker(self, pid, sig):
-        identity = self.live_workers.get(pid)
-        process = worker_process(pid)
-        if identity is None or process is None or process[1] != identity:
-            self.live_workers.pop(pid, None)
+        process = self._identified(pid)
+        if process is None:
             if sig == signal.SIGKILL:
                 return
             raise AssertionError(f"worker {pid} has already exited")
@@ -460,9 +474,7 @@ class Shell:
         if self.closed:
             return
         for pid in list(self.live_workers):
-            if self.worker_gone(pid):
-                continue
-            process = worker_process(pid)
+            process = self._identified(pid)
             if process is not None and process[0] == self.pid:
                 self.signal_worker(pid, signal.SIGCONT)
 
@@ -471,12 +483,24 @@ class Shell:
             eventually(lambda: self.worker_gone(pid), f"worker {pid} cleanup")
 
 
+class Fifo:
+    """A named pipe held open for writing, so readers block until `release`."""
+
+    def __init__(self, path: Path):
+        os.mkfifo(path)
+        self.fd = os.open(path, os.O_RDWR | os.O_NONBLOCK)
+
+    def release(self):
+        os.write(self.fd, b"release\n")
+
+    def close(self):
+        os.close(self.fd)
+
+
 @contextmanager
 def live_replacement(shell):
     """Hold a replacement alive while checking the exec/CLOEXEC boundary."""
-    gate = shell.path("replacement-gate")
-    os.mkfifo(gate)
-    writer = os.open(gate, os.O_RDWR | os.O_NONBLOCK)
+    gate = Fifo(shell.path("replacement-gate"))
     fixture = shell.path("replacement.py")
     ready = shell.path("replacement-ready")
     try:
@@ -491,9 +515,9 @@ def live_replacement(shell):
         assert active(shell.pid), "exec replacement exited during cleanup checks"
     finally:
         try:
-            os.write(writer, b"release\n")
+            gate.release()
         finally:
-            os.close(writer)
+            gate.close()
             shell.close(request_exit=False)
 
 
@@ -502,37 +526,34 @@ class Gates:
 
     def __init__(self, shell):
         self.shell = shell
-        self.generation = 1
+        self.generation = None
+        self.started = None
         self.held = set()
         self.timings = []
-        self.fds = {}
-        for name in ("git", "tool"):
-            fifo = shell.path(f"{name}.gate")
-            os.mkfifo(fifo)
-            self.fds[name] = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
+        self.fifos = {name: Fifo(shell.path(f"{name}.gate")) for name in ("git", "tool")}
 
     @contextmanager
     def stage(self, command):
-        self.generation += 1
-        mark = self.shell.mark()
-        self.started = time.monotonic()
-        for name in self.fds:
+        """Submit `command` with both acquisitions held; yield its `Prompt` once pending."""
+        self.generation = self.shell.next_generation()
+        for name in self.fifos:
             for suffix in ("ready", "done"):
                 self.shell.path(f"{name}.{suffix}").unlink(missing_ok=True)
             self.shell.path(f"{name}.armed").touch()
             self.held.add(name)
-        self.shell.command(command)
+        self.started = time.monotonic()
+        prompt = self.shell.submit(command, generation=self.generation)
         try:
             eventually(
-                lambda: all(self.shell.exists(f"{name}.ready") for name in self.fds),
+                lambda: all(self.shell.exists(f"{name}.ready") for name in self.fifos),
                 "both gated acquisitions", self.shell.pump, timeout=0.35,
             )
             eventually(
-                lambda: any(not done for _, done in self.shell.renders(mark, self.generation)),
+                lambda: any(not done for _, done in prompt.renders()),
                 "pending render", self.shell.pump, timeout=0.1,
             )
             self.shell.ready(self.generation)
-            yield mark, self.generation
+            yield prompt
         finally:
             self.release()
 
@@ -540,7 +561,7 @@ class Gates:
         for current in list(self.held) if name is None else [name]:
             if current not in self.held:
                 continue
-            os.write(self.fds[current], b"release\n")
+            self.fifos[current].release()
             self.shell.path(f"{current}.armed").unlink(missing_ok=True)
             self.held.remove(current)
             elapsed = time.monotonic() - self.started
@@ -551,8 +572,8 @@ class Gates:
         eventually(lambda: self.shell.exists(f"{name}.done"), description, self.shell.pump, timeout=0.1)
 
     def close(self):
-        for fd in self.fds.values():
-            os.close(fd)
+        for fifo in self.fifos.values():
+            fifo.close()
         self.shell.write("gates.json", json.dumps(self.timings, indent=2) + "\n")
 
 
@@ -581,10 +602,7 @@ class Suite:
 
     @contextmanager
     def session(self, name, **options):
-        """Start a shell, then require clean exit and worker cleanup after the body.
-
-        On failure, `finish` resumes stopped workers before closing the shell.
-        """
+        """Start a shell, then require clean exit and worker cleanup after the body."""
         shell = self.start(name, **options)
         yield shell
         shell.close()

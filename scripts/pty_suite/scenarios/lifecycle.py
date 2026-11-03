@@ -9,7 +9,7 @@ import signal
 import subprocess
 
 from .. import fixtures
-from ..harness import FALLBACK_PROMPT, active, eventually, live_replacement
+from ..harness import FALLBACK_PROMPT, Fifo, active, eventually, live_replacement
 
 
 def run_binary_selection(suite):
@@ -60,10 +60,10 @@ def run_functional(suite):
         suite.record("resize_and_keymap_rerender_without_acquisition")
 
         shell.run_line("unset CAP_REMOVE; CAP_PRIVATE=private; export CAP_VALUE=$'日本語\\tline\\n\\\\tail'; export CAP_RAW=$'raw-\\xff'")
-        assert shell.acquired("value") == "日本語\tline\n\\tail".encode()
-        assert shell.acquired("raw") == b"raw-\xff"
-        assert shell.acquired("removed") == b"unset"
-        assert shell.acquired("private") == b"unset"
+        assert shell.read("value") == "日本語\tline\n\\tail".encode()
+        assert shell.read("raw") == b"raw-\xff"
+        assert shell.read("removed") == b"unset"
+        assert shell.read("private") == b"unset"
         suite.record("full_export_snapshot_preserves_bytes_and_removes_absent_variables")
 
         raw_cwd = os.fsencode(shell.path("work")) + b"/raw-\xff"
@@ -84,16 +84,15 @@ def run_functional(suite):
         assert shell.acquired_cwd == raw_cwd
         suite.record("cwd_bytes_reach_acquisition", non_utf8_fixture_supported=non_utf8)
 
-        os.mkfifo(shell.path("gate"))
+        gate = Fifo(shell.path("gate"))
         prompt = shell.submit("export CAP_GATE=1 CAP_VALUE=after-gate")
         eventually(lambda: shell.exists("gate-ready"), "gated acquisition", shell.pump)
         shell.ready(prompt.generation)
         typed = b"echo cursor-marker"
         shell.type_text(typed, move_left=3)
         shell.assert_buffer(typed, cursor_offset=-3)
-        gate = os.open(shell.path("gate"), os.O_WRONLY | os.O_NONBLOCK)
-        os.write(gate, b"release\n")
-        os.close(gate)
+        gate.release()
+        gate.close()
         prompt.complete()
         shell.assert_buffer(typed, cursor_offset=-3)
         assert b"VALUE=after-gate" in shell.rendered
@@ -102,15 +101,14 @@ def run_functional(suite):
         shell.run_line("unset CAP_GATE; export CAP_VALUE=bulk")
 
         state = shell.state()
-        generation = state["generation"] + 1
         shell.signal_worker(state["worker"], signal.SIGSTOP)
-        shell.command("export CAP_BULK_A=${(l:95000::x:)} CAP_BULK_B=${(l:95000::y:)}")
+        prompt = shell.submit("export CAP_BULK_A=${(l:95000::x:)} CAP_BULK_B=${(l:95000::y:)}", generation=state["generation"] + 1)
         pending = shell.state()
         assert pending["tx"] > 0, pending
-        assert pending["generation"] == generation
+        assert pending["generation"] == prompt.generation
         shell.signal_worker(state["worker"], signal.SIGCONT)
         # No keyboard input until the worker finishes: credit notifications must progress TX.
-        shell.complete(generation)
+        prompt.complete()
         drained = shell.state()
         assert drained["tx"] == drained["pending"] == 0
         suite.record("backpressure_completes_large_request_without_more_keyboard_input", queued_bytes=pending["tx"])

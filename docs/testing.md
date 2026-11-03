@@ -63,7 +63,7 @@ remove the count and both done markers before shell startup. Keep the production
 500ms deadline, generation counts, accepted-completion witnesses, and gate
 deadlines unchanged; do not retry failed scenarios.
 
-Require successful exit and all contract records. [contracts.py](../scripts/pty_suite/contracts.py) is the source of this table: the driver rejects a record no contract lists and fails when a listed record is missing, and the CLI regressions fail when the table below differs from `uv run --no-project scripts/session_pty.py --describe`. Edit the registry, then paste its output:
+Require successful exit and all contract records. [contracts.py](../scripts/pty_suite/contracts.py) is the source of this table: the driver rejects a record no contract lists and fails when a listed record is missing, and the CLI regressions fail when the table below differs from the registry. Edit the registry, then run `uv run --no-project scripts/session_pty.py --update-docs`:
 
 <!-- pty-contract:begin -->
 | Scope | Required behavior | `results.json` records |

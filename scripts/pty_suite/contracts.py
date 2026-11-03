@@ -1,6 +1,7 @@
 """Registry of the interactive shell contract: each scope, its rule, and its records.
 
-docs/testing.md embeds `markdown_table()` between markers, and the driver
+docs/testing.md embeds `markdown_table()` between markers (rewrite it with
+`session_pty.py --update-docs`), and the driver
 rejects records that no contract lists and fails when a listed record is missing.
 """
 
@@ -179,6 +180,13 @@ def markdown_table() -> str:
         records = "<br>".join(f"`{name}`" for name in contract.records)
         lines.append(f"| {contract.scope} | {contract.behavior} | {records} |")
     return "\n".join(lines) + "\n"
+
+
+def update_document(text: str) -> str:
+    """Replace the table between TABLE_BEGIN and TABLE_END with `markdown_table()`."""
+    head, rest = text.split(TABLE_BEGIN + "\n", 1)
+    _, tail = rest.split(TABLE_END, 1)
+    return head + TABLE_BEGIN + "\n" + markdown_table() + TABLE_END + tail
 
 
 def missing_records(recorded) -> list[str]:

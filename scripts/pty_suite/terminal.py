@@ -17,6 +17,14 @@ def utf8_locale() -> str:
     return "en_US.UTF-8" if sys.platform == "darwin" else "C.UTF-8"
 
 
+def zsh_env(home: Path, path: str, **extra: str) -> dict[str, str]:
+    """Minimal environment for an interactive zsh reading `.zshrc` from `home`."""
+    return {
+        "HOME": str(home), "ZDOTDIR": str(home), "PATH": path,
+        "TERM": "xterm-256color", "LC_ALL": utf8_locale(), **extra,
+    }
+
+
 def spawn_zsh(cwd: Path, env: dict[str, str]) -> tuple[int, int]:
     """Fork an interactive zsh (`-d -i`) on a new PTY; return its pid and master fd."""
     zsh = shutil.which("zsh")

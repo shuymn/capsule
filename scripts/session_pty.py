@@ -3,7 +3,7 @@
 
 Run with `mise run test:pty` (builds, then uses uv with the pinned .python-version).
 Use --output <new-directory> to create a private artifact directory.
-Use --describe to print the contract table embedded in docs/testing.md.
+Use --describe to print the contract table, or --update-docs to rewrite it in docs/testing.md.
 The harness, scenarios, and contract registry live in the sibling `pty_suite` package.
 """
 
@@ -13,7 +13,9 @@ import argparse
 from pathlib import Path
 import tempfile
 
-from pty_suite.contracts import markdown_table
+TESTING_DOC = Path(__file__).resolve().parent.parent / "docs" / "testing.md"
+
+from pty_suite.contracts import markdown_table, update_document
 from pty_suite.harness import Suite
 from pty_suite.scenarios import SCENARIOS
 
@@ -33,9 +35,13 @@ def main():
     parser.add_argument("--binary", type=Path, default=Path("target/debug/capsule"))
     parser.add_argument("--output", type=Path)
     parser.add_argument("--describe", action="store_true", help="print the contract table and exit")
+    parser.add_argument("--update-docs", action="store_true", help="rewrite the contract table in docs/testing.md and exit")
     args = parser.parse_args()
     if args.describe:
         print(markdown_table(), end="")
+        return
+    if args.update_docs:
+        TESTING_DOC.write_text(update_document(TESTING_DOC.read_text()))
         return
     if args.output is None:
         output = Path(tempfile.mkdtemp(prefix="capsule-pty-"))

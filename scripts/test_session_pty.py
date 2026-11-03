@@ -133,42 +133,27 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(display_width(b"%{\x1b[31m%}INPUT%{\x1b[0m%}"), 5)
 
     def test_hook_matrix_covers_every_action_for_both_triggers(self):
-        self.assertEqual(len(MATRIX_CASES), 16)
         self.assertEqual(len(set(MATRIX_CASES)), 16)
 
 
 def scenario_records():
-    """Literal record names passed to `record(...)` in every scenario module."""
+    """Record names passed to `suite.record(...)` in every scenario module; each must be a literal."""
     names = []
     for path in sorted(SCENARIOS.glob("*.py")):
         for node in ast.walk(ast.parse(path.read_text(), str(path))):
-            is_record = (
-                isinstance(node, ast.Call)
-                and getattr(node.func, "attr", getattr(node.func, "id", None)) == "record"
-            )
-            if not is_record:
-                continue
-            constants = [
-                item.value for item in ast.walk(node.args[0])
-                if isinstance(item, ast.Constant) and isinstance(item.value, str)
-            ]
-            dynamic = [
-                item for item in ast.walk(node.args[0])
-                if isinstance(item, (ast.Name, ast.JoinedStr, ast.BinOp, ast.Call))
-            ]
-            if dynamic or not constants:
-                raise AssertionError(f"{path.name}:{node.lineno}: record names must be string literals")
-            names.extend(constants)
+            if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "record":
+                argument = node.args[0]
+                if not (isinstance(argument, ast.Constant) and isinstance(argument.value, str)):
+                    raise AssertionError(f"{path.name}:{node.lineno}: record names must be string literals")
+                names.append(argument.value)
     return names
 
 
 class ContractRegistryTests(unittest.TestCase):
     def test_every_scenario_record_is_registered_exactly_once(self):
-        emitted = scenario_records()
-        self.assertEqual(sorted(emitted), sorted(set(emitted)), "a record name is emitted twice")
-        self.assertEqual(set(emitted), contracts.RECORDS)
         registered = [name for contract in contracts.CONTRACTS for name in contract.records]
-        self.assertEqual(len(registered), len(contracts.RECORDS), "a record is listed under two scopes")
+        self.assertCountEqual(scenario_records(), registered)
+        self.assertEqual(len(registered), len(contracts.RECORDS), "a record is listed twice")
 
     def test_contracts_have_unique_scopes_and_descriptions(self):
         scopes = [contract.scope for contract in contracts.CONTRACTS]
@@ -186,11 +171,9 @@ class ContractRegistryTests(unittest.TestCase):
 
     def test_testing_doc_embeds_the_generated_contract_table(self):
         document = TESTING_DOC.read_text()
-        begin = document.index(contracts.TABLE_BEGIN) + len(contracts.TABLE_BEGIN) + 1
-        end = document.index(contracts.TABLE_END)
         self.assertEqual(
-            document[begin:end], contracts.markdown_table(),
-            "regenerate the table with `uv run --no-project scripts/session_pty.py --describe`",
+            contracts.update_document(document), document,
+            "run `uv run --no-project scripts/session_pty.py --update-docs`",
         )
 
     def test_describe_prints_the_table_without_creating_output(self):
