@@ -17,6 +17,9 @@ class Contract:
     records: tuple[str, ...]  # results.json test names that witness the behavior
 
 
+# Rows whose rule is a docs/architecture.md clause, which cites their records.
+CLAUSE = "The [Behavioral contract](architecture.md#behavioral-contract) clause citing these records"
+
 CONTRACTS = (
     Contract(
         "Binary selection",
@@ -85,7 +88,7 @@ CONTRACTS = (
     ),
     Contract(
         "Replacement",
-        "Changed results replace retained display at completion; Missing, Failed, and false conditions remove obsolete information",
+        CLAUSE,
         (
             "external_snapshot_commits_atomically_and_clears_missing_values_and_false_conditions",
             "failed_value_is_retained_pending_then_cleared_when_settled",
@@ -93,8 +96,7 @@ CONTRACTS = (
     ),
     Contract(
         "Invalidation",
-        "Changed cwd/exported environment immediately discard retained display; accepted changed configuration discards it after reload; "
-        "invalid configuration keeps the previous plan and display",
+        CLAUSE,
         (
             "changed_cwd_discards_settled_external_display_immediately",
             "changed_exported_environment_discards_settled_external_display_immediately",
@@ -104,13 +106,12 @@ CONTRACTS = (
     ),
     Contract(
         "Local display",
-        "Status, duration, resize, and keymap changes render while acquisition is held pending",
+        CLAUSE,
         ("pending_acquisition_renders_status_duration_resize_and_vi_without_losing_input",),
     ),
     Contract(
         "Snapshot",
-        "Exported environment bytes and cwd reach acquisition after preserved user precmd hooks complete; directory-hook exports reach "
-        "the directory-change generation; unset and unexported variables stay absent",
+        CLAUSE,
         (
             "full_export_snapshot_preserves_bytes_and_removes_absent_variables",
             "cwd_bytes_reach_acquisition",
@@ -119,13 +120,12 @@ CONTRACTS = (
     ),
     Contract(
         "Input",
-        "Delayed prompt updates preserve the typed buffer and cursor",
+        CLAUSE,
         ("asynchronous_prompt_update_preserves_typed_buffer_and_cursor",),
     ),
     Contract(
         "Transport",
-        "A backpressured large request completes without further keyboard input; stale/future responses cannot replace the prompt "
-        "or satisfy a pending generation",
+        CLAUSE,
         (
             "backpressure_completes_large_request_without_more_keyboard_input",
             "stale_and_future_responses_do_not_replace_prompt",
@@ -134,7 +134,7 @@ CONTRACTS = (
     ),
     Contract(
         "Recovery",
-        "Worker failure selects fallback; the next prompt starts a replacement worker even if a preserved precmd hook raises a genuine shell error",
+        CLAUSE,
         (
             "worker_failure_uses_fallback_and_next_command_restarts_worker",
             "hook_errors_do_not_prevent_snapshot_invalidation_or_replacement_worker_startup",
