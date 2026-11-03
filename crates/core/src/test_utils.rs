@@ -36,6 +36,19 @@ pub fn write_script(path: &std::path::Path, body: &str) -> std::io::Result<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
 }
 
+/// Create a FIFO at `path`.
+pub fn mkfifo(path: &std::path::Path) -> std::io::Result<()> {
+    if std::process::Command::new("mkfifo")
+        .arg(path)
+        .status()?
+        .success()
+    {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("mkfifo failed"))
+    }
+}
+
 /// Checks whether `text` contains ANSI SGR codes matching the given sequence.
 ///
 /// Different terminal libraries may emit combined (`\x1b[1;32m`) or split

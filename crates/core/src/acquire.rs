@@ -1,7 +1,7 @@
 //! Bounded acquisition from a shell snapshot, with owned subprocess lifetimes.
 
 use std::{
-    fs::OpenOptions,
+    fs::{File, OpenOptions},
     io::{self, Read},
     os::unix::fs::OpenOptionsExt,
     path::Path,
@@ -197,12 +197,7 @@ impl Runner {
     ) -> Result<Option<Vec<u8>>, AcquireError> {
         let path = path.to_owned();
         self.blocking(cancel, move || {
-            // std opens with O_CLOEXEC; O_NONBLOCK keeps a FIFO from waiting for a writer.
-            let file = match OpenOptions::new()
-                .read(true)
-                .custom_flags(OFlags::NONBLOCK.bits().cast_signed())
-                .open(&path)
-            {
+            let file = match open_nonblocking(&path) {
                 Ok(file) => file,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
                 Err(error) => return Err(error.into()),
@@ -444,6 +439,15 @@ async fn observe_exit(pid: Pid, signals: &mut ChildSignals) -> Result<(), Acquir
             );
         }
     }
+}
+
+/// Open for reading. std adds `O_CLOEXEC`; `O_NONBLOCK` keeps a FIFO from
+/// waiting for a writer.
+fn open_nonblocking(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(OFlags::NONBLOCK.bits().cast_signed())
+        .open(path)
 }
 
 fn check_size(bytes: Vec<u8>) -> Result<Vec<u8>, AcquireError> {

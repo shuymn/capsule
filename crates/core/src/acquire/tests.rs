@@ -13,6 +13,7 @@ use std::{
 use tokio::{runtime::Runtime, sync::oneshot};
 
 use super::*;
+use crate::test_utils::mkfifo;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -36,17 +37,8 @@ fn snapshot(cwd: &Path) -> Snapshot {
 /// commands `LIVE_DESCENDANT` starts hold open while they live.
 fn liveness(directory: &Path) -> io::Result<File> {
     let fifo = directory.join("liveness");
-    if !std::process::Command::new("mkfifo")
-        .arg(&fifo)
-        .status()?
-        .success()
-    {
-        return Err(io::Error::other("mkfifo failed"));
-    }
-    OpenOptions::new()
-        .read(true)
-        .custom_flags(OFlags::NONBLOCK.bits().cast_signed())
-        .open(fifo)
+    mkfifo(&fifo)?;
+    open_nonblocking(&fifo)
 }
 
 /// A background descendant that writes `ready` and holds the FIFO open.
@@ -214,14 +206,14 @@ fn cancellation_stops_running_commands_and_prevents_queued_spawns() -> TestResul
 fn dropped_command_future_stops_its_group_and_retains_its_slot_until_reaped() -> TestResult {
     let directory = tempfile::tempdir()?;
     let mut reader = liveness(directory.path())?;
-    let command = argv(&["sh", "-c", &format!("{LIVE_DESCENDANT} sleep 60")])?;
+    let args = argv(&["sh", "-c", &format!("{LIVE_DESCENDANT} sleep 60")])?;
     runtime()?.block_on(async {
         let runner = Runner::default();
         let command_runner = runner.clone();
         let input = snapshot(directory.path());
         let command = tokio::spawn(async move {
             command_runner
-                .command(&command, &input, &CancellationToken::new())
+                .command(&args, &input, &CancellationToken::new())
                 .await
         });
         // Wait until the descendant holds the FIFO, so EOF below means it exited.
@@ -257,12 +249,7 @@ fn file_distinguishes_missing_empty_oversized_and_non_regular_sources() -> TestR
     std::fs::write(&empty, [])?;
     std::fs::write(&full, vec![0; MAX_OUTPUT_BYTES])?;
     std::fs::write(&large, vec![0; MAX_OUTPUT_BYTES + 1])?;
-    assert!(
-        std::process::Command::new("mkfifo")
-            .arg(&fifo)
-            .status()?
-            .success()
-    );
+    mkfifo(&fifo)?;
     runtime()?.block_on(async {
         let runner = Runner::default();
         let cancel = CancellationToken::new();
