@@ -30,8 +30,10 @@ Read this file before writing or modifying tests.
   external-identifier list with its reason.
 - Tag a test that verifies a threat in [threat-model.md](threat-model.md) with
   a `Covers: T07, T08` comment directly above its attributes, or in a script's
-  leading comments to cover the whole file. `docs.rs` rejects unknown threat IDs
-  and stray tags, and on drift prints the §8 rows to paste in.
+  leading comments to cover the whole file; a Rust tag needs a test attribute.
+  `docs.rs` rejects unknown threat IDs and stray tags and checks the §8
+  "Existing verification" column; regenerate it with
+  `CAPSULE_UPDATE_DOCS=1 cargo test -p capsule-cli --test docs`.
 - Keep doctests runnable; use hidden `# ` setup, `no_run` for external resources,
   and `compile_fail` for invalid usage.
 
