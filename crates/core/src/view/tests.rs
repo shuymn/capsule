@@ -65,42 +65,6 @@ fn character_keymap_and_status_use_current_inputs_only() {
     );
 }
 
-/// Covers: T01
-#[test]
-fn literal_data_is_safe_with_prompt_substitution_on_and_off()
--> Result<(), Box<dyn std::error::Error>> {
-    let data = "literal $HOME $(printf EXPANDED) `printf EXPANDED` \\$ %B %{data%} \\";
-    let serialized = StyledText::new(data, Style::new()).to_zsh(ColorMap::default());
-    // Direct text under PROMPT_SUBST models an option change after Capsule's
-    // last refresh, such as a failing named precmd hook. The shell's line
-    // separator follows a trailing backslash.
-    let output = std::process::Command::new("zsh")
-        .args([
-            "-f",
-            "-c",
-            r#"
-rendered=$VIEW_PROMPT$'\n'$VIEW_PROMPT
-setopt promptsubst
-print -P -r -- '${rendered}'
-print -P -r -- "$rendered"
-unsetopt promptsubst
-print -P -r -- "$rendered"
-"#,
-        ])
-        .env("VIEW_PROMPT", serialized)
-        .output()?;
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(
-        String::from_utf8(output.stdout)?,
-        format!("{data}\n{data}\n").repeat(3)
-    );
-    Ok(())
-}
-
 fn observed(value: &str) -> ModuleObservation {
     ModuleObservation {
         condition: Observation::Ready(true),
@@ -318,7 +282,6 @@ mod properties {
     use std::collections::BTreeSet;
 
     use proptest::{prelude::*, strategy::LazyJust};
-    use unicode_width::UnicodeWidthStr as _;
 
     use super::*;
     use crate::{
@@ -487,7 +450,116 @@ mod properties {
             .collect()
     }
 
+    /// The characters of `test_utils::HOSTILE` and the built-in glyphs that
+    /// zsh's `wcwidth` in a UTF-8 locale measures as `unicode-width` does,
+    /// besides printable ASCII. architecture.md lists where they disagree.
+    const LIBC_AGREES: &str = "日本\u{301}\u{200b}\u{200d}\u{644}\u{627}…❯\u{f418}";
+
+    fn libc_agrees(text: &str) -> bool {
+        text.chars().all(|character| {
+            character == ' ' || character.is_ascii_graphic() || LIBC_AGREES.contains(character)
+        })
+    }
+
+    /// Display data mixing width-stable text, hostile characters, and code that
+    /// would expand a parameter or append to `$MARKER` if zsh evaluated it.
+    fn zsh_input() -> impl Strategy<Value = String> {
+        let stable = LIBC_AGREES
+            .chars()
+            .chain("a %$`\\{}".chars())
+            .collect::<Vec<_>>();
+        let code = prop::sample::select(vec![
+            "$(print x >> $MARKER)",
+            "`print x >> $MARKER`",
+            "%{$(print x >> $MARKER)%}",
+            "${MARKER::=x}$HOME",
+            "\\",
+        ]);
+        let part = prop_oneof![
+            prop::collection::vec(prop::sample::select(stable), 0..24).prop_map(String::from_iter),
+            code.prop_map(str::to_owned),
+            hostile_text(8),
+        ];
+        prop::collection::vec(part, 0..4).prop_map(|parts| parts.concat())
+    }
+
+    /// What zsh shows for `lines`, run in `cwd`: the prompt with its styles
+    /// removed as expanded with `PROMPT_SUBST` through Capsule's one-level
+    /// reference, with it on and the text assigned directly, and with it off;
+    /// then the `${(m)#}` width of each line of the last expansion.
+    fn expand_in_zsh(
+        lines: &PromptLines,
+        cwd: &std::path::Path,
+    ) -> Result<Vec<String>, TestCaseError> {
+        let output = std::process::Command::new("zsh")
+            .current_dir(cwd)
+            .args([
+                "-f",
+                "-c",
+                r#"
+wide=日
+for LC_ALL in C.UTF-8 en_US.UTF-8; do (( ${(m)#wide} == 2 )) && break; done
+(( ${(m)#wide} == 2 )) || { print -u2 'no UTF-8 locale'; exit 1 }
+setopt extendedglob
+rendered=$LEFT1$'\n'$LEFT2
+show() { shown=${1//$'\e'\[[0-9;]#m}; print -rn -- "$shown"$'\0' }
+setopt promptsubst
+print -v expanded -Pr -- '${rendered}'; show "$expanded"
+print -v expanded -Pr -- "$rendered"; show "$expanded"
+unsetopt promptsubst
+print -v expanded -Pr -- "$rendered"; show "$expanded"
+first=${shown%%$'\n'*} second=${shown#*$'\n'}
+print -rn -- ${(m)#first}$'\0'${(m)#second}$'\0'
+"#,
+            ])
+            .env("LEFT1", &lines.left1)
+            .env("LEFT2", &lines.left2)
+            .env("MARKER", cwd.join("marker"))
+            .output()
+            .map_err(|error| TestCaseError::fail(error.to_string()))?;
+        if !output.status.success() {
+            return Err(TestCaseError::fail(
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            ));
+        }
+        let stdout = String::from_utf8(output.stdout)
+            .map_err(|error| TestCaseError::fail(error.to_string()))?;
+        Ok(stdout.split_terminator('\0').map(str::to_owned).collect())
+    }
+
     proptest! {
+        /// zsh expands each rendered line to its display text, without running
+        /// or expanding data, and measures the width Capsule fitted.
+        ///
+        /// Covers: T01
+        #[test]
+        fn zsh_expands_rendered_lines_literally_to_the_measured_width(
+            directory in zsh_input(),
+            branch in zsh_input(),
+            glyph in zsh_input(),
+            cols in cols(60),
+        ) {
+            let mut plan = ConfigPlan::default();
+            plan.view.character.glyph = glyph;
+            let git = GitStatus { branch: Some(branch), ..GitStatus::default() };
+            let output = render(&plan, &ViewInput { directory: &directory, git: Some(&git), cols, ..input() });
+            let [Some(first), Some(second)] = [&output.left1, &output.left2].map(|line| displayed_prompt(line)) else {
+                return Err(TestCaseError::fail(format!("{output:?} is not literal data")));
+            };
+            let cwd = tempfile::tempdir().map_err(|error| TestCaseError::fail(error.to_string()))?;
+            let shown = format!("{first}\n{second}");
+            let zsh = expand_in_zsh(&output, cwd.path())?;
+            prop_assert_eq!(zsh.len(), 5, "{:?}", zsh);
+            prop_assert!(zsh[..3].iter().all(|expanded| *expanded == shown), "{zsh:?} does not show {shown:?}");
+            for (line, width) in [&first, &second].into_iter().zip(&zsh[3..]) {
+                if libc_agrees(line) {
+                    prop_assert_eq!(width, &text::display_width(line).to_string(), "{:?}", line);
+                }
+            }
+            let written = std::fs::read_dir(cwd.path()).map_err(|error| TestCaseError::fail(error.to_string()))?;
+            prop_assert_eq!(written.count(), 0, "expanding data wrote files");
+        }
+
         /// Covers: T01, T07
         #[test]
         fn rendered_lines_fit_the_columns_and_the_response_frame(
@@ -512,7 +584,7 @@ mod properties {
             });
             for line in [&output.left1, &output.left2] {
                 prop_assert!(
-                    displayed_prompt(line).is_some_and(|displayed| displayed.width() <= cols),
+                    displayed_prompt(line).is_some_and(|displayed| text::display_width(&displayed) <= cols),
                     "{line:?} is not literal data within {cols} columns"
                 );
                 prop_assert!(cols != 0 || line.is_empty());
