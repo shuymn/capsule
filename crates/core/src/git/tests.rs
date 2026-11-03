@@ -395,8 +395,7 @@ async fn repository_search_stops_after_the_depth_limit() -> Result<(), Box<dyn s
 }
 
 #[test]
-fn local_directory_abbreviates_only_a_nonempty_home() -> Result<(), capsule_protocol::session::Error>
-{
+fn local_directory_abbreviates_only_a_nonempty_home() -> Result<(), Box<dyn std::error::Error>> {
     let directory = |cwd: &str, home: &str| {
         Snapshot::new(cwd.into(), vec![("HOME".into(), home.into())])
             .map(|snapshot| local_directory(&snapshot))

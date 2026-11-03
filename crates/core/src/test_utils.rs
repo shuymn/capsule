@@ -14,6 +14,18 @@ pub fn executable(name: &str) -> std::io::Result<String> {
         .map_err(std::io::Error::other)
 }
 
+/// A snapshot at `cwd` exporting `env` plus this process's `PATH`.
+pub fn snapshot(
+    cwd: &std::path::Path,
+    env: &[(&str, &str)],
+) -> Result<capsule_protocol::session::Snapshot, capsule_protocol::session::Error> {
+    let env = env
+        .iter()
+        .map(|(name, value)| ((*name).into(), (*value).into()))
+        .chain(std::env::var_os("PATH").map(|value| ("PATH".into(), value)));
+    capsule_protocol::session::Snapshot::new(cwd.to_owned(), env.collect())
+}
+
 /// Write an executable `sh` script at `path` without this process ever
 /// holding a writable descriptor to it.
 ///

@@ -11,6 +11,7 @@ use crate::{
         MAX_FORMAT_DEPTH, MAX_MODULES, MAX_OUTPUT_BYTES, MAX_VALUES_PER_MODULE, MAX_WHEN_ITEMS,
     },
     render::style::Color,
+    test_utils::snapshot,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -24,17 +25,6 @@ fn one_module(format: &str, values: &str) -> Result<ConfigPlan, ConfigError> {
 /// `count` copies of a TOML `item`, comma-separated for an array body.
 fn toml_list(item: &str, count: usize) -> String {
     vec![item; count].join(",")
-}
-
-fn snapshot(
-    cwd: &std::path::Path,
-    env: &[(&str, &str)],
-) -> Result<Snapshot, capsule_protocol::session::Error> {
-    let env = env
-        .iter()
-        .map(|(name, value)| (OsString::from(name), OsString::from(value)))
-        .chain(std::env::var_os("PATH").map(|value| (OsString::from("PATH"), value)));
-    Snapshot::new(cwd.to_path_buf(), env.collect())
 }
 
 #[test]

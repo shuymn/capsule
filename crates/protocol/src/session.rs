@@ -22,8 +22,7 @@ pub const MAX_RESPONSE: usize = 64 * 1024;
 
 /// Complete acquisition input for one shell execution generation.
 ///
-/// [`Snapshot::new`] is the only place the wire invariants are checked, so
-/// every snapshot encodes to a frame that decodes back to it.
+/// [`Snapshot::new`] is the only place the wire invariants are checked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
     cwd: PathBuf,
@@ -443,8 +442,8 @@ mod tests {
             )
         }
 
-        /// Any request, or the rejection of a snapshot that violates the wire invariants.
-        fn request() -> impl Strategy<Value = Result<Request, Error>> {
+        /// Any request whose snapshot satisfies the wire invariants.
+        fn request() -> impl Strategy<Value = Request> {
             let fields = (
                 any::<u64>(),
                 any::<i32>(),
@@ -453,15 +452,16 @@ mod tests {
                 text(6),
             );
             let parts = (bytes(8), vec((bytes(6), bytes(6)), 0..4));
-            (fields, parts).prop_map(
+            (fields, parts).prop_filter_map(
+                "invalid snapshot",
                 |((generation, last_exit_code, duration_ms, cols, keymap), (cwd, env))| {
                     let env = env
                         .into_iter()
                         .map(|(key, value)| (OsString::from_vec(key), OsString::from_vec(value)));
                     let cwd = PathBuf::from(OsString::from_vec(cwd));
-                    Ok(Request {
+                    Some(Request {
                         generation,
-                        snapshot: Snapshot::new(cwd, env.collect())?,
+                        snapshot: Snapshot::new(cwd, env.collect()).ok()?,
                         cols,
                         last_exit_code,
                         duration_ms,
@@ -508,9 +508,6 @@ mod tests {
         proptest! {
             #[test]
             fn snapshots_round_trip_independent_of_environment_order(request in request()) {
-                let Ok(request) = request else {
-                    return Ok(());
-                };
                 let snapshot = &request.snapshot;
                 let reversed = snapshot.vars().iter().rev().cloned().collect();
                 prop_assert_eq!(&Snapshot::new(snapshot.cwd().into(), reversed)?, snapshot);
@@ -556,9 +553,6 @@ mod tests {
                 index in any::<prop::sample::Index>(),
                 byte in prop_oneof![any::<u8>(), select(b"\t\\\0=".as_slice())],
             ) {
-                let Ok(request) = request else {
-                    return Ok(());
-                };
                 let secret = (OsString::from("SECRET"), OsString::from_vec(MARKER.to_vec()));
                 let env = request.snapshot.vars().iter().cloned().chain([secret]).collect();
                 let Ok(snapshot) = Snapshot::new(request.snapshot.cwd().into(), env) else {
