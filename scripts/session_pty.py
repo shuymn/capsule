@@ -951,8 +951,9 @@ def run_empty_enter(shell, record):
         assert state["generation"] == generation and state["worker"] == worker, state
         rendered = (shell.home / "rendered").read_bytes()
         assert b"ENTER_AFTER" in rendered and b"ENTER_BEFORE" not in rendered, rendered
+        # Empty Enter is an ordinary prompt: zsh leaves $? unchanged and no command ran.
         finalized = [item for item in shell.transitions(mark, generation) if item["event"] == b"precmd"]
-        assert finalized[-1]["status"] == 7 and int(finalized[-1]["duration"]) >= 3000, finalized
+        assert finalized[-1]["status"] == 7 and finalized[-1]["duration"] == b"", finalized
 
     # Another terminal changes Git state; an empty line must show it.
     subprocess.run(
@@ -961,7 +962,7 @@ def run_empty_enter(shell, record):
     )
     generation, mark = shell.run_line("")
     assert_refreshed(generation, mark)
-    record("empty_enter_refreshes_git_and_preserves_command_status_and_duration")
+    record("empty_enter_refreshes_git_keeps_shell_status_and_omits_duration")
 
     # Repeated empty lines supersede unfinished work and settle on the newest generation.
     generation = shell.next_generation() + 4
@@ -972,6 +973,12 @@ def run_empty_enter(shell, record):
     shell.complete(generation, mark)
     assert_refreshed(generation, mark)
     record("repeated_empty_enter_settles_on_the_newest_generation_with_one_worker", enters=5)
+
+    # The next command reports its own duration under the threshold rule again.
+    generation, mark = shell.run_line("_CAPSULE_CMD_START=$((EPOCHREALTIME-2)); (exit 4)")
+    finalized = [item for item in shell.transitions(mark, generation) if item["event"] == b"precmd"]
+    assert finalized[-1]["status"] == 4 and 2000 <= int(finalized[-1]["duration"]) < 3000, finalized
+    record("command_after_empty_enter_reports_its_own_status_and_duration")
 
 
 MATRIX_PAYLOAD = "$(print -n x > ~/dollar) `print -n x > ~/backtick`"
@@ -1004,7 +1011,7 @@ def run_hook_matrix(shell, record):
     (shell.home / "work/matrix").mkdir()
     markers = (shell.home / "dollar", shell.home / "backtick")
     cwd, value, subst, count = shell.home / "work", MATRIX_PAYLOAD.encode(), True, 0
-    status, duration = None, None
+    status = None
     actions = ["none", "hook:cd", "hook:export", "hook:setopt", "hook:error", "named:cd", "named:export", "named:setopt"]
     for index, (action, trigger) in enumerate((a, t) for a in actions for t in ("command", "empty")):
         case = (action, trigger)
@@ -1030,9 +1037,9 @@ def run_hook_matrix(shell, record):
         finalized = [item for item in shell.transitions(mark, generation) if item["event"] == b"precmd"][-1]
         if trigger == "command":
             assert finalized["status"] == exit_code and int(finalized["duration"]) >= 3000, (case, finalized)
-            status, duration = finalized["status"], finalized["duration"]
+            status = finalized["status"]
         else:
-            assert (finalized["status"], finalized["duration"]) == (status, duration), (case, finalized)
+            assert (finalized["status"], finalized["duration"]) == (status, b""), (case, finalized)
 
         rendered = (shell.home / "rendered").read_bytes()
         # Serialization escapes `$` and backticks; the command text must still be displayed.
@@ -1040,7 +1047,7 @@ def run_hook_matrix(shell, record):
         expected_prompt = b"${_CAPSULE_RENDERED}" if subst else rendered
         assert (shell.home / "prompt").read_bytes() == expected_prompt, case
         assert not any(marker.exists() for marker in markers), case
-    record("user_hook_changes_keep_snapshot_status_and_literal_prompt_for_commands_and_empty_enter", cases=len(actions) * 2)
+    record("user_hook_changes_keep_snapshot_shell_status_and_literal_prompt_for_commands_and_empty_enter", cases=len(actions) * 2)
 
 
 def run(binary: Path, output: Path):
