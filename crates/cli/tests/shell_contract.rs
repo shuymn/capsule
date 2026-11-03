@@ -26,6 +26,25 @@ fn spawn_zsh(script: &str, home: &std::path::Path) -> Result<tokio::process::Chi
         .spawn()?)
 }
 
+/// Run `script` in a clean zsh with an empty home and require success.
+fn run_zsh(script: &str, check: &str) -> Result {
+    let home = tempfile::tempdir()?;
+    let result = Command::new("zsh")
+        .args(["-f", "-c", script])
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").ok_or("missing PATH")?)
+        .env("HOME", home.path())
+        .env("ZDOTDIR", home.path())
+        .output()?;
+    assert!(
+        result.status.success(),
+        "{check} failed ({}): {}",
+        result.status,
+        String::from_utf8_lossy(&result.stderr)
+    );
+    Ok(())
+}
+
 fn functions() -> String {
     format!(
         "zle() {{ :; }}\n{}\nzmodload zsh/system\nzmodload zsh/zselect\n\
@@ -39,7 +58,6 @@ fn functions() -> String {
 /// Covers: T08
 #[test]
 fn responses_must_match_exact_generation() -> Result {
-    let home = tempfile::tempdir()?;
     let script = format!(
         "{}\n\
         _capsule_frame $'R\\t1\\tstale\\tcharacter\\t1'\n\
@@ -50,24 +68,11 @@ fn responses_must_match_exact_generation() -> Result {
         [[ $PROMPT == $'current\\ncharacter ' ]]",
         functions()
     );
-    let result = Command::new("zsh")
-        .args(["-f", "-c", &script])
-        .env_clear()
-        .env("PATH", std::env::var_os("PATH").ok_or("missing PATH")?)
-        .env("HOME", home.path())
-        .env("ZDOTDIR", home.path())
-        .output()?;
-    assert!(
-        result.status.success(),
-        "generation check failed: {}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    Ok(())
+    run_zsh(&script, "generation check failed")
 }
 
 #[test]
 fn unchanged_display_skips_redraw_but_restores_fallback() -> Result {
-    let home = tempfile::tempdir()?;
     let script = format!(
         "{}\n\
         for _CAPSULE_PROMPT_SUBST in off on; do\n\
@@ -91,25 +96,11 @@ fn unchanged_display_skips_redraw_but_restores_fallback() -> Result {
         done",
         functions()
     );
-    let result = Command::new("zsh")
-        .args(["-f", "-c", &script])
-        .env_clear()
-        .env("PATH", std::env::var_os("PATH").ok_or("missing PATH")?)
-        .env("HOME", home.path())
-        .env("ZDOTDIR", home.path())
-        .output()?;
-    assert!(
-        result.status.success(),
-        "redraw check failed ({}): {}",
-        result.status,
-        String::from_utf8_lossy(&result.stderr)
-    );
-    Ok(())
+    run_zsh(&script, "redraw check failed")
 }
 
 #[test]
 fn preserved_hooks_keep_options_order_and_continue_after_nonzero_returns() -> Result {
-    let home = tempfile::tempdir()?;
     let script = format!(
         "precmd_functions=(first missing_hook last)\n\
         first() {{ first_status=$?; setopt promptsubst; order+=first; return $hook_status; }}\n\
@@ -129,20 +120,7 @@ for hook_status in 0 7; do
 done
 "#
     );
-    let result = Command::new("zsh")
-        .args(["-f", "-c", &script])
-        .env_clear()
-        .env("PATH", std::env::var_os("PATH").ok_or("missing PATH")?)
-        .env("HOME", home.path())
-        .env("ZDOTDIR", home.path())
-        .output()?;
-    assert!(
-        result.status.success(),
-        "hook dispatch check failed ({}): {}",
-        result.status,
-        String::from_utf8_lossy(&result.stderr)
-    );
-    Ok(())
+    run_zsh(&script, "hook dispatch check failed")
 }
 
 /// Covers: T01
@@ -432,7 +410,6 @@ print -r -- COMPLETE
 
 #[test]
 fn failed_redraw_write_selects_fallback_after_transport_cleanup() -> Result {
-    let home = tempfile::tempdir()?;
     let script = format!(
         "{}\n\
         zle() {{ [[ $1 == reset-prompt ]] && redraw=1; }}\n\
@@ -445,20 +422,63 @@ fn failed_redraw_write_selects_fallback_after_transport_cleanup() -> Result {
         (( redraw == 1 )) || exit 13",
         functions()
     );
-    let result = Command::new("zsh")
-        .args(["-f", "-c", &script])
-        .env_clear()
-        .env("PATH", std::env::var_os("PATH").ok_or("missing PATH")?)
-        .env("HOME", home.path())
-        .env("ZDOTDIR", home.path())
-        .output()?;
-    assert!(
-        result.status.success(),
-        "failed write check failed ({}): {}",
-        result.status,
-        String::from_utf8_lossy(&result.stderr)
+    run_zsh(&script, "failed write check failed")
+}
+
+/// Covers: T07
+#[test]
+fn oversized_snapshot_omits_the_request_and_selects_fallback() -> Result {
+    let script = format!(
+        "{}\n\
+        _capsule_start_coproc() {{ :; }}\n\
+        _capsule_refresh_retained_prompt() {{ :; }}\n\
+        _capsule_async_callback() {{ :; }}\n\
+        requests=$HOME/requests\n\
+        exec {{_CAPSULE_FD_IN}}>$requests {{_CAPSULE_FD_OUT}}</dev/null\n\
+        _capsule_snapshot\n\
+        _capsule_finalize_prompt\n\
+        [[ -s $requests && $PROMPT == unchanged ]] || exit 11\n\
+        : >$requests\n\
+        export BIG=${{(l:262000::x:)}}\n\
+        _capsule_finalize_prompt\n\
+        [[ ! -s $requests && -z $_CAPSULE_SNAPSHOT ]] || exit 12\n\
+        (( !_CAPSULE_FD_IN && !_CAPSULE_FD_OUT )) || exit 13\n\
+        [[ $PROMPT == fallback ]] || exit 14",
+        functions()
     );
-    Ok(())
+    run_zsh(&script, "oversized snapshot check")
+}
+
+/// Covers: T08
+#[test]
+fn backpressured_frame_completes_before_the_newest_pending_request() -> Result {
+    let script = format!(
+        "{}\n\
+        # Accept at most $limit bytes per write, then report EAGAIN.\n\
+        syswrite() {{\n\
+            local -a fd count; zparseopts -D o:=fd c:=count\n\
+            local -i written=$(( limit < ${{#1}} ? limit : ${{#1}} ))\n\
+            print -rn -- \"${{1[1,written]}}\" >>$sent\n\
+            : ${{(P)count[2]::=$written}}\n\
+            (( written == ${{#1}} )) && return 0\n\
+            ERRNO=${{errnos[(i)EAGAIN]}}; return 2\n\
+        }}\n\
+        sent=$HOME/sent limit=5 _CAPSULE_FD_IN=9\n\
+        for _CAPSULE_GENERATION in 1 2 3; do\n\
+            _CAPSULE_SNAPSHOT=snapshot$_CAPSULE_GENERATION\n\
+            _capsule_send\n\
+            if (( _CAPSULE_GENERATION == 1 )); then\n\
+                IFS= read -rd '' first <$sent; first+=$_CAPSULE_TX\n\
+            fi\n\
+        done\n\
+        newest=$_CAPSULE_PENDING limit=1000000\n\
+        _capsule_flush\n\
+        IFS= read -rd '' actual <$sent\n\
+        [[ $first == Q$'\\t'1$'\\t'*$'\\n' && $newest == Q$'\\t'3$'\\t'* ]] || exit 11\n\
+        [[ $actual == \"$first$newest\" ]] || exit 12",
+        functions()
+    );
+    run_zsh(&script, "backpressured replacement check")
 }
 
 /// Covers: T08
