@@ -26,6 +26,10 @@ struct Worker {
 
 impl Worker {
     fn start(home: &Path) -> Result<Self> {
+        Self::spawn(home, Stdio::inherit())
+    }
+
+    fn spawn(home: &Path, stderr: Stdio) -> Result<Self> {
         let mut child = Command::new(env!("CARGO_BIN_EXE_capsule"))
             .arg("worker")
             .env_clear()
@@ -34,7 +38,7 @@ impl Worker {
             .env("DISPLAY_VAR", "worker-only-value")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(stderr)
             .kill_on_drop(true)
             .spawn()?;
         let input = child.stdin.take().ok_or("missing child stdin")?;
@@ -334,17 +338,21 @@ async fn identical_commands_run_once_per_generation_across_values_and_modules() 
 }
 
 #[tokio::test]
-async fn a_fresh_worker_with_an_invalid_configuration_renders_defaults() -> Result {
+async fn a_fresh_worker_with_an_invalid_configuration_renders_defaults_and_reports_why() -> Result {
     let home = tempfile::tempdir()?;
     write_config(home.path(), "schema_version = 2\nunknown = true\n")?;
-    let mut worker = Worker::start(home.path())?;
+    let log = home.path().join("stderr");
+    let mut worker = Worker::spawn(home.path(), std::fs::File::create(&log)?.into())?;
     assert!(
         worker
             .render(&request(home.path(), 1)?)
             .await?
             .contains('❯')
     );
-    worker.close().await
+    worker.close().await?;
+    let diagnostic = std::fs::read_to_string(&log)?;
+    assert!(diagnostic.contains("unknown"), "{diagnostic:?}");
+    Ok(())
 }
 
 /// Covers: T03

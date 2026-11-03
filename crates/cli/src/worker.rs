@@ -421,14 +421,6 @@ value = [{ env = "TOOL" }]
         Ok(())
     }
 
-    /// A generation-1 request at `home` that exports only `HOME`.
-    fn home_request(home: &std::path::Path) -> anyhow::Result<Request> {
-        let home = home.display();
-        Ok(Request::decode(
-            format!("Q\t1\t0\t\t80\tmain\t{home}\tHOME\t{home}").as_bytes(),
-        )?)
-    }
-
     #[tokio::test]
     async fn removing_the_configuration_accepts_the_defaults() -> anyhow::Result<()> {
         let home = tempfile::tempdir()?;
@@ -436,42 +428,11 @@ value = [{ env = "TOOL" }]
             config: ConfigPlan::default(),
             source: Some("removed".to_owned()),
         });
-        let request = home_request(home.path())?;
+        let env = vec![("HOME".into(), home.path().as_os_str().to_owned())];
+        let snapshot = Snapshot::new(home.path().to_owned(), env)?;
         let cancel = CancellationToken::new();
-        let plan = load_plan(&request.snapshot, &Runner::default(), &cancel, &previous).await?;
+        let plan = load_plan(&snapshot, &Runner::default(), &cancel, &previous).await?;
         assert!(!Arc::ptr_eq(&plan, &previous) && plan.source.is_none());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn invalid_configuration_keeps_the_previous_plan_and_reports_the_reason()
-    -> anyhow::Result<()> {
-        let home = tempfile::tempdir()?;
-        std::fs::create_dir(home.path().join(".capsule"))?;
-        std::fs::write(
-            home.path().join(".capsule/config.toml"),
-            "schema_version = 2\nunknown = true\n",
-        )?;
-        let previous = Arc::new(LoadedPlan::default());
-        let (tx, mut rx) = mpsc::channel(64);
-        let request = home_request(home.path())?;
-        acquire_generation(
-            Arc::new(request),
-            previous.clone(),
-            Runner::default(),
-            CancellationToken::new(),
-            tx,
-        )
-        .await;
-        let Some(Event {
-            change: Change::Plan(plan, Some(reason)),
-            ..
-        }) = rx.recv().await
-        else {
-            anyhow::bail!("the first event is not a Plan with a diagnostic");
-        };
-        assert!(Arc::ptr_eq(&plan, &previous));
-        assert!(reason.contains("unknown"), "{reason}");
         Ok(())
     }
 }
