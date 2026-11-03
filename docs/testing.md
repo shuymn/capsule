@@ -25,7 +25,7 @@ Read this file before writing or modifying tests.
   facts in sync: relative links and heading anchors (ATX headings only;
   emphasis and HTML in headings fail), backticked identifiers (snake case,
   screaming case, or `::` paths; a method path, even a fully qualified one
-  such as `capsule_core::ConfigPlan::parse`, must be defined in its type's
+  such as `capsule_core::plan::ConfigPlan::parse`, must be defined in its type's
   `impl`), the limits table, the lint policy, lint
   inheritance in every workspace member, and that each Behavioral contract
   clause cites a test, clause check, or PTY record. Fix the document or the code when it

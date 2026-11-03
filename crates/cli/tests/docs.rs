@@ -483,7 +483,7 @@ fn relative_links_in_docs_resolve() -> TestResult {
 
 /// Whether a cited identifier names something defined in the sources: every
 /// segment must occur, and a path ending in `Type::function`, such as
-/// `capsule_core::ConfigPlan::parse`, must define that function in the type's
+/// `capsule_core::plan::ConfigPlan::parse`, must define that function in the type's
 /// `impl` block. Other paths, such as enum variants and associated constants,
 /// need only their segments.
 fn resolves(identifier: &str, words: &BTreeSet<String>, functions: &BTreeSet<String>) -> bool {
