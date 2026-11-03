@@ -177,28 +177,24 @@ _capsule_async_callback() {
 }
 
 _capsule_preexec() {
-    _CAPSULE_NEED_STATUS=1
     _CAPSULE_CMD_START=$EPOCHREALTIME
 }
 
 _capsule_precmd() {
-    local _capsule_exit=$?
+    # Status is zsh's $?, read before any assignment resets it.
+    _CAPSULE_LAST_EXIT=$?
     _CAPSULE_PROMPT_SUBST=${options[promptsubst]}
     emulate -L zsh
     # Make a command-level option transition safe before any user hook can fail.
     _capsule_refresh_retained_prompt
-    # Empty Enter keeps the last command's status and duration.
-    if (( _CAPSULE_NEED_STATUS )); then
-        _CAPSULE_NEED_STATUS=0
-        _CAPSULE_LAST_EXIT=$_capsule_exit
-        _CAPSULE_DURATION_MS=''
-        if [[ -n $_CAPSULE_CMD_START ]]; then
-            local -i _capsule_duration
-            (( _capsule_duration = (EPOCHREALTIME - _CAPSULE_CMD_START) * 1000 ))
-            (( _capsule_duration < 0 )) && _capsule_duration=0
-            _CAPSULE_DURATION_MS=$_capsule_duration
-            _CAPSULE_CMD_START=''
-        fi
+    # Duration belongs only to a command started since the previous prompt.
+    _CAPSULE_DURATION_MS=''
+    if [[ -n $_CAPSULE_CMD_START ]]; then
+        local -i _capsule_duration
+        (( _capsule_duration = (EPOCHREALTIME - _CAPSULE_CMD_START) * 1000 ))
+        (( _capsule_duration < 0 )) && _capsule_duration=0
+        _CAPSULE_DURATION_MS=$_capsule_duration
+        _CAPSULE_CMD_START=''
     fi
     print
     return 0
@@ -300,7 +296,7 @@ _capsule_init() {
     zmodload zsh/datetime || return
     typeset -gi ERRNO=0 _CAPSULE_GENERATION=0 _CAPSULE_LAST_EXIT=0
     typeset -gi _CAPSULE_FD_IN=0 _CAPSULE_FD_OUT=0 _CAPSULE_COPROC_PID=0
-    typeset -gi _CAPSULE_NEED_STATUS=1 _CAPSULE_CHANGED=0
+    typeset -gi _CAPSULE_CHANGED=0
     typeset -g _CAPSULE_RX='' _CAPSULE_TX='' _CAPSULE_PENDING='' _CAPSULE_ESCAPED=''
     typeset -g _CAPSULE_SNAPSHOT='' _CAPSULE_CMD_START='' _CAPSULE_DURATION_MS=''
     typeset -g _CAPSULE_LAST_COLS='' _CAPSULE_LAST_KEYMAP='' _CAPSULE_RENDERED=''

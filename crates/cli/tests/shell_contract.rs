@@ -252,7 +252,6 @@ zselect -r $_CAPSULE_FD_OUT -t 300 || exit 13
 _capsule_async_callback
 [[ $PROMPT == $'settled\ncharacter ' ]] || exit 14
 
-_CAPSULE_NEED_STATUS=1
 true
 for hook in "${precmd_functions[@]}"; do "$hook" >/dev/null || exit 15; done
 [[ $PROMPT == $'settled\ncharacter ' ]] || exit 16
@@ -300,7 +299,7 @@ print -r -- RETAINED
 }
 
 #[tokio::test]
-async fn empty_enter_keeps_command_status_when_a_hook_changes_cwd() -> Result {
+async fn prompt_without_command_reports_shell_status_and_no_duration() -> Result {
     let home = tempfile::tempdir()?;
     let cwd = home.path().join("other");
     std::fs::create_dir(&cwd)?;
@@ -317,33 +316,47 @@ _capsule_preexec
 _CAPSULE_CMD_START=$((EPOCHREALTIME-3))
 (exit 7)
 for hook in "${precmd_functions[@]}"; do "$hook" >/dev/null || exit 11; done
-# Empty Enter: no preexec, a different status, and a hook-driven cwd change.
+# Empty Enter or an interrupted line: no preexec, zsh's current $?, and a
+# hook-driven cwd change.
 next_cwd=$HOME/other
-(exit 3)
+(exit 130)
 for hook in "${precmd_functions[@]}"; do "$hook" >/dev/null || exit 12; done
+# The next command reports its own status and duration again.
+_capsule_preexec
+_CAPSULE_CMD_START=$((EPOCHREALTIME-2))
+(exit 5)
+for hook in "${precmd_functions[@]}"; do "$hook" >/dev/null || exit 13; done
 "#
     );
     let mut child = spawn_zsh(&script, home.path())?;
     let mut output = BufReader::new(child.stdout.take().ok_or("missing stdout")?).lines();
     let mut requests = Vec::new();
-    for _ in 0..2 {
+    for _ in 0..3 {
         let line = tokio::time::timeout(Duration::from_secs(4), output.next_line())
             .await??
             .ok_or("missing request")?;
         requests.push(Request::decode(line.as_bytes())?);
     }
-    let [command, empty] = requests.as_slice() else {
-        return Err("expected two requests".into());
+    let [command, empty, next] = requests.as_slice() else {
+        return Err("expected three requests".into());
     };
-    assert_eq!((command.generation, empty.generation), (1, 2));
-    assert_eq!(empty.snapshot.cwd, cwd);
-    assert_eq!(empty.last_exit_code, 7);
+    assert_eq!(
+        (command.generation, empty.generation, next.generation),
+        (1, 2, 3)
+    );
+    assert_eq!(command.last_exit_code, 7);
     assert!(
         command
             .duration_ms
             .is_some_and(|duration| duration >= 3_000)
     );
-    assert_eq!(empty.duration_ms, command.duration_ms);
+    assert_eq!(empty.snapshot.cwd, cwd);
+    assert_eq!(empty.last_exit_code, 130);
+    assert_eq!(empty.duration_ms, None);
+    assert_eq!(next.last_exit_code, 5);
+    // Measured from this command's start, not carried over from the first one.
+    assert!(next.duration_ms.is_some_and(|duration| duration >= 2_000));
+    assert_ne!(next.duration_ms, command.duration_ms);
     assert!(
         tokio::time::timeout(Duration::from_secs(4), child.wait())
             .await??
