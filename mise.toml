@@ -9,7 +9,7 @@ docker_run = "docker run --rm -it --user $(id -u):$(id -g) --env CARGO_HOME=/tmp
 
 [tools]
 lefthook = "2.2.2"
-uv = "0.13.6"
+uv = "0.13.7"
 
 [tasks.build]
 description = "Build the workspace"
