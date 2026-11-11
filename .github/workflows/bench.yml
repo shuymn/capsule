@@ -13,7 +13,7 @@ on:
         default: "50000"
 
 env:
-  CI_MISE_VERSION: 2026.11.3
+  CI_MISE_VERSION: 2026.11.4
   STARSHIP_VERSION: v1.26.0
 
 jobs:
