@@ -10,7 +10,7 @@ on:
         required: false
 
 env:
-  CI_MISE_VERSION: 2026.11.7
+  CI_MISE_VERSION: 2026.11.8
 
 jobs:
   fuzz:
